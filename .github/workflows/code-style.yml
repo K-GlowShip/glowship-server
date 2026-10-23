@@ -1,0 +1,45 @@
+name: Code Style
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: code-style-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check setup
+        id: check
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "pyproject.toml 이 없어 검사를 건너뜁니다."
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff
+        if: steps.check.outputs.enabled == 'true'
+        run: pip install ruff
+
+      - name: Ruff lint
+        if: steps.check.outputs.enabled == 'true'
+        run: ruff check .
+
+      - name: Ruff format
+        if: steps.check.outputs.enabled == 'true'
+        run: ruff format --check .
