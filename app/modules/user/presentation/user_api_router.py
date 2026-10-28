@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from starlette import status
+from starlette.responses import Response
 
 from app.core.exceptions import ErrorResponse
 from app.modules.user.application.user_service import UserService
@@ -29,12 +30,14 @@ router = APIRouter(prefix="/api/v1/admins", tags=["Admin (관리자)"])
 async def signup_admin(
     request: EmailLoginRequest,
     user_service: UserService = Depends(get_user_service),
-) -> None:
+):
     """Glowship 내부 운영자 회원가입 API 엔드포인트"""
     await user_service.create_user(
         email=request.email,
         encoded_password=request.password,
     )
+
+    return Response(status_code=status.HTTP_201_CREATED)
 
 
 # 관리자 로그인

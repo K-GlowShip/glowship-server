@@ -9,7 +9,7 @@ class UserRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    # Creat
+    # Create
     async def create_admin_user(self, email: str, password_hash: str) -> User:
         """Glowship내부 운영 관리자 유저 저장"""
         user = User(

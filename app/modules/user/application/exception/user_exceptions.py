@@ -16,7 +16,7 @@ class UserErrorCode(BaseErrorCode):
     # PASSWORD
     INVALID_PASSWORD_FORMAT = (
         status.HTTP_400_BAD_REQUEST,
-        "PASSWORD_INVALID",
+        "INVALID_PASSWORD_FORMAT",
         "웹 서버에서 요청한 비밀번호 형식이 올바르지 않습니다.",
     )
 
