@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from starlette import status
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 
@@ -43,16 +44,37 @@ class CommonErrorCode(BaseErrorCode):
         "INTERNAL_SERVER_ERROR",
         "서버 내부 오류가 발생했습니다.",
     )
+    NOT_FOUND = (
+        status.HTTP_404_NOT_FOUND,
+        "NOT_FOUND",
+        "요청한 리소스를 찾을 수 없습니다.",
+    )
+    METHOD_NOT_ALLOWED = (
+        status.HTTP_405_METHOD_NOT_ALLOWED,
+        "METHOD_NOT_ALLOWED",
+        "허용되지 않은 HTTP 메서드입니다.",
+    )
+
+
+# Starlette 라우터가 던지는 HTTPException 의 상태 코드를 공통 에러 코드로 잇는 매핑
+_HTTP_STATUS_TO_ERROR_CODE: dict[int, CommonErrorCode] = {
+    status.HTTP_404_NOT_FOUND: CommonErrorCode.NOT_FOUND,
+    status.HTTP_405_METHOD_NOT_ALLOWED: CommonErrorCode.METHOD_NOT_ALLOWED,
+}
+
+
+def _build_response(status_code: int, code: str, message: str) -> JSONResponse:
+    error_content = ErrorResponse(
+        code=code,
+        message=message,
+        request_id=uuid_utils.uuid7().hex,
+    ).model_dump()
+    return JSONResponse(status_code=status_code, content=error_content)
 
 
 def build_error_response(error_code: BaseErrorCode) -> JSONResponse:
     """에러 코드 하나로 공통 형식의 JSON 에러 응답을 만듭니다. 모든 에러 응답은 이 함수를 거칩니다."""
-    error_content = ErrorResponse(
-        code=error_code.code,
-        message=error_code.message,
-        request_id=uuid_utils.uuid7().hex,
-    ).model_dump()
-    return JSONResponse(status_code=error_code.status_code, content=error_content)
+    return _build_response(error_code.status_code, error_code.code, error_code.message)
 
 
 def build_internal_error_response() -> JSONResponse:
@@ -83,3 +105,17 @@ def include_exception_handlers(app: FastAPI) -> None:
     ):
         """FastAPI 의 기본 422 응답({"detail": [...]})을 프로젝트 공통 ErrorResponse 형식으로 변환합니다."""
         return build_error_response(CommonErrorCode.VALIDATION_ERROR)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """
+        없는 경로(404)·잘못된 메서드(405) 등 Starlette/FastAPI 가 던지는 HTTPException 을
+        기본 {"detail": ...} 대신 공통 ErrorResponse 형식으로 변환합니다.
+
+        매핑에 없는 상태 코드는 상태 코드를 그대로 유지하고 code 만 일반값(HTTP_ERROR)으로 둡니다.
+        (서비스 계층은 BusinessException 만 던지는 것이 규칙이므로 이 경로로 오는 일은 거의 없습니다.)
+        """
+        error_code = _HTTP_STATUS_TO_ERROR_CODE.get(exc.status_code)
+        if error_code is not None:
+            return build_error_response(error_code)
+        return _build_response(exc.status_code, "HTTP_ERROR", str(exc.detail))

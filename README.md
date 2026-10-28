@@ -86,6 +86,7 @@ app/
 | --- | --- | --- |
 | 도메인 규칙 위반 (`BusinessException`) | 모듈별 `ErrorCode`에 정의 (400, 409 등) | `core/exceptions.py` 핸들러 |
 | 요청 형식 오류 (`RequestValidationError`) | 422 `VALIDATION_ERROR` | `core/exceptions.py` 핸들러 |
+| 없는 경로 / 허용되지 않은 메서드 (`HTTPException`) | 404 `NOT_FOUND` / 405 `METHOD_NOT_ALLOWED` | `core/exceptions.py` 핸들러 |
 | 처리되지 않은 예외 | 500 `INTERNAL_SERVER_ERROR` | `core/middleware.py` |
 
 - 모듈별 에러 코드는 `BaseErrorCode`를 상속해 `(status_code, code, message)` 튜플로 선언합니다.
