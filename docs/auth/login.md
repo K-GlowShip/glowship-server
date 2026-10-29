@@ -115,18 +115,26 @@ from app.modules.user.infrastructure.user_enums import UserRoleCode
 
 router = APIRouter(prefix="/api/v1/orders")
 
+
 # 1) 요청 주체가 필요할 때: 매개변수로 받는다
 @router.get("")
-async def list_my_orders(current_user: CurrentUser = Depends(get_current_user)):
-    ...  # current_user.user_id / role_code / company_id
+async def list_my_orders(
+    current_user: CurrentUser = Depends(get_current_user),
+): ...  # current_user.user_id / role_code / company_id
+
 
 # 2) 로그인 여부만 확인할 때
 @router.get("/summary", dependencies=[Depends(get_current_user)])
 async def summary(): ...
 
+
 # 3) 역할 제한
-@router.delete("/{order_id}", dependencies=[Depends(require_roles(UserRoleCode.ADMIN, UserRoleCode.OWNER))])
+@router.delete(
+    "/{order_id}",
+    dependencies=[Depends(require_roles(UserRoleCode.ADMIN, UserRoleCode.OWNER))],
+)
 async def delete_order(order_id: str): ...
+
 
 # 라우터 전체 보호
 router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_user)])
