@@ -1,0 +1,30 @@
+[project]
+name = "glowship-server"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "asyncpg>=0.32.0",
+    "bcrypt>=5.0.0",
+    "fastapi[standard]>=0.162.0",
+    "pydantic-settings>=2.16.1",
+    "sqlalchemy[asyncio]>=2.1.6",
+    "uuid-utils>=1.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.1",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 의존성 주입(Depends 등)은 기본 인자에 함수 호출을 쓰는 것이 정상 패턴이므로 B008 대상에서 제외
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+]
