@@ -33,18 +33,33 @@ app/
 ├── core/                          # 모든 모듈이 공유하는 기반
 │   ├── config.py                  # 환경 변수 Settings (.env 로딩)
 │   ├── database.py                # 비동기 DB 엔진, 세션 팩토리, 요청 단위 세션(get_db)
-│   ├── orm.py                     # DeclarativeBase, created_at/updated_at 공통 컬럼
+│   ├── orm.py                     # DeclarativeBase(PK 이름 규칙·타입 매핑), uuid_pk, created_at/updated_at 공통 컬럼
+│   ├── model_registry.py          # 모든 모듈의 ORM 모델 등록 (Alembic·적재 스크립트가 사용)
 │   ├── exceptions.py              # 공통 에러 응답 형식, BaseErrorCode, BusinessException, 핸들러
 │   ├── middleware.py              # CORS, 미처리 예외 → JSON 500 변환
 │   └── security/
 │       └── hashing.py             # bcrypt 비밀번호 해싱
-└── modules/                       # 도메인 모듈 (예: user)
-    └── user/
-        ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
-        ├── presentation/          # API 라우터, 요청·응답 스키마
-        ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
-        └── infrastructure/        # ORM 모델, enum, Repository
+└── modules/                       # 도메인 모듈
+    ├── user/
+    │   ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
+    │   ├── presentation/          # API 라우터, 요청·응답 스키마
+    │   ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
+    │   └── infrastructure/        # ORM 모델, enum, Repository
+    ├── company/                   # companies, admin_assignments
+    ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references
+    ├── operating_rule/            # operating_rule_sets, operating_lead_times
+    ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records
+    ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
+    ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots
+    ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
+    ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개
+    └── decision/                  # member_drafts, final_decisions
+migrations/                        # Alembic 마이그레이션 (versions/0001: v5 스키마 + RLS)
+scripts/
+└── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```
+
+> 사용자 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
 
 ### 모듈 계층
 
@@ -123,30 +138,56 @@ uv sync
 make dev
 ```
 
-`make dev`는 Docker Desktop 기동 → PostgreSQL 컨테이너 기동(healthcheck 대기) → `uvicorn` 실행을 순서대로 수행합니다.
+`make dev`는 Docker Desktop 기동 → PostgreSQL 컨테이너 기동(healthcheck 대기) → 마이그레이션 적용(`alembic upgrade head`) → `uvicorn` 실행을 순서대로 수행합니다.
 
 | 명령 | 설명 |
 | --- | --- |
-| `make dev` | DB 기동 후 개발 서버 실행 (`--reload`) |
+| `make dev` | DB 기동·마이그레이션 후 개발 서버 실행 (`--reload`) |
 | `make docker-compose` | PostgreSQL 컨테이너만 기동 |
 | `make docker-compose-down` | 컨테이너 종료 |
 | `make docker-compose-reset` | 컨테이너와 데이터 볼륨을 삭제하고 재기동 |
+| `make db-migrate` | 마이그레이션 적용 (`alembic upgrade head`) |
+| `make db-seed SEED_DATA_DIR=<폴더>` | 합성데이터 적재 (테이블이 비어 있을 때만) |
+| `make db-reseed SEED_DATA_DIR=<폴더>` | 테이블을 비우고 합성데이터 다시 적재 |
 
 Makefile 없이 직접 실행하려면 다음과 같이 합니다.
 
 ```bash
 docker compose up -d --wait
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
+
+### 3. DB 스키마와 합성데이터
+
+- 스키마 기준: `erd_glowship_postgres_v5_test_ddl.sql` (27개 테이블). 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·30)` 길이를 유지합니다.
+- 테이블은 서버 기동 시 만들지 않고 **Alembic 마이그레이션으로만** 생성·변경합니다 (`migrations/versions/`).
+- ORM 모델은 각 모듈의 `infrastructure/`에 있고, `app/core/model_registry.py`에 등록해야 autogenerate 대상이 됩니다.
+- 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
+
+모델을 바꾼 뒤 마이그레이션 만들기:
+
+```bash
+uv run alembic revision --autogenerate -m "변경 내용"
+uv run alembic upgrade head
+```
+
+합성데이터(2025, v5) 적재:
+
+```bash
+make db-seed SEED_DATA_DIR="<합성데이터 폴더>/synthetic_2025_v5/20261028T060456Z"
+```
+
+- 적재 전 `manifest.json`의 sha256·행 수로 원본 파일을 검증하고, 하나라도 다르면 중단합니다.
+- FK 의존 순서대로 `COPY` 하며, 전체가 하나의 트랜잭션이라 실패 시 아무것도 남지 않습니다.
+- `_p4_auxiliary/`의 부속 CSV 3개는 `aux` 스키마(`derived_order_dispatch_dates`, `wait_history`, `regular_order_reviews`)에 적재됩니다. 업무 코드(`company_code`, `order_code` 등)로 연결하며 FK는 없습니다.
+- 원본 CSV·manifest는 수정하지 않습니다.
 
 ### 4. API 문서 확인
 
 서버가 뜨면 아래 주소에서 Swagger UI로 API를 확인하고 호출할 수 있습니다.
 
 - http://localhost:8000/docs
-
-> **주의**: 현재는 서버 기동 시 `lifespan`에서 모든 테이블을 drop 후 create합니다.
-> 재시작할 때마다 데이터가 초기화되므로 로컬 개발 용도로만 사용하고, 마이그레이션 도구 도입 전까지는 운영 환경에 배포하지 않습니다.
 
 ## 코드 스타일
 
