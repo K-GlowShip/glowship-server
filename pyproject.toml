@@ -20,6 +20,15 @@ dev = [
     "ruff>=0.17.2",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+filterwarnings = [
+    # langsmith 내부의 asyncio.iscoroutinefunction 사용 (Python 3.16 제거 예정, 동작 영향 없음)
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:langsmith.*",
+]
+
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI 의존성 주입(Depends 등)은 기본 인자에 함수 호출을 쓰는 것이 정상 패턴이므로 B008 대상에서 제외
 extend-immutable-calls = [
