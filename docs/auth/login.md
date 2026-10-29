@@ -86,6 +86,28 @@ Base64 해제 → 72바이트 초과면 401 → users.email 조회 → bcrypt �
 - 로컬에서 프론트(`localhost:3000`)와 API(`localhost:8000`)는 포트만 다르므로 `SameSite=Lax`로 쿠키가 전송됩니다. 운영에서 프론트와 API가 **다른 등록 도메인**이면 `COOKIE_SAMESITE`를 `none`으로 바꿔야 합니다.
 - 쿠키 속성 순서와 `SameSite=lax` 소문자 표기는 Starlette의 직렬화 결과이며, 브라우저는 순서·대소문자를 구분하지 않습니다.
 
+## 3-1. 출처 검사 (CSRF 방어)
+
+`app/core/middleware.py` 의 `OriginCheckMiddleware`. 두 토큰을 모두 쿠키에 두면 브라우저가 쿠키를 자동으로 보내므로, 다른 사이트에서 띄운 요청도 로그인된 것처럼 처리될 수 있습니다. `SameSite=Lax` 가 1차 방어이고, 이 미들웨어가 서버에서 요청의 `Origin` 헤더를 직접 확인하는 2차 방어입니다.
+
+| 항목 | 규칙 |
+| --- | --- |
+| 검사 대상 | `POST`, `PUT`, `PATCH`, `DELETE`. `GET`·`HEAD`·`OPTIONS` 는 검사하지 않음 (같은 오리진의 GET 에는 브라우저가 `Origin` 을 붙이지 않는 경우가 있음) |
+| 허용 목록 | `CORS_ORIGINS`. CORS 와 같은 목록을 사용 |
+| `Origin` 헤더 없음 | `APP_ENV=local` 에서만 통과 (curl 등). 그 외 환경은 거절 |
+| 거절 응답 | 403 `INVALID_ORIGIN` (공통 에러 형식) |
+
+미들웨어 순서는 바깥에서 안쪽으로 `CORSMiddleware` → `OriginCheckMiddleware` → `UnhandledExceptionMiddleware` 입니다.
+
+| 요청 출처 | 결과 |
+| --- | --- |
+| 허용 오리진, 정상 처리 또는 401·403·500 | 응답에 CORS 헤더가 붙어 프론트가 상태 코드와 본문을 읽을 수 있음 |
+| 허용되지 않은 오리진 | 403 `INVALID_ORIGIN`. CORS 헤더가 없어 브라우저가 본문을 읽지 못하지만, 막는 것이 목적이므로 정상 |
+| 프리플라이트(`OPTIONS`) | CORS 미들웨어가 직접 응답. OriginCheck 는 관여하지 않음 |
+
+- **Swagger**: `/docs` 에서 POST 를 호출하면 브라우저가 `Origin: http://localhost:8000` 을 붙이므로, 이 값이 `CORS_ORIGINS` 에 없으면 403 `INVALID_ORIGIN` 이 납니다. `.env.example` 기본값에 포함되어 있습니다.
+- **curl 테스트**: local 외 환경에서는 `-H "Origin: <허용 오리진>"` 을 붙여야 합니다.
+
 ## 4. 토큰
 
 `app/core/security/jwt.py`. HS256으로 서명하며 키는 `JWT_SECRET_KEY`입니다.
@@ -161,6 +183,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | access 토큰·쿠키 수명 |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | refresh 토큰·쿠키 수명 |
 | `COOKIE_SECURE` | 없음 | 생략 시 `APP_ENV=local`만 `false`, 그 외 `true`. 로컬 HTTP에서 Safari는 `Secure` 쿠키를 버리기 때문 |
+| `CORS_ORIGINS` | `[]` | CORS 와 출처 검사가 함께 쓰는 허용 오리진 목록. 프론트 오리진과, Swagger 를 쓸 경우 API 자신의 오리진 포함 |
 
 `Settings.jwt_config`가 `JwtConfig`(서명 키·알고리즘·만료)를 만들어 발급·검증 함수에 넘기고, `Settings.cookie_secure_enabled`가 `Secure` 여부를 결정합니다.
 
@@ -184,5 +207,6 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies` |
 | `app/core/security/auth.py` | `CurrentUser`, `get_current_user`, `require_roles` |
 | `app/core/security/hashing.py` | bcrypt 해싱·검증, `DUMMY_PASSWORD_HASH`, 72바이트 한도 |
-| `app/core/exceptions.py` | `UNAUTHENTICATED`, `FORBIDDEN` 공통 에러 코드 |
+| `app/core/exceptions.py` | `UNAUTHENTICATED`, `FORBIDDEN`, `INVALID_ORIGIN` 공통 에러 코드 |
+| `app/core/middleware.py` | `OriginCheckMiddleware`(출처 검사), 미들웨어 등록 순서 |
 | `app/core/config.py` | JWT·쿠키 설정 |
