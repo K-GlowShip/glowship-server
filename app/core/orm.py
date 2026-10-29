@@ -3,7 +3,6 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, ClassVar
 
-import uuid_utils.compat as uuid_utils
 from sqlalchemy import (
     UUID,
     Boolean,
@@ -45,7 +44,7 @@ updated_at = Annotated[
 # 테이블 식별자: UUIDv7 기본값 (합성데이터 적재 시에는 CSV의 UUID를 그대로 사용)
 uuid_pk = Annotated[
     uuid.UUID,
-    mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid_utils.uuid7),
+    mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid7),
 ]
 
 

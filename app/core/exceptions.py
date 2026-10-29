@@ -1,6 +1,6 @@
+import uuid
 from enum import Enum
 
-import uuid_utils
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
@@ -67,7 +67,7 @@ def _build_response(status_code: int, code: str, message: str) -> JSONResponse:
     error_content = ErrorResponse(
         code=code,
         message=message,
-        request_id=uuid_utils.uuid7().hex,
+        request_id=uuid.uuid7().hex,
     ).model_dump()
     return JSONResponse(status_code=status_code, content=error_content)
 
