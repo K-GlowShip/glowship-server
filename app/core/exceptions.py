@@ -65,6 +65,12 @@ class CommonErrorCode(BaseErrorCode):
         "FORBIDDEN",
         "접근 권한이 없습니다.",
     )
+    # CSRF 방어: Origin 헤더가 허용 목록에 없는 상태 변경 요청 (OriginCheck 미들웨어)
+    INVALID_ORIGIN = (
+        status.HTTP_403_FORBIDDEN,
+        "INVALID_ORIGIN",
+        "허용되지 않은 출처의 요청입니다.",
+    )
 
 
 # Starlette 라우터가 던지는 HTTPException 의 상태 코드를 공통 에러 코드로 잇는 매핑
