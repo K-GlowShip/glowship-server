@@ -20,6 +20,19 @@ class UserErrorCode(BaseErrorCode):
         "웹 서버에서 요청한 비밀번호 형식이 올바르지 않습니다.",
     )
 
+    # LOGIN
+    # 이메일 없음과 비밀번호 불일치를 같은 코드·메시지로 응답해 계정 존재 여부를 노출하지 않는다.
+    INVALID_CREDENTIALS = (
+        status.HTTP_401_UNAUTHORIZED,
+        "INVALID_CREDENTIALS",
+        "이메일 또는 비밀번호가 올바르지 않습니다.",
+    )
+    ACCOUNT_DISABLED = (
+        status.HTTP_403_FORBIDDEN,
+        "ACCOUNT_DISABLED",
+        "비활성화된 계정입니다. 관리자에게 문의해 주십시오.",
+    )
+
 
 class EmailDuplicatedException(BusinessException):
     def __init__(self):
@@ -29,3 +42,13 @@ class EmailDuplicatedException(BusinessException):
 class InvalidPasswordFormatException(BusinessException):
     def __init__(self):
         super().__init__(UserErrorCode.INVALID_PASSWORD_FORMAT)
+
+
+class InvalidCredentialsException(BusinessException):
+    def __init__(self):
+        super().__init__(UserErrorCode.INVALID_CREDENTIALS)
+
+
+class AccountDisabledException(BusinessException):
+    def __init__(self):
+        super().__init__(UserErrorCode.ACCOUNT_DISABLED)
