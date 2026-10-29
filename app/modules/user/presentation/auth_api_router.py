@@ -3,11 +3,11 @@ from starlette import status
 from starlette.responses import Response
 
 from app.core.exceptions import ErrorResponse
-from app.modules.user.application.user_service import UserService
-from app.modules.user.dependencies import get_user_service
-from app.modules.user.presentation.user_request_schemas import EmailLoginRequest
+from app.modules.user.application.auth_service import AuthService
+from app.modules.user.dependencies import get_auth_service
+from app.modules.user.presentation.auth_request_schemas import EmailLoginRequest
 
-router = APIRouter(prefix="/api/v1/admins", tags=["Admin (관리자)"])
+router = APIRouter(prefix="/api/v1", tags=["인증/인가 (회원가입 & 로그인)"])
 
 
 @router.post(
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/v1/admins", tags=["Admin (관리자)"])
 )
 async def signup_admin(
     request: EmailLoginRequest,
-    user_service: UserService = Depends(get_user_service),
+    user_service: AuthService = Depends(get_auth_service),
 ):
     """Glowship 내부 운영자 회원가입 API 엔드포인트"""
     await user_service.create_user(
