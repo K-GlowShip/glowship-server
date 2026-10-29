@@ -2,7 +2,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.modules.user.application.user_service import UserService
+from app.modules.user.application.auth_service import AuthService
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
 
 """
@@ -15,7 +15,7 @@ def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
     return UserRepository(db)
 
 
-def get_user_service(
+def get_auth_service(
     user_repo: UserRepository = Depends(get_user_repository),
-) -> UserService:
-    return UserService(user_repo=user_repo)
+) -> AuthService:
+    return AuthService(user_repo=user_repo)

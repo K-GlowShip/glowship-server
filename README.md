@@ -67,8 +67,8 @@ scripts/
 
 | 계층 | 역할 | 예시 (`user`) |
 | --- | --- | --- |
-| `presentation` | HTTP 요청·응답 처리. 라우터와 Pydantic 스키마만 둡니다. | `user_api_router.py`, `user_request_schemas.py` |
-| `application` | 비즈니스 로직. 도메인 규칙을 검증하고 `BusinessException`을 던집니다. | `user_service.py`, `password.py`, `exception/user_exceptions.py` |
+| `presentation` | HTTP 요청·응답 처리. 라우터와 Pydantic 스키마만 둡니다. | `auth_api_router.py`, `auth_request_schemas.py` |
+| `application` | 비즈니스 로직. 도메인 규칙을 검증하고 `BusinessException`을 던집니다. | `auth_service.py`, `password.py`, `exception/user_exceptions.py` |
 | `infrastructure` | DB 접근. ORM 모델과 Repository를 둡니다. | `user.py`, `user_enums.py`, `repository/user_repository.py` |
 
 - `dependencies.py`에서 `get_db` → Repository → Service 순으로 조립해 라우터에 주입합니다.
@@ -194,10 +194,73 @@ make db-seed SEED_DATA_DIR="<합성데이터 폴더>/synthetic_2025_v5/20261028T
 `main`, `develop` 브랜치로의 push 및 Pull Request 시 GitHub Actions에서 Ruff로 린트와 포맷을 검사합니다.
 `pyproject.toml`이 추가되기 전까지는 검사를 건너뜁니다.
 
+## 작업 타입
+
+브랜치 이름과 커밋 메시지에 공통으로 사용합니다.
+
+| 타입 | 설명 |
+| --- | --- |
+| `feat` | 사용자가 인지할 수 있는 새로운 기능 추가 |
+| `fix` | 기존 기능이 의도대로 동작하지 않을 때 수정 |
+| `refactor` | 기능 개선 없이 내부 코드 구조 개선 |
+| `perf` | 성능 개선 |
+| `style` | 코드 포맷팅 (세미콜론, 들여쓰기 등. CSS 수정 아님) |
+| `docs` | 문서, 주석 수정 |
+| `test` | 테스트 코드 추가·수정·삭제 |
+| `chore` | 빌드 설정, 패키지 설정, `.gitignore` 등 기타 작업 |
+| `ci` | GitHub Actions, Docker 등 CI 설정 변경 |
+
+### 작업 흐름
+
+1. **Jira 티켓 생성**: 하위 작업 또는 태스크 작업 단위 기반
+2. **Branch 생성**: 하단 브랜치 생성 방식 참고
+3. **Commit**: 하단 커밋 생성 방식 참고. Task 항목 하나 완료 시마다 커밋 권장
+4. **Pull Request**: PR 템플릿 형식에 맞게 작성하고, 제목은 `feat(member): 회원가입 구현 #JIRA-1` 처럼 작성
+
 ## 브랜치 전략
 
-> 팀 합의 후 작성합니다. (예: `main` / `develop` / `feature/*`)
+### 배포 브랜치
+
+| 브랜치 | 배포 환경 | 용도 |
+| --- | --- | --- |
+| `main` | 운영 서버 | 실제 서비스 운영 (항상 배포 가능한 상태 유지) |
+| `develop` | 개발 서버 | 개발자 코드 병합 및 개발 테스트 |
+
+### 작업 브랜치
+
+```
+{type}/{jira 티켓번호}-{설명}
+```
+
+- 설명은 동사로 시작하는 kebab-case로 작성합니다.
+- 예시: `feat/GLOW1-implement-user-email-signup`
+
+### 병합 방식
+
+| 방향 | 방식 | 이유 |
+| --- | --- | --- |
+| 작업 브랜치 → `develop` | Squash merge | 기능 단위로 커밋을 정리해 히스토리를 단순하게 유지 |
+| `develop` → `main` | Merge | 릴리즈 시점을 명확하게 남김 |
 
 ## 커밋 컨벤션
 
-> 팀 합의 후 작성합니다. (예: `feat:`, `fix:`, `docs:`, `chore:`)
+### 형식
+
+```
+{type}({subject}): {요약} #{Jira 티켓번호}
+
+{필요시 상세 내용}
+```
+
+- `type`: [작업 타입](#작업-타입) 참고
+- `subject`: 관련 도메인 이름 또는 작업 키워드 (예: `profile`, `auth`)
+- 상세 내용은 작업 규모에 따라 자세히 또는 간략히 작성합니다.
+
+### 예시
+
+```
+feat(auth): 로그인 후 역할별 페이지 이동 구현 #JIRA-1
+
+- 로그인 성공 시 role에 따라 대시보드로 이동
+- 권한 없는 경로 접근 시 리다이렉트
+```
