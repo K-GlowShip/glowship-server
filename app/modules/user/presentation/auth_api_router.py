@@ -7,7 +7,7 @@ from app.modules.user.application.auth_service import AuthService
 from app.modules.user.dependencies import get_auth_service
 from app.modules.user.presentation.auth_request_schemas import EmailLoginRequest
 
-router = APIRouter(prefix="/api/v1/admins", tags=["인증/인가 (회원가입 & 로그인)"])
+router = APIRouter(prefix="/api/v1", tags=["인증/인가 (회원가입 & 로그인)"])
 
 
 @router.post(
