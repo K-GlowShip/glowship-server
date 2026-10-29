@@ -67,8 +67,8 @@ scripts/
 
 | 계층 | 역할 | 예시 (`user`) |
 | --- | --- | --- |
-| `presentation` | HTTP 요청·응답 처리. 라우터와 Pydantic 스키마만 둡니다. | `user_api_router.py`, `user_request_schemas.py` |
-| `application` | 비즈니스 로직. 도메인 규칙을 검증하고 `BusinessException`을 던집니다. | `user_service.py`, `password.py`, `exception/user_exceptions.py` |
+| `presentation` | HTTP 요청·응답 처리. 라우터와 Pydantic 스키마만 둡니다. | `auth_api_router.py`, `auth_request_schemas.py` |
+| `application` | 비즈니스 로직. 도메인 규칙을 검증하고 `BusinessException`을 던집니다. | `auth_service.py`, `password.py`, `exception/user_exceptions.py` |
 | `infrastructure` | DB 접근. ORM 모델과 Repository를 둡니다. | `user.py`, `user_enums.py`, `repository/user_repository.py` |
 
 - `dependencies.py`에서 `get_db` → Repository → Service 순으로 조립해 라우터에 주입합니다.
@@ -196,8 +196,48 @@ make db-seed SEED_DATA_DIR="<합성데이터 폴더>/synthetic_2025_v5/20261028T
 
 ## 브랜치 전략
 
-> 팀 합의 후 작성합니다. (예: `main` / `develop` / `feature/*`)
+### 배포 브랜치
+
+| 브랜치 | 배포 환경 | 용도 |
+| --- | --- | --- |
+| `main` | 운영 서버 | 실제 서비스 운영 (항상 배포 가능한 상태 유지) |
+| `develop` | 개발 서버 | 개발자 코드 병합 및 개발 테스트 |
+
+### 작업 브랜치
+
+```
+{type}/{jira 티켓번호}-{설명}
+```
+
+- 설명은 동사로 시작하는 kebab-case로 작성합니다.
+- 예시: `feat/GLOW1-implement-user-email-signup`
+
+### 병합 방식
+
+| 방향 | 방식 | 이유 |
+| --- | --- | --- |
+| 작업 브랜치 → `develop` | Squash merge | 기능 단위로 커밋을 정리해 히스토리를 단순하게 유지 |
+| `develop` → `main` | Merge | 릴리즈 시점을 명확하게 남김 |
 
 ## 커밋 컨벤션
 
-> 팀 합의 후 작성합니다. (예: `feat:`, `fix:`, `docs:`, `chore:`)
+### 형식
+
+```
+{type}({subject}): {요약} #{Jira 티켓번호}
+
+{필요시 상세 내용}
+```
+
+- `type`: [작업 타입](#작업-타입) 참고
+- `subject`: 관련 도메인 이름 또는 작업 키워드 (예: `profile`, `auth`)
+- 상세 내용은 작업 규모에 따라 자세히 또는 간략히 작성합니다.
+
+### 예시
+
+```
+feat(auth): 로그인 후 역할별 페이지 이동 구현 #JIRA-1
+
+- 로그인 성공 시 role에 따라 대시보드로 이동
+- 권한 없는 경로 접근 시 리다이렉트
+```
