@@ -1,6 +1,5 @@
 import uuid
 
-import uuid_utils.compat as uuid_utils
 from sqlalchemy import (
     UUID,
     CheckConstraint,
@@ -40,7 +39,7 @@ class User(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=uuid.uuid7,
         comment="회원 UUIDv7 식별자",
     )
 

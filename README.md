@@ -14,11 +14,12 @@ GlowShip 백엔드 서버 저장소입니다.
 
 ## 기술 스택
 
-- **Python**
+- **Python 3.14**, **uv**: 패키지·가상환경 관리
 - **FastAPI**: REST API 서버 및 AI 에이전트 엔드포인트
+- **PostgreSQL 17**, **SQLAlchemy 2 (async)**, **Alembic**: DB·ORM·마이그레이션
+- **LangGraph**: 지연 분석 에이전트 그래프
+- **pytest**: 테스트
 - **Ruff**: 린트 및 포맷 (GitHub Actions에서 검사)
-
-> DB, ORM, 에이전트 프레임워크, 패키지 관리 도구 등 세부 스택은 개발환경 설정 시 결정합니다.
 
 ## 애플리케이션 아키텍처
 
@@ -52,7 +53,7 @@ app/
     ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
     ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
-    ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개
+    ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개 + 분석 에이전트(application/agent)
     └── decision/                  # member_drafts, final_decisions
 migrations/                        # Alembic 마이그레이션 (versions/0001: v5 스키마 + RLS)
 scripts/
@@ -188,6 +189,36 @@ make db-seed SEED_DATA_DIR="<합성데이터 폴더>/synthetic_2025_v5/20261028T
 서버가 뜨면 아래 주소에서 Swagger UI로 API를 확인하고 호출할 수 있습니다.
 
 - http://localhost:8000/docs
+
+### 5. 테스트
+
+```bash
+uv run pytest
+```
+
+테스트는 `tests/` 아래에 모듈 구조와 같은 경로로 둡니다. 현재 테스트는 DB 없이 실행됩니다.
+
+## 지연 분석 에이전트
+
+`agentflow_glowship.md` 기준의 LangGraph 그래프입니다. 코드는 `app/modules/delay_analysis/application/agent/`에 있습니다.
+
+```
+분석 준비 ─┬─ NO_DELAY·ON_HOLD ─────────────────────────────▶ 종료
+           └▶ 조정 에이전트 ⇄ 재고 영향 분석 에이전트   (위험 주문 없음 → NO_RISK 종료)
+                   ⇄ 대응안 분석 에이전트
+                   └▶ 대응안 비교 ▶ 추천 근거 설명 ▶ 결과 검증 ▶ 종료(READY_FOR_REVIEW)
+```
+
+| 파일 | 내용 |
+| --- | --- |
+| `state.py` | 그래프 상태, 실행 단계(`AnalysisStep`), 종료 상태(`AnalysisOutcome`) |
+| `nodes/` | 노드 7개. 현재는 빈 결과만 반환하는 뼈대이며 `TODO`에 붙일 도구가 적혀 있습니다 |
+| `graph.py` | 노드 연결, 조정 에이전트의 다음 분석 선택, 종료 분기 |
+| `run_status.py` | 노드 경계 STALE 확인. 조정 에이전트·설명 노드 진입 전에 실행 상태를 조회합니다 |
+
+- 에이전트는 업무 DB에 쓰지 않고 결과만 반환합니다. 저장·STALE 판정은 서비스 책임입니다.
+- 실행 상태 조회기는 `config["configurable"]["run_status_reader"]`로 주입합니다. 주입하지 않으면 STALE 확인을 건너뜁니다.
+- 개발 확인용 `POST /api/v1/dev/agent/dry-run`으로 그래프를 한 번 실행해 거친 노드 순서를 볼 수 있습니다 (`APP_ENV=prod`에서는 등록되지 않음).
 
 ## 코드 스타일
 
