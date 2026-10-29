@@ -117,7 +117,8 @@ def include_middlewares(app: FastAPI) -> None:
     app.add_middleware(
         OriginCheckMiddleware,
         allowed_origins=settings.cors_origins,
-        allow_missing_origin=settings.app_env == "local",  # curl 등 Origin 없는 요청은 로컬만 허용
+        # curl 등 Origin 헤더가 없는 요청은 로컬 환경에서만 허용
+        allow_missing_origin=settings.app_env == "local",
     )
 
     # 바깥: CORS
