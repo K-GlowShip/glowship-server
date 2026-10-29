@@ -11,7 +11,7 @@ from app.modules.user.application.password import (
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
 
 
-class UserService:
+class AuthService:
     def __init__(self, user_repo: UserRepository):
         self.user_repo = user_repo
 
