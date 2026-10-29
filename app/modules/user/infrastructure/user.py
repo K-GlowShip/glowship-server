@@ -3,7 +3,10 @@ import uuid
 import uuid_utils.compat as uuid_utils
 from sqlalchemy import (
     UUID,
+    CheckConstraint,
+    ForeignKeyConstraint,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy import (
     Enum as SQLEnum,
@@ -19,6 +22,20 @@ from app.modules.user.infrastructure.user_enums import (
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("company_id", "user_id", name="users_uk1"),
+        UniqueConstraint("email", name="users_uk2"),
+        # Client 역할만 회사에 소속되고, OWNER·ADMIN은 company_id가 비어 있어야 한다.
+        CheckConstraint(
+            "(role_code IN ('CLIENT_MEMBER','CLIENT_LEAD')) = (company_id IS NOT NULL)",
+            name="users_ck2",
+        ),
+        ForeignKeyConstraint(
+            ["company_id"],
+            ["companies.company_id"],
+            name="fk_users__company_id",
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -60,7 +77,6 @@ class User(Base):
 
     email: Mapped[str] = mapped_column(
         String(50),
-        unique=True,
         nullable=False,
         comment="회원 이메일",
     )

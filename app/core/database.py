@@ -2,6 +2,9 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+# model_registry: 모델 간 FK(예: users.company_id → companies)를 flush 시점에 해석하려면
+# 세션을 쓰기 전에 모든 ORM 모델이 Base.metadata 에 등록되어 있어야 한다.
+from app.core import model_registry  # noqa: F401
 from app.core.config import get_settings
 
 """
