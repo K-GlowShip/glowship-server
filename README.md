@@ -37,16 +37,21 @@ app/
 │   ├── orm.py                     # DeclarativeBase(PK 이름 규칙·타입 매핑), uuid_pk, created_at/updated_at 공통 컬럼
 │   ├── model_registry.py          # 모든 모듈의 ORM 모델 등록 (Alembic·적재 스크립트가 사용)
 │   ├── exceptions.py              # 공통 에러 응답 형식, BaseErrorCode, BusinessException, 핸들러
-│   ├── middleware.py              # CORS, 미처리 예외 → JSON 500 변환
+│   ├── middleware.py              # CORS, 출처 검사(OriginCheck), 미처리 예외 → JSON 500 변환
+│   ├── rls_context.py             # 요청 트랜잭션에 RLS 컨텍스트(app.user_id·app.company_id) 설정
+│   ├── schemas.py                 # 요청·응답 스키마 공통 베이스 (JSON camelCase ↔ 파이썬 snake_case)
 │   └── security/
-│       └── hashing.py             # bcrypt 비밀번호 해싱
+│       ├── auth.py                # access_token 쿠키 인증 의존성, 역할 제한(require_roles)
+│       ├── cookies.py             # 인증 쿠키 발급·삭제
+│       ├── hashing.py             # bcrypt 비밀번호 해싱
+│       └── jwt.py                 # access / refresh 토큰 발급·검증
 └── modules/                       # 도메인 모듈
     ├── user/
     │   ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
-    │   ├── presentation/          # API 라우터, 요청·응답 스키마
+    │   ├── presentation/          # API 라우터(회원가입·로그인, 고객사 계정 생성), 요청·응답 스키마
     │   ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
     │   └── infrastructure/        # ORM 모델, enum, Repository
-    ├── company/                   # companies, admin_assignments
+    ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)
     ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references
     ├── operating_rule/            # operating_rule_sets, operating_lead_times
     ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records
@@ -60,7 +65,7 @@ scripts/
 └── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```
 
-> 사용자 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
+> 사용자·고객사 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
 
 ### 모듈 계층
 
@@ -89,6 +94,20 @@ scripts/
 
 - 요청 단위 세션(`get_db`)은 정상 종료 시 commit, 예외 시 rollback 후 재전파합니다.
 - Repository는 `flush`까지만 수행하고, commit은 세션이 종료될 때 한 번에 처리합니다.
+- 보호된 API는 `access_token` 쿠키를 `get_current_user` / `require_roles(...)` 의존성으로 검증합니다.
+
+### 고객사 범위(RLS 컨텍스트)
+
+DB의 고객사 범위 테이블에는 RLS 정책이 걸려 있고, 정책과 `SECURITY DEFINER` 함수는 세션 설정값
+`app.user_id`·`app.company_id`로 "누가, 어느 고객사 범위에서" 요청하는지 판단합니다
+(`migrations/versions/0001_*.py`의 `_create_rls()`).
+
+- 고객사 데이터를 다루는 경로는 같은 트랜잭션 안에서 먼저 `core/rls_context.py`의 `set_rls_context()`를 호출합니다.
+  `set_config(..., true)`라 트랜잭션이 끝나면 값이 사라지고 다른 요청에 새지 않습니다.
+- 로컬은 superuser로 접속해 RLS 정책은 우회되지만, 함수 안의 검사는 그대로 실행됩니다.
+- `users` 테이블은 앱 DB 역할에 INSERT 권한이 없어, 고객사 계정 생성은 DB 함수 `app_admin_create_client_user()`로만 합니다.
+  이 함수는 요청자가 해당 고객사에 배정되고 `can_manage_client_accounts`가 참인 ACTIVE ADMIN일 때만 실행됩니다.
+  `POST /api/v1/admin/users`가 이 경로를 사용합니다.
 
 ### 에러 응답
 
@@ -107,6 +126,13 @@ scripts/
 
 - 모듈별 에러 코드는 `BaseErrorCode`를 상속해 `(status_code, code, message)` 튜플로 선언합니다.
 - 서비스 계층에서는 `BusinessException`을 상속한 예외만 던지고, HTTP 응답 변환은 핸들러가 담당합니다.
+- 인증·인가 공통 코드는 `CommonErrorCode`에 있습니다: 401 `UNAUTHENTICATED`, 403 `FORBIDDEN`, 403 `INVALID_ORIGIN`.
+- DB 오류는 서비스가 변환합니다. 예: 유니크 위반(`IntegrityError`) → 409, DB 함수의 권한 오류(SQLSTATE `42501`) → 403.
+
+### JSON 필드 표기
+
+API 명세에 따라 JSON 필드는 camelCase 입니다. 요청·응답 스키마는 `core/schemas.py`의 `CamelModel`을 상속하면
+파이썬 코드는 snake_case 그대로 두고 JSON만 camelCase로 주고받습니다 (예: `company_id` ↔ `companyId`).
 
 ## 프로젝트 실행 방법
 
@@ -161,7 +187,7 @@ uv run uvicorn app.main:app --reload
 
 ### 3. DB 스키마와 합성데이터
 
-- 스키마 기준: `erd_glowship_postgres_v5_test_ddl.sql` (27개 테이블). 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·30)` 길이를 유지합니다.
+- 스키마 기준: `erd_glowship_postgres_v5_test_ddl.sql` (27개 테이블). 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·50)` 길이(`display_name`은 0002에서 30→50)를 유지합니다.
 - 테이블은 서버 기동 시 만들지 않고 **Alembic 마이그레이션으로만** 생성·변경합니다 (`migrations/versions/`).
 - ORM 모델은 각 모듈의 `infrastructure/`에 있고, `app/core/model_registry.py`에 등록해야 autogenerate 대상이 됩니다.
 - 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
