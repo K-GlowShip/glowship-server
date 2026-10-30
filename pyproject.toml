@@ -9,6 +9,7 @@ dependencies = [
     "fastapi[standard]>=0.162.0",
     "langgraph>=1.2.18",
     "pydantic-settings>=2.16.1",
+    "pyjwt>=2.15.1",
     "sqlalchemy[asyncio]>=2.1.6",
 ]
 

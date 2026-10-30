@@ -54,6 +54,23 @@ class CommonErrorCode(BaseErrorCode):
         "METHOD_NOT_ALLOWED",
         "허용되지 않은 HTTP 메서드입니다.",
     )
+    # 인증·인가 (모든 모듈의 보호된 API 가 공통으로 사용)
+    UNAUTHENTICATED = (
+        status.HTTP_401_UNAUTHORIZED,
+        "UNAUTHENTICATED",
+        "로그인이 필요합니다.",
+    )
+    FORBIDDEN = (
+        status.HTTP_403_FORBIDDEN,
+        "FORBIDDEN",
+        "접근 권한이 없습니다.",
+    )
+    # CSRF 방어: Origin 헤더가 허용 목록에 없는 상태 변경 요청 (OriginCheck 미들웨어)
+    INVALID_ORIGIN = (
+        status.HTTP_403_FORBIDDEN,
+        "INVALID_ORIGIN",
+        "허용되지 않은 출처의 요청입니다.",
+    )
 
 
 # Starlette 라우터가 던지는 HTTPException 의 상태 코드를 공통 에러 코드로 잇는 매핑
@@ -90,6 +107,20 @@ class BusinessException(Exception):
     def __init__(self, error_code: BaseErrorCode):
         self.error_code = error_code
         super().__init__(error_code.message)
+
+
+class UnauthenticatedException(BusinessException):
+    """access 토큰이 없거나 신뢰할 수 없을 때 (401). 프론트는 이 코드를 받으면 재발급을 시도한다."""
+
+    def __init__(self):
+        super().__init__(CommonErrorCode.UNAUTHENTICATED)
+
+
+class ForbiddenException(BusinessException):
+    """로그인은 했지만 역할이 허용되지 않을 때 (403)"""
+
+    def __init__(self):
+        super().__init__(CommonErrorCode.FORBIDDEN)
 
 
 def include_exception_handlers(app: FastAPI) -> None:

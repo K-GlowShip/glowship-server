@@ -1,6 +1,7 @@
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.modules.user.application.auth_service import AuthService
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
@@ -18,4 +19,4 @@ def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
 def get_auth_service(
     user_repo: UserRepository = Depends(get_user_repository),
 ) -> AuthService:
-    return AuthService(user_repo=user_repo)
+    return AuthService(user_repo=user_repo, jwt_config=get_settings().jwt_config)

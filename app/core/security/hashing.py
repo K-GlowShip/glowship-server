@@ -1,6 +1,13 @@
 import bcrypt
 from starlette.concurrency import run_in_threadpool
 
+# bcrypt 는 72바이트를 넘는 입력에 ValueError 를 던지므로 호출 전에 길이를 검사한다.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+# 존재하지 않는 이메일로 로그인할 때도 이 해시로 검증을 한 번 수행해,
+# 계정 유무에 따라 응답 시간이 달라지지 않게 한다. (어떤 비밀번호와도 일치하지 않도록 무작위 값으로 생성)
+DUMMY_PASSWORD_HASH = "$2b$12$aifmIu4pf22QshqglHm0Y.E5FRIkCcvbXwy7qmjjRy/t3I4SlBvMK"
+
 
 def _hash_sync(raw_password: str) -> str:
     password_bytes = raw_password.encode("utf-8")

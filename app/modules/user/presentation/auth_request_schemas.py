@@ -12,4 +12,5 @@ class EmailLoginRequest(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, v: str) -> str:
-        return v.strip().lower()
+        """대소문자만 정규화한다. 공백은 허용하지 않으며, 위 pattern 검사가 먼저 실행되어 422 로 거절된다."""
+        return v.lower()
