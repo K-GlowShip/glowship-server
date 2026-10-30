@@ -22,6 +22,17 @@ class DelayEvent(Base):
             "stage IN ('PRE_DEPARTURE','AT_SEA','IN_AIR','AT_PORT','RECEIVED')",
             name="delay_events_ck2",
         ),
+        # v6.2: 에피소드 종료. 종료된 지연의 실행은 STALE·재분석·최종 선택 대상이 아닙니다 (동결)
+        CheckConstraint(
+            "(closed_at IS NULL) = (close_reason IS NULL)", name="delay_events_ck4"
+        ),
+        CheckConstraint(
+            "close_reason IS NULL OR close_reason IN ('RECOVERED','RECEIVED')",
+            name="delay_events_ck5",
+        ),
+        CheckConstraint(
+            "closed_at IS NULL OR closed_at >= detected_at", name="delay_events_ck7"
+        ),
         ForeignKeyConstraint(
             ["company_id", "shipment_id"],
             ["shipments.company_id", "shipments.shipment_id"],
@@ -55,3 +66,5 @@ class DelayEvent(Base):
     expected_3pl_inbound_date: Mapped[date]
     dedupe_key: Mapped[str]
     detected_at: Mapped[datetime]
+    closed_at: Mapped[datetime | None]
+    close_reason: Mapped[str | None]
