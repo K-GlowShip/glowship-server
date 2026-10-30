@@ -16,11 +16,11 @@ sequenceDiagram
     W->>S: POST /api/v1/admin/users (access_token 쿠키)<br/>{companyId, email, password(Base64), roleCode, displayName}
     S->>S: require_roles(ADMIN): 쿠키 검증, 역할 확인
     S->>S: Base64 해제 · 비밀번호 정책 검사
+    S->>DB: set_config('app.user_id', ADMIN) · set_config('app.company_id', 고객사)
     S->>DB: companies 조회 (존재 · ACTIVE)
     S->>DB: admin_assignments 조회 (배정 · can_manage_client_accounts)
     S->>DB: users.email 중복 조회
     S->>S: bcrypt 해싱 · UUIDv7 생성
-    S->>DB: set_config('app.user_id', ADMIN) · set_config('app.company_id', 고객사)
     S->>DB: SELECT app_admin_create_client_user(...)
     DB->>DB: 배정된 ADMIN 인지 다시 검사 후 users INSERT
     S->>DB: users 재조회 (created_at 등)
@@ -28,6 +28,7 @@ sequenceDiagram
 ```
 
 - 권한 검사는 **두 번** 일어납니다. 서버(서비스)가 먼저 검사해 구분된 오류 코드를 주고, DB 함수가 같은 규칙으로 다시 검사해 최종 강제합니다(4절).
+- RLS 컨텍스트는 **첫 DB 조회 전에** 설정합니다. `companies`·`admin_assignments`에도 RLS 정책이 있어, 운영(앱 DB 역할)에서는 컨텍스트 없이 조회하면 행이 보이지 않습니다(4절).
 - 다른 API와 달리 고객사 범위를 토큰이 아니라 요청 본문(`companyId`)으로 받습니다. ADMIN은 소속 고객사가 없기 때문이며, 내부 관리자 API만의 예외입니다.
 
 ## 2. 계정 생성 API
@@ -98,8 +99,8 @@ HTTP/1.1 201 Created
 ### 서비스 로직 (`ClientAccountService.create_client_user`)
 
 ```
-Base64 해제 → 비밀번호 정책 → companies 조회(404 · 409) → admin_assignments 조회(403) → email 중복(409)
-→ bcrypt 해싱 · uuid7 → Repository.create_client_user (RLS 컨텍스트 + DB 함수) → 생성 사용자 반환
+Base64 해제 → 비밀번호 정책 → RLS 컨텍스트 설정 → companies 조회(404 · 409) → admin_assignments 조회(403)
+→ email 중복(409) → bcrypt 해싱 · uuid7 → Repository.create_client_user (DB 함수) → 생성 사용자 반환
 ```
 
 - DB에 접근하지 않는 검사(비밀번호)를 먼저 수행합니다. 회원가입과 같은 원칙입니다.
@@ -134,7 +135,7 @@ Base64 해제 → 비밀번호 정책 → companies 조회(404 · 409) → admin
 
 ### 컨텍스트 설정
 
-함수는 인자가 아니라 세션 설정값에서 요청자와 고객사를 읽으므로, 같은 트랜잭션 안에서 먼저 설정해야 합니다.
+함수는 인자가 아니라 세션 설정값에서 요청자와 고객사를 읽습니다. `companies`·`admin_assignments`·`users`의 RLS 정책도 같은 값을 읽으므로, 서비스는 **첫 DB 조회 전에** 같은 트랜잭션 안에서 설정합니다.
 
 ```python
 # app/core/rls_context.py

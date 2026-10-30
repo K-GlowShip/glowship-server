@@ -24,6 +24,7 @@ COMPANY_ID = uuid.uuid7()
 EMAIL = "lead@client.com"
 ENCODED_PASSWORD = base64.b64encode(b"password123").decode()
 ACTIVE_COMPANY = SimpleNamespace(status="ACTIVE")
+FAKE_DB = object()
 MANAGING_ASSIGNMENT = SimpleNamespace(can_manage_client_accounts=True)
 
 
@@ -33,8 +34,10 @@ MANAGING_ASSIGNMENT = SimpleNamespace(can_manage_client_accounts=True)
 @dataclass
 class FakeCompanyRepository:
     company: object | None = None
+    calls: list = field(default_factory=list)
 
     async def find_by_id(self, company_id):
+        self.calls.append("company")
         return self.company
 
 
@@ -71,6 +74,7 @@ def _service(
 ) -> tuple[ClientAccountService, FakeUserRepository]:
     user_repo = FakeUserRepository(existing=existing, error=error)
     service = ClientAccountService(
+        db=FAKE_DB,
         user_repo=user_repo,
         company_repo=FakeCompanyRepository(company=company),
         admin_assignment_repo=FakeAdminAssignmentRepository(assignment=assignment),
@@ -88,6 +92,21 @@ async def _create(service: ClientAccountService, **overrides):
         "display_name": None,
     }
     return await service.create_client_user(**{**params, **overrides})
+
+
+@pytest.fixture(autouse=True)
+def rls_context_calls(monkeypatch):
+    """DB 없이 실행하므로 set_rls_context 를 기록용 가짜로 바꾼다. 호출 순서 검증에 쓴다."""
+    calls: list = []
+
+    async def _fake_set_rls_context(db, *, user_id, company_id):
+        calls.append(("ctx", db, user_id, company_id))
+
+    monkeypatch.setattr(
+        "app.modules.user.application.client_account_service.set_rls_context",
+        _fake_set_rls_context,
+    )
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -112,13 +131,33 @@ async def test_성공하면_요청자와_고객사_컨텍스트로_해시된_비
     user = await _create(service)
 
     created = user_repo.created
-    assert created["actor_user_id"] == ADMIN.user_id
-    assert created["company_id"] == COMPANY_ID
     assert created["email"] == EMAIL
     assert created["password_hash"] == "hashed:password123"
     assert created["role_code"] == UserRoleCode.CLIENT_LEAD
     assert isinstance(created["user_id"], uuid.UUID)
     assert user.user_id == created["user_id"]
+
+
+async def test_RLS_컨텍스트는_첫_DB_조회_전에_요청자와_고객사로_설정한다(
+    rls_context_calls,
+):
+    service, _ = _service()
+    # 고객사 조회 기록을 컨텍스트 기록과 같은 리스트에 남겨 호출 순서를 본다.
+    service.company_repo.calls = rls_context_calls
+
+    await _create(service)
+
+    # 고객사 조회(company)보다 컨텍스트 설정(ctx)이 먼저 일어나야 운영(RLS)에서 행이 보인다.
+    assert rls_context_calls == [("ctx", FAKE_DB, ADMIN.user_id, COMPANY_ID), "company"]
+
+
+async def test_비밀번호_정책_위반이면_RLS_컨텍스트도_설정하지_않는다(rls_context_calls):
+    service, _ = _service()
+
+    with pytest.raises(InvalidPasswordFormatException):
+        await _create(service, encoded_password=base64.b64encode(b"short").decode())
+
+    assert rls_context_calls == []
 
 
 async def test_표시_이름이_없으면_이메일을_쓴다():

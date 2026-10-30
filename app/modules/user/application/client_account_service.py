@@ -1,8 +1,10 @@
 import uuid
 
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenException
+from app.core.rls_context import set_rls_context
 from app.core.security.auth import CurrentUser
 from app.core.security.hashing import hash_password
 from app.modules.company.application.exception.company_exceptions import (
@@ -36,10 +38,13 @@ class ClientAccountService:
 
     def __init__(
         self,
+        db: AsyncSession,
         user_repo: UserRepository,
         company_repo: CompanyRepository,
         admin_assignment_repo: AdminAssignmentRepository,
     ):
+        # 리포지토리들과 같은 요청 단위 세션. RLS 컨텍스트 설정에만 사용한다.
+        self.db = db
         self.user_repo = user_repo
         self.company_repo = company_repo
         self.admin_assignment_repo = admin_assignment_repo
@@ -79,6 +84,11 @@ class ClientAccountService:
         raw_password = decode_password(encoded_password)
         validate_password_policy(raw_password)
 
+        # 첫 DB 조회 전에 RLS 컨텍스트를 설정한다.
+        # companies·admin_assignments 에도 app.company_id·app.user_id 를 읽는 RLS 정책이 있어,
+        # 앱 DB 역할(운영)에서는 컨텍스트 없이 조회하면 행이 보이지 않는다. (로컬 superuser 는 정책을 우회)
+        await set_rls_context(self.db, user_id=actor.user_id, company_id=company_id)
+
         company = await self.company_repo.find_by_id(company_id)
         if company is None:
             raise CompanyNotFoundException()
@@ -100,8 +110,6 @@ class ClientAccountService:
 
         try:
             return await self.user_repo.create_client_user(
-                actor_user_id=actor.user_id,
-                company_id=company_id,
                 user_id=uuid.uuid7(),
                 email=email,
                 password_hash=password_hash,
