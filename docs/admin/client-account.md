@@ -144,7 +144,7 @@ await set_rls_context(db, user_id=actor.user_id, company_id=company_id)
 ```
 
 - `set_config(..., true)`는 `SET LOCAL`과 같이 **현재 트랜잭션에서만** 유효합니다. 요청 단위 세션(`get_db`)이 commit/rollback 되면 사라지며, 커넥션 풀을 통해 다른 요청으로 새지 않습니다.
-- 같은 값을 고객사 범위 테이블 23개의 RLS 정책도 읽습니다. 앞으로 주문·선적·재고 API를 만들 때 이 헬퍼를 요청마다 호출해야 운영 환경에서 데이터가 보입니다(7절).
+- 같은 값을 RLS 정책이 걸린 고객사 범위 테이블 24개(`companies` 포함, 마이그레이션의 `TENANT_TABLES`)의 정책도 읽습니다. `users`·`admin_assignments`는 별도 정책이 있습니다. 앞으로 주문·선적·재고 API를 만들 때 이 헬퍼를 요청마다 호출해야 운영 환경에서 데이터가 보입니다(7절).
 
 ### 로컬 환경
 
