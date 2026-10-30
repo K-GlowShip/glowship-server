@@ -13,7 +13,7 @@ class ClientUserCreateRequest(CamelModel):
 
     company_id: uuid.UUID = Field(
         description="계정을 만들 고객사 식별자. 요청자가 배정된 고객사여야 한다.",
-        examples=["0199c2a8-7d4e-7b3c-9f1a-2e5d6c7b8a90"],
+        examples=["1a2052c0-cbfc-523e-ac43-ff6e6d1dd9a6"],
     )
     # 이메일 규칙은 로그인 요청(auth_request_schemas.EmailLoginRequest)과 같다.
     email: str = Field(
