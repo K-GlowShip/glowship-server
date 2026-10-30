@@ -109,6 +109,17 @@ async def test_필수_필드가_없으면_422를_반환한다(fake_service):
     assert response.json()["code"] == "VALIDATION_ERROR"
 
 
+async def test_displayName은_50자까지_허용하고_51자는_422를_반환한다(fake_service):
+    ok = await _post(_body(displayName="가" * 50), cookies=_access_cookie("ADMIN"))
+    assert ok.status_code == 201
+
+    too_long = await _post(
+        _body(displayName="가" * 51), cookies=_access_cookie("ADMIN")
+    )
+    assert too_long.status_code == 422
+    assert too_long.json()["code"] == "VALIDATION_ERROR"
+
+
 async def test_성공하면_201과_camelCase_응답을_반환한다(fake_service):
     response = await _post(_body(), cookies=_access_cookie("ADMIN"))
 

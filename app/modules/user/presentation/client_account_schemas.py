@@ -32,8 +32,8 @@ class ClientUserCreateRequest(CamelModel):
     display_name: str | None = Field(
         default=None,
         min_length=1,
-        max_length=30,
-        description="표시 이름. 생략하면 이메일을 사용한다.",
+        max_length=50,
+        description="표시 이름. 생략하면 이메일을 사용한다. (이메일과 같은 50자 한도)",
         examples=["홍길동"],
     )
 

@@ -87,7 +87,7 @@ class User(Base):
     )
 
     display_name: Mapped[str] = mapped_column(
-        String(30),
+        String(50),
         default=lambda context: context.get_current_parameters().get("email"),
         nullable=False,
         comment="회원 표시 이름",

@@ -166,6 +166,12 @@ async def test_표시_이름이_없으면_이메일을_쓴다():
     await _create(service, display_name=None)
     assert user_repo.created["display_name"] == EMAIL
 
+    # 이메일 최대 길이(50자)도 그대로 표시 이름이 된다. (display_name 컬럼도 50자, 마이그레이션 0002)
+    long_email = "a" * 39 + "@client.com"
+    assert len(long_email) == 50
+    await _create(service, email=long_email, display_name=None)
+    assert user_repo.created["display_name"] == long_email
+
     await _create(service, display_name="홍길동")
     assert user_repo.created["display_name"] == "홍길동"
 

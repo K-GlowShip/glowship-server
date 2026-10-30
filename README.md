@@ -187,7 +187,7 @@ uv run uvicorn app.main:app --reload
 
 ### 3. DB 스키마와 합성데이터
 
-- 스키마 기준: `erd_glowship_postgres_v5_test_ddl.sql` (27개 테이블). 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·30)` 길이를 유지합니다.
+- 스키마 기준: `erd_glowship_postgres_v5_test_ddl.sql` (27개 테이블). 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·50)` 길이(`display_name`은 0002에서 30→50)를 유지합니다.
 - 테이블은 서버 기동 시 만들지 않고 **Alembic 마이그레이션으로만** 생성·변경합니다 (`migrations/versions/`).
 - ORM 모델은 각 모듈의 `infrastructure/`에 있고, `app/core/model_registry.py`에 등록해야 autogenerate 대상이 됩니다.
 - 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
