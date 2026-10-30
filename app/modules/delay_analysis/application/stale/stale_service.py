@@ -30,6 +30,7 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 잠금: 호출 측이 L1(고객사)을 잡은 트랜잭션 안에서 부르고, 여기서 L2(실행)를 실행 ID 순서로 잡습니다.
       - 대상: 현재 실행 버전이고 진행 중·READY_FOR_REVIEW·NO_RISK 이며 지연 에피소드가 열린 실행.
         FINALIZED·FAILED·ON_HOLD·NO_DELAY·STALE 과 종료된 에피소드의 실행은 바꾸지 않습니다.
+        종료 여부는 세 함수 모두 실행을 잠근 뒤 다시 확인합니다.
 """
 
 IN_PROGRESS_STATUSES = (
@@ -92,7 +93,7 @@ class StaleJudgmentService:
         run_ids = await self.change_repo.find_target_run_ids(company_id, applied_seq)
         if not run_ids:
             return []
-        runs = await lock_analysis_runs(self.db, run_ids)
+        runs = await self._unfrozen(await lock_analysis_runs(self.db, run_ids))
         changes = await self.change_repo.find_changes_after(
             company_id, applied_seq - 1, applied_seq
         )
@@ -113,7 +114,7 @@ class StaleJudgmentService:
         STALE 로 바뀌면 그 실행을, 아니면 None 을 반환합니다.
         """
         run = await lock_analysis_run(self.db, analysis_run_id)
-        if run is None or not _is_target(run):
+        if run is None or not _is_target(run) or not await self._unfrozen([run]):
             return None
         changes = await self.change_repo.find_changes_after(
             run.company_id, run.input_seq, up_to_seq
@@ -134,13 +135,22 @@ class StaleJudgmentService:
         사유를 이미 아는 실행을 STALE 로 바꿉니다.
         예: 지연 선적 일정·단계가 바뀌어 새 AUTO 실행을 만들 때 이전 실행을
         DELAY_SCHEDULE_CHANGED·DELAY_STAGE_CHANGED 로 (D-08). 대상이 아닌 상태의 실행은 그대로 둡니다.
+        종료된 에피소드의 실행도 그대로 두므로(동결), 회복·입고로 에피소드를 닫을 때는
+        이 함수를 먼저 부른 뒤 delay_events.closed_at 을 기록해야 합니다.
         """
-        runs = await lock_analysis_runs(self.db, analysis_run_ids)
+        runs = await self._unfrozen(await lock_analysis_runs(self.db, analysis_run_ids))
         staled = [run for run in runs if run.status in STALE_TARGET_STATUSES]
         for run in staled:
             mark_stale(run, [reason_code], detected_seq, detected_at)
         await self.db.flush()
         return staled
+
+    async def _unfrozen(self, runs: list[AnalysisRun]) -> list[AnalysisRun]:
+        """잠근 뒤 다시 확인: 지연 에피소드가 종료된 실행은 동결 대상이라 뺍니다 (D-13 Q-08d)."""
+        closed = await self.change_repo.find_closed_episode_run_ids(
+            run.analysis_run_id for run in runs
+        )
+        return [run for run in runs if run.analysis_run_id not in closed]
 
     async def _judge(
         self, run: AnalysisRun, changes: Iterable[ScopedChange], detected_at: datetime

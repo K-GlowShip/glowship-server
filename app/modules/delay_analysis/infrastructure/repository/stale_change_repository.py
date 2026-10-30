@@ -1,8 +1,9 @@
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from sqlalchemy import UUID, bindparam, text
+from sqlalchemy import ARRAY, UUID, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 """
@@ -78,6 +79,18 @@ _TARGET_RUN_IDS = text(
     """
 ).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
 
+# 동결 확인용: 주어진 실행 중 지연 에피소드가 이미 종료된 실행
+_CLOSED_EPISODE_RUN_IDS = text(
+    """
+    SELECT a.analysis_run_id
+      FROM analysis_runs a
+      JOIN delay_events e
+        ON e.company_id = a.company_id AND e.delay_event_id = a.delay_event_id
+     WHERE a.analysis_run_id = ANY(:analysis_run_ids)
+       AND e.closed_at IS NOT NULL
+    """
+).bindparams(bindparam("analysis_run_ids", type_=ARRAY(UUID(as_uuid=True))))
+
 # 진행 중 실행의 보수 판정용: 지연 선적과 그 선적 상세의 SKU 전체(K_SHIPMENT)
 _DELAYED_SHIPMENT_SKUS = text(
     """
@@ -132,6 +145,18 @@ class StaleChangeRepository:
             _TARGET_RUN_IDS, {"company_id": company_id, "applied_seq": applied_seq}
         )
         return list(result)
+
+    async def find_closed_episode_run_ids(
+        self, analysis_run_ids: Iterable[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        """주어진 실행 중 지연 에피소드가 종료된(closed_at 있음) 실행 ID. 이 실행들은 동결 대상입니다."""
+        ids = list(analysis_run_ids)
+        if not ids:
+            return set()
+        result = await self.db.scalars(
+            _CLOSED_EPISODE_RUN_IDS, {"analysis_run_ids": ids}
+        )
+        return set(result)
 
     async def find_delayed_shipment_skus(
         self, company_id: uuid.UUID, delay_event_id: uuid.UUID

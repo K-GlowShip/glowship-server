@@ -69,10 +69,14 @@ class FakeChangeRepository:
     runs: list = field(default_factory=list)
     changes: list = field(default_factory=list)
     shipment_skus: tuple | None = None
+    closed_run_ids: set = field(default_factory=set)
     change_queries: list = field(default_factory=list)
 
     async def find_target_run_ids(self, company_id, applied_seq):
         return [run.analysis_run_id for run in self.runs]
+
+    async def find_closed_episode_run_ids(self, analysis_run_ids):
+        return set(analysis_run_ids) & self.closed_run_ids
 
     async def find_changes_after(self, company_id, after_seq, up_to_seq=None):
         self.change_queries.append((after_seq, up_to_seq))
@@ -283,3 +287,44 @@ async def test_mark_runs_stale_skips_finalized_runs(locked):
     assert staled == [previous]
     assert previous.stale_primary_reason == "DELAY_SCHEDULE_CHANGED"
     assert finalized.status == "FINALIZED"
+
+
+# --- 종료된 에피소드 동결 ---------------------------------------------------------
+
+
+async def test_judge_after_sync_skips_run_whose_episode_closed_after_lock(locked):
+    run = _run()
+    locked([run])
+    repo = FakeChangeRepository(
+        runs=[run], changes=[_order_change(11)], closed_run_ids={run.analysis_run_id}
+    )
+
+    assert await _service(repo).judge_after_sync(COMPANY_ID, 11, NOW) == []
+    assert run.status == "READY_FOR_REVIEW"
+
+
+async def test_recheck_run_keeps_run_of_closed_episode(locked):
+    run = _run()
+    locked([run])
+    repo = FakeChangeRepository(
+        changes=[_order_change(11)], closed_run_ids={run.analysis_run_id}
+    )
+
+    assert await _service(repo).recheck_run(run.analysis_run_id, 11, NOW) is None
+    assert run.status == "READY_FOR_REVIEW"
+
+
+async def test_mark_runs_stale_keeps_runs_of_closed_episode(locked):
+    open_run, closed_run = _run(is_latest=False), _run(is_latest=False)
+    locked([open_run, closed_run])
+    repo = FakeChangeRepository(closed_run_ids={closed_run.analysis_run_id})
+
+    staled = await _service(repo).mark_runs_stale(
+        [open_run.analysis_run_id, closed_run.analysis_run_id],
+        "DELAY_SCHEDULE_CHANGED",
+        15,
+        NOW,
+    )
+
+    assert staled == [open_run]
+    assert closed_run.status == "READY_FOR_REVIEW"
