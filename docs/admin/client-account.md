@@ -157,8 +157,8 @@ API 명세(D2)에 따라 JSON 필드는 camelCase입니다. `app/core/schemas.py
 
 ```python
 class ClientUserCreateRequest(CamelModel):
-    company_id: uuid.UUID      # JSON: companyId
-    display_name: str | None   # JSON: displayName
+    company_id: uuid.UUID  # JSON: companyId
+    display_name: str | None  # JSON: displayName
 ```
 
 | 설정 | 효과 |
