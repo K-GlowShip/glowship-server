@@ -486,6 +486,24 @@ class IngestRepository:
 
     # --- 수집 실행 기록 ---------------------------------------------------------------
 
+    async def has_running_run(
+        self, company_id: uuid.UUID, source_domain: SourceDomain
+    ) -> bool:
+        """같은 고객사·원천에 RUNNING 수집이 있는가. 시작 시각과 관계없이 봅니다 (L1 안에서 호출)."""
+        return bool(
+            await self.db.scalar(
+                select(
+                    select(DataSyncRun.data_sync_run_id)
+                    .where(
+                        DataSyncRun.company_id == company_id,
+                        DataSyncRun.source_domain == source_domain.value,
+                        DataSyncRun.status == DataSyncRunStatus.RUNNING.value,
+                    )
+                    .exists()
+                )
+            )
+        )
+
     async def start_run(
         self,
         company_id: uuid.UUID,

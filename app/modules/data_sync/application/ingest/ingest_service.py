@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.locks import lock_company
 from app.core.rls_context import set_rls_context
+from app.modules.data_sync.application.exception.data_sync_exceptions import (
+    SyncInProgressException,
+)
 from app.modules.data_sync.application.ingest.change_detection import (
     ChangeRecordDraft,
     diff_inventory,
@@ -45,7 +48,10 @@ from app.modules.delay_analysis.application.stale.stale_service import (
 
 """
     수집 적재 서비스 (GLOW-13, serviceflow 5.2 "수집 적재")
-      1. 수집 실행을 RUNNING 으로 남기고 커밋합니다 (진행 중 상태가 보이도록).
+      1. L1 안에서 같은 고객사·원천에 RUNNING 수집이 있는지 보고, 있으면 SYNC_IN_PROGRESS 로 거부합니다.
+         없으면 수집 실행을 RUNNING 으로 남기고 커밋합니다 (진행 중 상태가 보이도록).
+         같은 원천의 수집은 한 번에 하나만 돌아, 늦게 끝난 수집이 먼저 끝난 수집의 값을 덮어쓰지 않습니다.
+         오래 남은 RUNNING(작업이 죽은 경우)도 시간과 관계없이 막습니다. 정리(FAILED 전환·fencing)는 후속 운영 작업입니다.
       2. 한 트랜잭션에서: 고객사 잠금(L1) → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → STALE 판정(judge_after_sync) → 커밋.
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
@@ -96,6 +102,10 @@ class DataIngestService:
     ) -> IngestResult:
         started_at = self.now()
         await set_rls_context(self.db, user_id=None, company_id=company_id)
+        await lock_company(self.db, company_id)
+        if await self.repo.has_running_run(company_id, source_domain):
+            await self.db.rollback()
+            raise SyncInProgressException()
         run_id = await self.repo.start_run(
             company_id, source_domain, connection_method, started_at
         )

@@ -5,6 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import text
 
+from app.modules.data_sync.application.exception.data_sync_exceptions import (
+    SyncInProgressException,
+)
 from app.modules.data_sync.application.ingest.code_resolver import (
     UNMAPPED_SKU_CODE,
 )
@@ -416,3 +419,77 @@ async def test_ingest_calls_real_stale_judgment(db_write_session):
     assert (
         result.staled_run_ids == ()
     )  # 확정 데이터의 지연은 모두 종료되어 판정 대상이 없음
+
+
+# --- 같은 원천 동시 수집 ------------------------------------------------------------
+
+
+async def _insert_running(
+    db, company_id, domain: str, started_at: datetime
+) -> uuid.UUID:
+    run_id = uuid.uuid7()
+    await db.execute(
+        text(
+            "INSERT INTO data_sync_runs (data_sync_run_id, company_id, source_domain,"
+            " connection_method, started_at, status) VALUES (:r, :c, :d, 'API', :t, 'RUNNING')"
+        ),
+        {"r": run_id, "c": company_id, "d": domain, "t": started_at},
+    )
+    await (
+        db.commit()
+    )  # 다른 프로세스가 이미 커밋해 둔 RUNNING 처럼 (테스트 끝에 바깥 트랜잭션이 롤백)
+    return run_id
+
+
+async def _run_count(db, company_id) -> int:
+    return await db.scalar(
+        text("SELECT count(*) FROM data_sync_runs WHERE company_id = :c"),
+        {"c": company_id},
+    )
+
+
+@pytest.mark.parametrize("age", [timedelta(seconds=1), timedelta(days=3)])
+async def test_running_sync_of_same_source_rejects_new_sync(db_write_session, age):
+    """RUNNING 이 있으면 시작 시각과 관계없이 거부 (오래 남은 RUNNING 도 막음, 정리는 후속 운영)"""
+    db = db_write_session
+    company_id = await _company(db)
+    await _insert_running(db, company_id, "ORDER", NOW - age)
+    orders = await _source_orders(db, company_id, limit=1)
+    before = await _run_count(db, company_id)
+
+    with pytest.raises(SyncInProgressException) as error:
+        await _service(db).ingest(
+            company_id, SourceDomain.ORDER, ConnectionMethod.API, orders
+        )
+
+    assert error.value.error_code.code == "SYNC_IN_PROGRESS"
+    assert await _run_count(db, company_id) == before  # 새 실행을 남기지 않음
+
+
+async def test_running_sync_of_other_source_does_not_block(db_write_session):
+    db = db_write_session
+    company_id = await _company(db)
+    await _insert_running(db, company_id, "INVENTORY", NOW)
+    orders = await _source_orders(db, company_id, limit=1)
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, orders
+    )
+
+    assert result.status == DataSyncRunStatus.SUCCEEDED
+
+
+async def test_finished_sync_does_not_block_next_one(db_write_session):
+    db = db_write_session
+    company_id = await _company(db)
+    orders = await _source_orders(db, company_id, limit=1)
+    service = _service(db)
+
+    first = await service.ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, orders
+    )
+    second = await service.ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, orders
+    )
+
+    assert second.applied_seq == first.applied_seq + 1
