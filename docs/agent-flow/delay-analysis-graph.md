@@ -127,6 +127,10 @@ sequenceDiagram
 | 비교 뒤(설명 생성 전) | 설명 노드 진입 | `ANALYZING_OPTIONS` |
 
 - 실행 상태 조회기는 그래프를 실행할 때 `config["configurable"]["run_status_reader"]`로 주입합니다. 주입하지 않으면 STALE 확인을 건너뜁니다(테스트·dry-run).
+- DB 구현체는 `infrastructure/repository/run_status_repository.py`의 `AnalysisRunStatusReader(session_factory, company_id)`입니다. 실행마다 하나 만들어 넘깁니다.
+  - 조회마다 짧은 세션을 새로 열고 닫아, 분석 내내 트랜잭션을 열어 두지 않고 다른 트랜잭션이 커밋한 STALE을 바로 봅니다.
+  - `analysis_runs.status` 열만 읽고, 조회 전에 `app.company_id`를 설정합니다.
+  - **워커 역할 전용**입니다. 앱 역할 정책은 `app.user_id`의 사용자까지 확인하므로 실행이 보이지 않고 `None`(= STALE 아님)이 나옵니다.
 - 멈춘 위치는 `visited_nodes`에 `coordinator:stale_stop` 또는 `explain:stale_stop`으로 남습니다.
 - 에이전트는 상태를 `STALE`로 바꾸지 않습니다. 판정과 기록은 서비스 책임입니다.
 
