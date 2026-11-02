@@ -136,7 +136,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 검사가 틀린 것을 잡는지 | 옛 `EAST_FULFILL` 추가, NOT NULL 열을 null 허용으로, null 열을 필수로, 설명 길이 600→900, 명세 필드 하나 삭제 | 5건 모두 잡음 |
 | 테스트가 틀린 것을 잡는지 | `3pl` 별칭을 지우고 실행 | 1건 실패 확인 후 복원(해시 같음) |
 | 리뷰 반영(PR #8) | 새 테스트 5건(근거 값 불리언, SKU 정수 불리언·문자열, 평균 판매량 숫자, 설명 메타데이터 유지)을 고치기 전 코드에서 먼저 실행 → 메타데이터 유지(현재 동작 확인용)를 뺀 4건 실패 확인. 내부 열 검사에 snake·camel 이름과 묶음 안 이름을 주입 → 3건 모두 잡음. overlay 설명 13·SKU별 결과 39가 `StrictInt`로 읽히고, 평균 판매량 391건은 숫자로 바꿔도 값이 같음 | 통과 |
-| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과, 전체 63건 (develop `4d15845` 기준. 첫 작성 때는 53건) |
+| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과. 이 PR 의 테스트 20건, 전체 92건 (develop `12bd94c` 기준. `4d15845` 기준 63건, 첫 작성 때 53건) |
 
 **검증의 한계**
 
