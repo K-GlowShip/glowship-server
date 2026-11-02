@@ -15,6 +15,13 @@ from app.modules.data_sync.application.ingest.change_detection import (
     RowChange,
     ShipmentDiff,
 )
+from app.modules.data_sync.application.ingest.code_resolver import (
+    TRANSPORT_MODE_TO_REFERENCE,
+    CodeBook,
+    LeadtimeReference,
+    SkuCode,
+    WarehouseCode,
+)
 from app.modules.data_sync.application.ingest.run_counts import RunCounts
 from app.modules.data_sync.application.ingest.source_records import (
     InventoryRecord,
@@ -33,6 +40,12 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
 )
 from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
 from app.modules.inventory.infrastructure.inventory_daily import InventoryDaily
+from app.modules.master_data.infrastructure.external_entity_mapping import (
+    ExternalEntityMapping,
+)
+from app.modules.master_data.infrastructure.market_leadtime_reference import (
+    MarketLeadtimeReference,
+)
 from app.modules.master_data.infrastructure.sku import Sku
 from app.modules.master_data.infrastructure.warehouse import Warehouse
 from app.modules.order.infrastructure.order import Order
@@ -51,6 +64,9 @@ from app.modules.shipment.infrastructure.shipment_schedule_snapshot import (
       - 모든 조회·변경은 고객사(company_id)로 거릅니다. 커밋은 하지 않습니다 (수집 1회 = 한 트랜잭션, 서비스가 커밋).
 """
 
+# 원천 코드를 external_entity_mappings 로 바꾸는 원천 유형. 나머지(ERP 상품·주문)는 내부 코드를 그대로 씁니다.
+MAPPED_SOURCE_DOMAINS = frozenset({SourceDomain.INVENTORY, SourceDomain.SHIPMENT})
+
 _SKU_COLUMNS = ("sku_code", *SkuRecord.FIELDS)
 _WAREHOUSE_COLUMNS = ("warehouse_code", *WarehouseRecord.FIELDS)
 _ORDER_COLUMNS = ("order_code", *OrderRecord.FIELDS)
@@ -60,6 +76,87 @@ _SHIPMENT_COLUMNS = ("shipment_code", *ShipmentRecord.FIELDS)
 class IngestRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    # --- Read: 외부 코드표 -----------------------------------------------------------
+
+    async def load_code_book(
+        self, company_id: uuid.UUID, source_domain: SourceDomain
+    ) -> CodeBook:
+        """원천 유형의 외부 코드 → 내부 SKU·창고. WMS·TMS 는 MAPPED 인 매핑만, ERP 는 내부 코드 그대로."""
+        if source_domain in MAPPED_SOURCE_DOMAINS:
+            rows = await self.db.execute(
+                select(
+                    ExternalEntityMapping.entity_type,
+                    ExternalEntityMapping.external_code,
+                    Sku.sku_id,
+                    Sku.sku_code,
+                    Warehouse.warehouse_id,
+                    Warehouse.warehouse_code,
+                    Warehouse.region_code,
+                )
+                .outerjoin(
+                    Sku,
+                    (Sku.company_id == ExternalEntityMapping.company_id)
+                    & (Sku.sku_id == ExternalEntityMapping.sku_id),
+                )
+                .outerjoin(
+                    Warehouse,
+                    (Warehouse.company_id == ExternalEntityMapping.company_id)
+                    & (Warehouse.warehouse_id == ExternalEntityMapping.warehouse_id),
+                )
+                .where(
+                    ExternalEntityMapping.company_id == company_id,
+                    ExternalEntityMapping.source_domain == source_domain.value,
+                    ExternalEntityMapping.mapping_status == "MAPPED",
+                )
+            )
+            skus, warehouses = {}, {}
+            for row in rows:
+                if row.entity_type == "SKU" and row.sku_id:
+                    skus[row.external_code] = SkuCode(row.sku_id, row.sku_code)
+                elif row.entity_type == "WAREHOUSE" and row.warehouse_id:
+                    warehouses[row.external_code] = WarehouseCode(
+                        row.warehouse_id, row.warehouse_code, row.region_code
+                    )
+        else:
+            skus = {
+                row.sku_code: SkuCode(row.sku_id, row.sku_code)
+                for row in await self.db.execute(
+                    select(Sku.sku_id, Sku.sku_code).where(Sku.company_id == company_id)
+                )
+            }
+            warehouses = {
+                row.warehouse_code: WarehouseCode(
+                    row.warehouse_id, row.warehouse_code, row.region_code
+                )
+                for row in await self.db.execute(
+                    select(
+                        Warehouse.warehouse_id,
+                        Warehouse.warehouse_code,
+                        Warehouse.region_code,
+                    ).where(Warehouse.company_id == company_id)
+                )
+            }
+        references = {}
+        if source_domain == SourceDomain.SHIPMENT:
+            modes = set(TRANSPORT_MODE_TO_REFERENCE.values())
+            for row in await self.db.execute(
+                select(
+                    MarketLeadtimeReference.market_leadtime_reference_id,
+                    MarketLeadtimeReference.month,
+                    MarketLeadtimeReference.us_port_code,
+                    MarketLeadtimeReference.transport_mode,
+                    MarketLeadtimeReference.total_leadtime_p90,
+                ).where(MarketLeadtimeReference.transport_mode.in_(modes))
+            ):
+                references[(row.month, row.us_port_code, row.transport_mode)] = (
+                    LeadtimeReference(
+                        row.market_leadtime_reference_id, float(row.total_leadtime_p90)
+                    )
+                )
+        return CodeBook(
+            skus=skus, warehouses=warehouses, leadtime_references=references
+        )
 
     # --- Read: 업무 키로 현재 행 -----------------------------------------------------
 

@@ -1,0 +1,280 @@
+import math
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+
+from app.modules.data_sync.application.ingest.source_payload import (
+    SourceInventory,
+    SourceOrder,
+    SourceShipment,
+)
+from app.modules.data_sync.application.ingest.source_records import (
+    InventoryRecord,
+    OrderLineRecord,
+    OrderRecord,
+    ShipmentLineRecord,
+    ShipmentRecord,
+)
+
+"""
+    외부 코드 → 내부 ID 변환 (GLOW-13)
+      - 원천 레코드의 SKU·창고 코드를 고객사 코드표(CodeBook)로 내부 ID 로 바꿉니다.
+        바꿀 수 없는 레코드는 통째로 거부하고 이유를 돌려줍니다. 거부 건수는 수집 실행의 rejected_record_count 가 되고,
+        검증 오류 기록(data_validation_issues)은 GLOW-15 가 이 거부 사유로 남깁니다.
+      - 선적의 미국 항구·시장 리드타임 기준·계획 3PL 입고일은 원천(TMS)이 보내지 않고 서버가 정합니다.
+          항구: (도착 창고 지역, 운송 수단) 경로표 ROUTE_PORTS
+          기준: 시장 기준을 아래 순서로 찾고, 끝내 없으면 거부합니다 (생성기 tools/synth2026/ledger2026.py market_row,
+                후보 2 보고서 H-4 승인). 마지막으로 인정한 기준 월(LAST_ACCEPTED_REFERENCE_MONTH) 뒤의 행은 쓰지 않습니다.
+                1) 출고 월 기준  2) 인정 범위 안 가장 최근 연도의 같은 달  3) 같은 경로의 가장 가까운 이전 달
+          계획 3PL 입고일 = 한국 계획 출고일 + 올림(p90) (data_schema_storage_glowship.md 4.3)
+        기준과 계획일은 선적이 처음 들어올 때만 정하고, 이미 있는 선적은 저장된 값을 그대로 씁니다.
+      - DB 를 읽지 않는 순수 함수입니다. 코드표는 Repository 가 만들어 넘깁니다.
+"""
+
+# 시장 마스터의 이 달 뒤 행은 저신뢰 추정(imputed) 행이라 쓰지 않습니다 (후보 2 보고서 H-4)
+LAST_ACCEPTED_REFERENCE_MONTH = "2026-01"
+
+# 선적 운송 수단 → 시장 리드타임 기준의 운송 수단. 이 밖의 값(예: SEA)은 거부합니다.
+TRANSPORT_MODE_TO_REFERENCE = {"OCEAN": "vessel_container", "AIR": "air"}
+
+# (도착 창고 지역, 운송 수단) → 미국 항구 코드 (생성기 경로표 ROUTES, 2026 상반기 선적 166건과 일치)
+ROUTE_PORTS = {
+    ("WEST", "OCEAN"): "2704",  # LOS ANGELES
+    ("EAST", "AIR"): "1003",  # NEWARK
+    ("WEST", "AIR"): "2720",  # LOS ANGELES 항공
+}
+
+UNMAPPED_SKU_CODE = "UNMAPPED_SKU_CODE"
+UNMAPPED_WAREHOUSE_CODE = "UNMAPPED_WAREHOUSE_CODE"
+UNSUPPORTED_TRANSPORT_MODE = "UNSUPPORTED_TRANSPORT_MODE"
+NO_ROUTE_PORT = "NO_ROUTE_PORT"
+NO_LEADTIME_REFERENCE = "NO_LEADTIME_REFERENCE"
+
+
+@dataclass(frozen=True)
+class WarehouseCode:
+    warehouse_id: uuid.UUID
+    warehouse_code: str  # 내부 창고 코드 (변경 요약 문장용)
+    region_code: str  # 항구 경로표 키
+
+
+@dataclass(frozen=True)
+class SkuCode:
+    sku_id: uuid.UUID
+    sku_code: str  # 내부 SKU 코드 (변경 요약 문장용)
+
+
+@dataclass(frozen=True)
+class LeadtimeReference:
+    market_leadtime_reference_id: uuid.UUID
+    total_leadtime_p90: float
+
+
+@dataclass(frozen=True)
+class CodeBook:
+    """한 고객사·원천 유형의 외부 코드표. 키는 원천이 보내는 코드입니다."""
+
+    skus: Mapping[str, SkuCode]
+    warehouses: Mapping[str, WarehouseCode]
+    # (YYYY-MM, us_port_code, 기준 운송 수단) → 기준. 선적 원천에서만 씁니다.
+    leadtime_references: Mapping[tuple[str, str, str], LeadtimeReference] = field(
+        default_factory=dict
+    )
+    last_accepted_reference_month: str = LAST_ACCEPTED_REFERENCE_MONTH
+
+
+@dataclass(frozen=True)
+class ShipmentPlan:
+    """이미 있는 선적의 저장된 계획 기준 (다시 계산하지 않음)"""
+
+    market_leadtime_reference_id: uuid.UUID
+    planned_3pl_inbound_date: date
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """거부한 원천 레코드 1건 (GLOW-15 가 data_validation_issues 로 남길 정보)"""
+
+    source_record_key: str
+    field_name: str
+    error_code: str
+    error_message: str
+
+
+def resolve_order(source: SourceOrder, book: CodeBook) -> OrderRecord | Rejection:
+    warehouse = book.warehouses.get(source.warehouse_code)
+    if warehouse is None:
+        return _unmapped_warehouse(source.order_code, source.warehouse_code)
+    lines = []
+    for line in source.lines:
+        sku = book.skus.get(line.sku_code)
+        if sku is None:
+            return _unmapped_sku(f"{source.order_code}#{line.line_no}", line.sku_code)
+        lines.append(
+            OrderLineRecord(
+                line_no=line.line_no,
+                sku_id=sku.sku_id,
+                ordered_quantity=line.ordered_quantity,
+                shipped_quantity=line.shipped_quantity,
+                line_status=line.line_status,
+            )
+        )
+    return OrderRecord(
+        order_code=source.order_code,
+        sales_channel=source.sales_channel,
+        customer_region=source.customer_region,
+        warehouse_id=warehouse.warehouse_id,
+        ordered_at=source.ordered_at,
+        promised_delivery_at=source.promised_delivery_at,
+        status=source.status,
+        lines=tuple(lines),
+    )
+
+
+def resolve_shipment(
+    source: SourceShipment, book: CodeBook, existing_plan: ShipmentPlan | None = None
+) -> ShipmentRecord | Rejection:
+    """existing_plan 이 있으면(이미 있는 선적) 저장된 기준·계획일을 그대로 쓰고, 없으면 새로 정합니다."""
+    key = source.shipment_code
+    reference_mode = TRANSPORT_MODE_TO_REFERENCE.get(source.transport_mode)
+    if reference_mode is None:
+        return Rejection(
+            key,
+            "transport_mode",
+            UNSUPPORTED_TRANSPORT_MODE,
+            f"지원하지 않는 운송 수단: {source.transport_mode} (OCEAN·AIR)",
+        )
+    warehouse = book.warehouses.get(source.warehouse_code)
+    if warehouse is None:
+        return _unmapped_warehouse(key, source.warehouse_code)
+    lines = []
+    for line in source.lines:
+        sku = book.skus.get(line.sku_code)
+        if sku is None:
+            return _unmapped_sku(f"{key}#{line.line_no}", line.sku_code)
+        lines.append(
+            ShipmentLineRecord(line.line_no, sku.sku_id, line.shipped_quantity)
+        )
+
+    if existing_plan is None:
+        port = ROUTE_PORTS.get((warehouse.region_code, source.transport_mode))
+        if port is None:
+            return Rejection(
+                key,
+                "warehouse_code",
+                NO_ROUTE_PORT,
+                f"경로표에 없는 경로: {warehouse.region_code} {source.transport_mode}",
+            )
+        reference = find_leadtime_reference(
+            book.leadtime_references,
+            source.planned_kr_release_date,
+            port,
+            reference_mode,
+            book.last_accepted_reference_month,
+        )
+        if reference is None:
+            return Rejection(
+                key,
+                "planned_kr_release_date",
+                NO_LEADTIME_REFERENCE,
+                f"시장 리드타임 기준 없음: {source.planned_kr_release_date:%Y-%m}"
+                f" {port} {source.transport_mode}",
+            )
+        existing_plan = ShipmentPlan(
+            reference.market_leadtime_reference_id,
+            planned_3pl_inbound_date(
+                source.planned_kr_release_date, reference.total_leadtime_p90
+            ),
+        )
+
+    return ShipmentRecord(
+        shipment_code=source.shipment_code,
+        transport_mode=source.transport_mode,
+        warehouse_id=warehouse.warehouse_id,
+        market_leadtime_reference_id=existing_plan.market_leadtime_reference_id,
+        planned_kr_release_date=source.planned_kr_release_date,
+        planned_3pl_inbound_date=existing_plan.planned_3pl_inbound_date,
+        current_stage=source.current_stage,
+        current_expected_port_arrival_date=source.current_expected_port_arrival_date,
+        current_expected_3pl_inbound_date=source.current_expected_3pl_inbound_date,
+        actual_3pl_inbound_date=source.actual_3pl_inbound_date,
+        lines=tuple(lines),
+    )
+
+
+def resolve_inventory(
+    source: SourceInventory, book: CodeBook
+) -> InventoryRecord | Rejection:
+    key = (
+        f"{source.inventory_date.isoformat()} {source.warehouse_code} {source.sku_code}"
+    )
+    warehouse = book.warehouses.get(source.warehouse_code)
+    if warehouse is None:
+        return _unmapped_warehouse(key, source.warehouse_code)
+    sku = book.skus.get(source.sku_code)
+    if sku is None:
+        return _unmapped_sku(key, source.sku_code)
+    return InventoryRecord(
+        inventory_date=source.inventory_date,
+        warehouse_id=warehouse.warehouse_id,
+        sku_id=sku.sku_id,
+        on_hand_quantity=source.on_hand_quantity,
+        reserved_quantity=source.reserved_quantity,
+        available_quantity=source.available_quantity,
+        outbound_quantity=source.outbound_quantity,
+        warehouse_code=warehouse.warehouse_code,
+        sku_code=sku.sku_code,
+    )
+
+
+def find_leadtime_reference(
+    references: Mapping[tuple[str, str, str], LeadtimeReference],
+    planned_kr_release_date: date,
+    us_port_code: str,
+    reference_mode: str,
+    last_accepted_month: str = LAST_ACCEPTED_REFERENCE_MONTH,
+) -> LeadtimeReference | None:
+    """
+    출고 월 기준 → 인정 범위 안 가장 최근 연도의 같은 달 → 같은 경로의 가장 가까운 이전 달.
+    인정 범위는 last_accepted_month 이하이고 출고 월 이하인 기준입니다.
+    """
+    release_month = planned_kr_release_date.strftime("%Y-%m")
+    usable = {
+        month: reference
+        for (month, port, mode), reference in references.items()
+        if port == us_port_code
+        and mode == reference_mode
+        and month <= last_accepted_month
+        and month <= release_month
+    }
+    if release_month in usable:
+        return usable[release_month]
+    same_month = [m for m in usable if m[5:7] == release_month[5:7]]
+    if same_month:
+        return usable[max(same_month)]
+    if usable:
+        return usable[max(usable)]
+    return None
+
+
+def planned_3pl_inbound_date(
+    planned_kr_release_date: date, total_leadtime_p90: float
+) -> date:
+    """계획 3PL 입고일 = 한국 계획 출고일 + 올림(시장 리드타임 p90) 일"""
+    return planned_kr_release_date + timedelta(days=math.ceil(total_leadtime_p90))
+
+
+def _unmapped_sku(key: str, code: str) -> Rejection:
+    return Rejection(
+        key, "sku_code", UNMAPPED_SKU_CODE, f"매핑되지 않은 SKU 코드: {code}"
+    )
+
+
+def _unmapped_warehouse(key: str, code: str) -> Rejection:
+    return Rejection(
+        key,
+        "warehouse_code",
+        UNMAPPED_WAREHOUSE_CODE,
+        f"매핑되지 않은 창고 코드: {code}",
+    )

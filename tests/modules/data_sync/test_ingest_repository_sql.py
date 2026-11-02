@@ -1,4 +1,5 @@
 import uuid
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -12,7 +13,12 @@ from app.modules.data_sync.application.ingest.change_detection import (
     diff_sku,
     diff_warehouse,
 )
+from app.modules.data_sync.application.ingest.code_resolver import resolve_shipment
 from app.modules.data_sync.application.ingest.run_counts import RunCounts
+from app.modules.data_sync.application.ingest.source_payload import (
+    SourceShipment,
+    SourceShipmentLine,
+)
 from app.modules.data_sync.application.ingest.source_records import OrderLineRecord
 from app.modules.data_sync.infrastructure.data_change_record import DataChangeRecord
 from app.modules.data_sync.infrastructure.data_sync_enums import (
@@ -433,3 +439,91 @@ async def test_finished_run_cannot_be_finished_again(db_write_session):
         await repo.fail_run(company_id, run_id, NOW)
     with pytest.raises(LookupError):
         await repo.fail_run(uuid.uuid7(), run_id, NOW)  # 다른 고객사
+
+
+# --- 외부 코드표 -------------------------------------------------------------------
+
+
+async def test_all_shipments_rebuilt_from_tms_codes_match_confirmed_db(
+    db_write_session,
+):
+    """
+    2026 상반기 선적 166건(두 고객사)을 TMS 원천 모양(항구·기준·계획일 없이)으로 다시 만들어 새 선적으로 변환하면,
+    경로표로 정한 항구, 시장 리드타임 기준, 계획 3PL 입고일이 확정 DB 와 모두 같다.
+    """
+    db = db_write_session
+    repo = IngestRepository(db)
+    companies = list(
+        await db.scalars(text("SELECT DISTINCT company_id FROM shipments"))
+    )
+    if not companies:
+        pytest.skip("선적 데이터가 없는 DB")
+    ports = dict(
+        (
+            await db.execute(
+                text(
+                    "SELECT market_leadtime_reference_id, us_port_code"
+                    " FROM market_leadtime_references"
+                )
+            )
+        ).all()
+    )
+
+    checked, port_counts = 0, Counter()
+    for company_id in companies:
+        book = await repo.load_code_book(company_id, SourceDomain.SHIPMENT)
+        tms_sku = {code.sku_id: external for external, code in book.skus.items()}
+        tms_warehouse = {
+            code.warehouse_id: external for external, code in book.warehouses.items()
+        }
+        codes = list(
+            await db.scalars(
+                text("SELECT shipment_code FROM shipments WHERE company_id = :c"),
+                {"c": company_id},
+            )
+        )
+        for shipment in (await repo.load_shipments(company_id, codes)).values():
+            record = shipment.record
+            source = SourceShipment(
+                shipment_code=record.shipment_code,
+                transport_mode=record.transport_mode,
+                warehouse_code=tms_warehouse[record.warehouse_id],
+                planned_kr_release_date=record.planned_kr_release_date,
+                current_stage=record.current_stage,
+                current_expected_port_arrival_date=record.current_expected_port_arrival_date,
+                current_expected_3pl_inbound_date=record.current_expected_3pl_inbound_date,
+                actual_3pl_inbound_date=record.actual_3pl_inbound_date,
+                lines=tuple(
+                    SourceShipmentLine(
+                        line.line_no, tms_sku[line.sku_id], line.shipped_quantity
+                    )
+                    for line in record.lines
+                ),
+            )
+            resolved = resolve_shipment(source, book)  # 새 선적처럼 기준·계획일을 계산
+            assert resolved == record, record.shipment_code
+            port_counts[ports[resolved.market_leadtime_reference_id]] += 1
+            checked += 1
+
+    total = await db.scalar(text("SELECT count(*) FROM shipments"))
+    assert checked == total
+    if total == 166:  # 확정 2026 상반기 데이터
+        assert port_counts == {"2704": 83, "1003": 82, "2720": 1}
+
+
+async def test_order_code_book_uses_internal_codes(db_write_session):
+    db = db_write_session
+    repo = IngestRepository(db)
+    company_id = await _company(db)
+
+    book = await repo.load_code_book(company_id, SourceDomain.ORDER)
+
+    sku_codes = set(
+        await db.scalars(
+            text("SELECT sku_code FROM skus WHERE company_id = :c"), {"c": company_id}
+        )
+    )
+    assert set(book.skus) == sku_codes
+    assert all(code.sku_code == external for external, code in book.skus.items())
+    assert book.leadtime_references == {}
+    assert (await repo.load_code_book(uuid.uuid7(), SourceDomain.INVENTORY)).skus == {}
