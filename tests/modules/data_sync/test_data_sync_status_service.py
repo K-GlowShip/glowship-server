@@ -16,6 +16,7 @@ from app.modules.data_sync.infrastructure.repository.data_sync_run_repository im
 TENANT = TenantContext(user_id=uuid.uuid7(), company_id=uuid.uuid7())
 NOW = datetime(2026, 11, 2, 11, 0, tzinfo=UTC)
 INTERVAL = timedelta(minutes=10)
+RUN_ID = uuid.uuid7()
 ALL_DOMAINS = ["ORDER", "INVENTORY", "SHIPMENT", "PRODUCT", "WAREHOUSE"]
 
 
@@ -36,9 +37,17 @@ def _summary(
     synced_ago: timedelta | None = timedelta(minutes=5),
 ) -> LatestRunSummary:
     return LatestRunSummary(
-        latest_started_at=NOW - started_ago,
+        data_sync_run_id=RUN_ID,
+        connection_method="API",
+        status="SUCCEEDED",
+        started_at=NOW - started_ago,
+        finished_at=NOW - started_ago + timedelta(seconds=30),
+        received_count=100,
+        loaded_count=98,
+        rejected_count=2,
         latest_completed_status=completed_status,
         last_synced_at=NOW - synced_ago if synced_ago is not None else None,
+        open_issue_count=0,
     )
 
 

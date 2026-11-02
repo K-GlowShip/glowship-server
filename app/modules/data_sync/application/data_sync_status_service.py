@@ -92,4 +92,4 @@ class DataSyncStatusService:
         allowed_gap = timedelta(
             minutes=spec.sync_interval_minutes * self.stale_multiplier
         )
-        return now - summary.latest_started_at <= allowed_gap
+        return now - summary.started_at <= allowed_gap
