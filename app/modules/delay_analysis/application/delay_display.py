@@ -49,5 +49,8 @@ def count_skus(lines: Iterable[ShipmentLineQuantity]) -> int:
 def calculate_delay_days(
     planned_3pl_inbound_date: date, expected_3pl_inbound_date: date
 ) -> int:
-    """예상 3PL 입고일이 계획보다 며칠 늦은지. 지연 이벤트는 예상일 > 계획일이므로 1 이상입니다 (delay_events_ck1)."""
-    return (expected_3pl_inbound_date - planned_3pl_inbound_date).days
+    """
+    예상 3PL 입고일이 계획보다 며칠 늦은지. 지연 화면은 선적의 현재 예상일을 쓰므로,
+    회복되어 예상일이 계획일 이하가 되면 0 입니다 (음수로 내리지 않음).
+    """
+    return max((expected_3pl_inbound_date - planned_3pl_inbound_date).days, 0)

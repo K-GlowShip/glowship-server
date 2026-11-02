@@ -13,15 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 경로·대표 상품·지연 일수 같은 표시값은 여기서 만들지 않고 서비스가 delay_display 로 계산합니다.
 """
 
-# 진행 중 상태: 위험 주문 수를 아직 확정하지 않은 실행 (응답에서 null)
+# 진행 중 상태 (탭 "분석 중")
 _IN_PROGRESS = (
     "'DETECTED','VALIDATING','ANALYZING_IMPACT','ANALYZING_OPTIONS','VALIDATING_OUTPUT'"
 )
 
+# 저장된 계산 결과가 없는 상태: 위험 주문 수가 null 입니다 (API 명세 4.4절).
+# FAILED 는 설명 생성만 실패(EXPLANATION_GENERATION_FAILED)했으면 계산 결과가 있으므로 따로 봅니다.
+_NO_STORED_RESULT = f"{_IN_PROGRESS},'ON_HOLD','NO_DELAY'"
+_EXPLANATION_ONLY_FAILURE = "EXPLANATION_GENERATION_FAILED"
+
 # 목록·건수·상세가 함께 쓰는 지연 이벤트 + 선적 + 현재 실행 묶음
+#   단계·계획·예상 입고일은 선적의 현재 값입니다. delay_events 의 값은 감지 시점 값이라 갱신하지 않습니다 (4.4절).
+#   위험 주문은 상세(order_line) 1줄이 1행이므로 서로 다른 주문 수로 셉니다 (D21).
 _BASE = f"""
-    SELECT e.delay_event_id, e.shipment_id, e.stage,
-           e.planned_3pl_inbound_date, e.expected_3pl_inbound_date,
+    SELECT e.delay_event_id, e.shipment_id, s.current_stage AS stage,
+           s.planned_3pl_inbound_date,
+           s.current_expected_3pl_inbound_date AS expected_3pl_inbound_date,
            e.detected_at, e.closed_at, e.previous_shipment_schedule_snapshot_id,
            s.shipment_code, s.transport_mode, s.warehouse_id,
            m.us_port_name,
@@ -34,8 +42,16 @@ _BASE = f"""
            EXISTS (SELECT 1 FROM final_decisions f
                     WHERE f.company_id = r.company_id
                       AND f.analysis_run_id = r.analysis_run_id) AS has_final_decision,
-           CASE WHEN r.analysis_run_id IS NULL OR r.status IN ({_IN_PROGRESS}) THEN NULL
-                ELSE (SELECT count(*) FROM at_risk_orders o
+           CASE WHEN r.analysis_run_id IS NULL
+                  OR r.status IN ({_NO_STORED_RESULT})
+                  OR (r.status = 'FAILED'
+                      AND r.failure_code IS DISTINCT FROM '{_EXPLANATION_ONLY_FAILURE}')
+                THEN NULL
+                ELSE (SELECT count(DISTINCT l.order_id)
+                        FROM at_risk_orders o
+                        JOIN order_lines l
+                          ON l.company_id = o.company_id
+                         AND l.order_line_id = o.order_line_id
                        WHERE o.company_id = r.company_id
                          AND o.analysis_run_id = r.analysis_run_id)
            END AS at_risk_order_count

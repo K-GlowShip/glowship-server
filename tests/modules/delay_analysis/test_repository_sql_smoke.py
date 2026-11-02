@@ -176,6 +176,71 @@ async def test_delay_event_counts_match_list_per_tab(db_session):
         assert getattr(counts, field) == len(tab_rows), field
 
 
+async def test_delay_event_rows_use_current_shipment_values(db_session):
+    repo = DelayEventReadRepository(db_session)
+    company_id = await _sample_company(db_session)
+
+    for row in await repo.find_delay_events(company_id, DelayEventFilter()):
+        shipment = (
+            await db_session.execute(
+                text(
+                    "SELECT current_stage, planned_3pl_inbound_date,"
+                    " current_expected_3pl_inbound_date"
+                    " FROM shipments WHERE shipment_id = :s"
+                ),
+                {"s": row.shipment_id},
+            )
+        ).one()
+        assert row.stage == shipment.current_stage
+        assert row.planned_3pl_inbound_date == shipment.planned_3pl_inbound_date
+        assert (
+            row.expected_3pl_inbound_date == shipment.current_expected_3pl_inbound_date
+        )
+
+
+async def test_at_risk_order_count_counts_distinct_orders(db_session):
+    repo = DelayEventReadRepository(db_session)
+    company_id = await _sample_company(db_session)
+
+    for row in await repo.find_delay_events(company_id, DelayEventFilter()):
+        if row.run_id is None:
+            assert row.at_risk_order_count is None
+            continue
+        run = (
+            await db_session.execute(
+                text(
+                    "SELECT status, failure_code FROM analysis_runs"
+                    " WHERE analysis_run_id = :r"
+                ),
+                {"r": row.run_id},
+            )
+        ).one()
+        no_result = run.status in (
+            "DETECTED",
+            "VALIDATING",
+            "ANALYZING_IMPACT",
+            "ANALYZING_OPTIONS",
+            "VALIDATING_OUTPUT",
+            "ON_HOLD",
+            "NO_DELAY",
+        ) or (
+            run.status == "FAILED"
+            and run.failure_code != "EXPLANATION_GENERATION_FAILED"
+        )
+        if no_result:
+            assert row.at_risk_order_count is None, run.status
+            continue
+        orders = await db_session.scalar(
+            text(
+                "SELECT count(DISTINCT l.order_id) FROM at_risk_orders o"
+                " JOIN order_lines l ON l.order_line_id = o.order_line_id"
+                " WHERE o.analysis_run_id = :r"
+            ),
+            {"r": row.run_id},
+        )
+        assert row.at_risk_order_count == orders
+
+
 async def test_delay_event_filters_execute(db_session):
     repo = DelayEventReadRepository(db_session)
     company_id = await _sample_company(db_session)

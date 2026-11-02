@@ -61,3 +61,9 @@ def test_count_skus_counts_distinct_skus():
 def test_delay_days_is_expected_minus_planned():
     assert calculate_delay_days(date(2026, 1, 27), date(2026, 1, 28)) == 1
     assert calculate_delay_days(date(2026, 2, 25), date(2026, 3, 3)) == 6
+
+
+def test_delay_days_is_zero_after_recovery():
+    # 회복된 에피소드: 현재 예상일(2/2)이 계획일(2/11)보다 이르면 0
+    assert calculate_delay_days(date(2026, 2, 11), date(2026, 2, 2)) == 0
+    assert calculate_delay_days(date(2026, 2, 11), date(2026, 2, 11)) == 0
