@@ -14,20 +14,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.orm import Base, uuid_pk
+from app.modules.delay_analysis.infrastructure.analysis_enums import StaleReasonCode
 
-# STALE 사유 코드 (stale_reason_codes 원소). 2개 이상이면 주 사유는 MULTIPLE_RELEVANT_CHANGES 입니다.
-STALE_REASON_CODES = (
-    "DELAY_SCHEDULE_CHANGED",
-    "DELAY_STAGE_CHANGED",
-    "RELEVANT_ORDER_CHANGED",
-    "RELEVANT_INVENTORY_CHANGED",
-    "RELEVANT_INBOUND_CHANGED",
-    "OPERATING_RULE_CHANGED",
-    "RELEVANT_SKU_ATTRIBUTE_CHANGED",
-    "TIME_ELAPSED",
-)
-MULTIPLE_RELEVANT_CHANGES = "MULTIPLE_RELEVANT_CHANGES"
-_STALE_REASON_SQL = ",".join(f"'{code}'" for code in STALE_REASON_CODES)
+# STALE 사유 코드 목록 (stale_reason_codes 원소, analysis_enums.StaleReasonCode)
+_STALE_REASON_SQL = ",".join(f"'{code}'" for code in StaleReasonCode)
 
 
 class AnalysisRun(Base):

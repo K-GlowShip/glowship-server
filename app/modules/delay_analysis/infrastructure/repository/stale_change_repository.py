@@ -79,6 +79,15 @@ _TARGET_RUN_IDS = text(
     """
 ).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
 
+# 고객사의 현재 최대 적용 순번 (반영에 성공한 수집에만 부여). 수집이 없으면 0
+_MAX_APPLIED_SEQ = text(
+    """
+    SELECT COALESCE(MAX(applied_seq), 0)
+      FROM data_sync_runs
+     WHERE company_id = :company_id
+    """
+).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
+
 # 동결 확인용: 주어진 실행 중 지연 에피소드가 이미 종료된 실행
 _CLOSED_EPISODE_RUN_IDS = text(
     """
@@ -145,6 +154,10 @@ class StaleChangeRepository:
             _TARGET_RUN_IDS, {"company_id": company_id, "applied_seq": applied_seq}
         )
         return list(result)
+
+    async def find_max_applied_seq(self, company_id: uuid.UUID) -> int:
+        """고객사의 현재 최대 적용 순번. 분석 완료 재판정(recheck_run)의 상한으로 씁니다."""
+        return await self.db.scalar(_MAX_APPLIED_SEQ, {"company_id": company_id})
 
     async def find_closed_episode_run_ids(
         self, analysis_run_ids: Iterable[uuid.UUID]
