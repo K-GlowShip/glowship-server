@@ -3,6 +3,7 @@ from datetime import date, datetime
 
 from pydantic import Field
 
+from app.core.pagination import Page
 from app.core.schemas import CamelModel
 from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventDetail,
@@ -81,15 +82,20 @@ class DelayEventListItemResponse(CamelModel):
         )
 
 
-class DelayEventListResponse(CamelModel):
-    items: list[DelayEventListItemResponse]
-    counts: DelayEventCountsResponse
+class DelayEventListResponse(Page[DelayEventListItemResponse]):
+    """공통 목록 응답(items·page·size·totalCount·totalPages)에 탭별 건수를 더합니다."""
+
+    counts: DelayEventCountsResponse = Field(
+        description="탭별 건수. 탭·hasFinalDecision 필터를 뺀 값이라 totalCount 와 다를 수 있습니다"
+    )
 
     @classmethod
-    def of(cls, result: DelayEventList) -> DelayEventListResponse:
+    def from_result(cls, result: DelayEventList) -> DelayEventListResponse:
         counts = result.counts
-        return cls(
-            items=[DelayEventListItemResponse.of(item) for item in result.items],
+        return cls.of(
+            [DelayEventListItemResponse.of(item) for item in result.items],
+            result.total_count,
+            result.page,
             counts=DelayEventCountsResponse(
                 all=counts.all_count,
                 pending_decision=counts.pending_decision,

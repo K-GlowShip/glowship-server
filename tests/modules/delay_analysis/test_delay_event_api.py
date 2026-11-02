@@ -90,6 +90,8 @@ class FakeQueryService:
                 on_hold=0,
                 needs_reanalysis=0,
             ),
+            total_count=45,
+            page=kwargs["page"],
         )
 
     async def get_delay_event(self, *, actor, delay_event_id):
@@ -192,6 +194,32 @@ async def test_list_passes_query_params_to_service(fake_service):
 
 async def test_list_rejects_unknown_tab(fake_service):
     response = await _get("/api/v1/delay-events", params={"status": "DONE"})
+
+    assert response.status_code == 422
+
+
+async def test_list_returns_page_fields_with_defaults(fake_service):
+    response = await _get("/api/v1/delay-events")
+
+    body = response.json()
+    assert (body["page"], body["size"]) == (1, 20)
+    assert (body["totalCount"], body["totalPages"]) == (45, 3)
+    page = fake_service.calls[0]["page"]
+    assert (page.page, page.size) == (1, 20)
+
+
+async def test_list_passes_page_and_size(fake_service):
+    response = await _get("/api/v1/delay-events", params={"page": 2, "size": 10})
+
+    body = response.json()
+    assert (body["page"], body["size"], body["totalPages"]) == (2, 10, 5)
+    page = fake_service.calls[0]["page"]
+    assert (page.page, page.size) == (2, 10)
+
+
+@pytest.mark.parametrize("params", [{"page": 0}, {"size": 101}])
+async def test_list_rejects_page_out_of_range(fake_service, params):
+    response = await _get("/api/v1/delay-events", params=params)
 
     assert response.status_code == 422
 

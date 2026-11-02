@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pagination import PageParams
 from app.core.rls_context import set_rls_context
 from app.core.security.auth import CurrentUser
 from app.modules.delay_analysis.application.delay_display import (
@@ -80,6 +81,8 @@ class DelayEventListItem:
 class DelayEventList:
     items: list[DelayEventListItem]
     counts: DelayEventCounts
+    total_count: int
+    page: PageParams
 
 
 @dataclass(frozen=True)
@@ -106,8 +109,14 @@ class DelayEventQueryService:
         detected_to: date | None = None,
         q: str | None = None,
         has_final_decision: bool | None = None,
+        page: PageParams | None = None,
     ) -> DelayEventList:
-        """감지 기간은 UTC 날짜 기준이며 detected_to 날짜를 포함합니다."""
+        """
+        감지 기간은 UTC 날짜 기준이며 detected_to 날짜를 포함합니다.
+        page 를 생략하면 첫 페이지(기본 크기)입니다. total_count 는 모든 필터를 적용한 전체 개수이고,
+        counts(탭별 건수)는 탭·최종 선택 여부 필터를 뺀 값이라 서로 다를 수 있습니다.
+        """
+        page = page or PageParams()
         company_id = await self._enter_company_scope(actor)
         filters = DelayEventFilter(
             warehouse_id=warehouse_id,
@@ -119,7 +128,10 @@ class DelayEventQueryService:
             run_statuses=_TAB_STATUSES[tab],
             has_final_decision=has_final_decision,
         )
-        rows = await self.repo.find_delay_events(company_id, filters)
+        rows = await self.repo.find_delay_events(
+            company_id, filters, limit=page.limit, offset=page.offset
+        )
+        total_count = await self.repo.count_delay_events(company_id, filters)
         counts = await self.repo.count_by_tab(company_id, filters)
         lines = await self.repo.find_shipment_lines(
             company_id, sorted({row.shipment_id for row in rows})
@@ -135,7 +147,9 @@ class DelayEventQueryService:
             )
             for row in rows
         ]
-        return DelayEventList(items=items, counts=counts)
+        return DelayEventList(
+            items=items, counts=counts, total_count=total_count, page=page
+        )
 
     async def get_delay_event(
         self, *, actor: CurrentUser, delay_event_id: uuid.UUID

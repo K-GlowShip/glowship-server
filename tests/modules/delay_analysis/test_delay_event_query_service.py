@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from app.core.pagination import PageParams
 from app.core.security.auth import CurrentUser
 from app.modules.delay_analysis.application import delay_event_query_service
 from app.modules.delay_analysis.application.delay_event_query_service import (
@@ -72,10 +73,16 @@ class FakeRepository:
     lines: list = field(default_factory=list)
     runs: list = field(default_factory=list)
     filters: list = field(default_factory=list)
+    pages: list = field(default_factory=list)
+    total_count: int | None = None
 
-    async def find_delay_events(self, company_id, filters):
+    async def find_delay_events(self, company_id, filters, *, limit=None, offset=0):
         self.filters.append(filters)
+        self.pages.append((limit, offset))
         return self.rows
+
+    async def count_delay_events(self, company_id, filters):
+        return len(self.rows) if self.total_count is None else self.total_count
 
     async def count_by_tab(self, company_id, filters):
         return COUNTS
@@ -157,6 +164,27 @@ async def test_list_all_tab_has_no_status_filter():
     await _service(repo).list_delay_events(actor=ACTOR)
 
     assert repo.filters[0].run_statuses is None
+
+
+async def test_list_defaults_to_first_page():
+    repo = FakeRepository(rows=[_row()])
+
+    result = await _service(repo).list_delay_events(actor=ACTOR)
+
+    assert repo.pages == [(20, 0)]
+    assert (result.page.page, result.page.size, result.total_count) == (1, 20, 1)
+
+
+async def test_list_passes_page_to_repository_and_returns_filtered_total():
+    repo = FakeRepository(rows=[_row()], total_count=45)
+
+    result = await _service(repo).list_delay_events(
+        actor=ACTOR, page=PageParams(page=3, size=10)
+    )
+
+    assert repo.pages == [(10, 20)]
+    assert result.total_count == 45
+    assert result.counts == COUNTS  # 탭별 건수는 total_count 와 따로 옵니다
 
 
 async def test_list_uses_default_origin_and_handles_shipment_without_lines():

@@ -136,6 +136,23 @@ async def test_find_delayed_shipment_skus(db_session):
 # --- DelayEventReadRepository ----------------------------------------------------
 
 
+async def test_delay_event_pages_slice_the_full_list(db_session):
+    repo = DelayEventReadRepository(db_session)
+    company_id = await _sample_company(db_session)
+    filters = DelayEventFilter()
+
+    all_rows = await repo.find_delay_events(company_id, filters)
+    first = await repo.find_delay_events(company_id, filters, limit=2, offset=0)
+    second = await repo.find_delay_events(company_id, filters, limit=2, offset=2)
+
+    assert await repo.count_delay_events(company_id, filters) == len(all_rows)
+    assert first + second == all_rows[:4]
+    stale_filter = DelayEventFilter(run_statuses=["STALE"], has_final_decision=False)
+    assert await repo.count_delay_events(company_id, stale_filter) == len(
+        await repo.find_delay_events(company_id, stale_filter)
+    )
+
+
 async def test_delay_event_counts_match_list_per_tab(db_session):
     repo = DelayEventReadRepository(db_session)
     company_id = await _sample_company(db_session)

@@ -75,8 +75,22 @@ _STATUS_FILTER = """
 
 _UUID = UUID(as_uuid=True)
 
+# 한 페이지. limit 이 NULL 이면 제한 없이 전부 (LIMIT NULL = LIMIT ALL)
 _LIST = text(
-    _BASE + _FILTERS + _STATUS_FILTER + " ORDER BY e.detected_at DESC, e.delay_event_id"
+    _BASE
+    + _FILTERS
+    + _STATUS_FILTER
+    + " ORDER BY e.detected_at DESC, e.delay_event_id"
+    + " LIMIT CAST(:limit AS integer) OFFSET :offset"
+).bindparams(
+    bindparam("company_id", type_=_UUID),
+    bindparam("warehouse_id", type_=_UUID),
+    bindparam("run_statuses", type_=ARRAY(Text())),
+)
+
+# 페이지네이션 전체 개수: 탭·최종 선택 여부까지 목록과 같은 필터를 모두 적용합니다 (탭별 건수와 다름)
+_COUNT_FILTERED = text(
+    f"SELECT count(*) FROM ({_BASE + _FILTERS + _STATUS_FILTER}) b"
 ).bindparams(
     bindparam("company_id", type_=_UUID),
     bindparam("warehouse_id", type_=_UUID),
@@ -207,17 +221,28 @@ class DelayEventReadRepository:
 
     # Read
     async def find_delay_events(
-        self, company_id: uuid.UUID, filters: DelayEventFilter
+        self,
+        company_id: uuid.UUID,
+        filters: DelayEventFilter,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DelayEventRow]:
-        """필터에 맞는 지연 이벤트를 감지 시각 최신순으로 반환합니다."""
-        params = _filter_params(company_id, filters) | {
-            "run_statuses": list(filters.run_statuses)
-            if filters.run_statuses is not None
-            else None,
-            "has_final_decision": filters.has_final_decision,
+        """필터에 맞는 지연 이벤트를 감지 시각 최신순으로 반환합니다. limit 이 없으면 전부 반환합니다."""
+        params = _status_filter_params(company_id, filters) | {
+            "limit": limit,
+            "offset": offset,
         }
         result = await self.db.execute(_LIST, params)
         return [DelayEventRow(**row._mapping) for row in result]
+
+    async def count_delay_events(
+        self, company_id: uuid.UUID, filters: DelayEventFilter
+    ) -> int:
+        """목록과 같은 필터(탭·최종 선택 여부 포함)를 모두 적용한 전체 개수. 페이지네이션 totalCount 에 씁니다."""
+        return await self.db.scalar(
+            _COUNT_FILTERED, _status_filter_params(company_id, filters)
+        )
 
     async def count_by_tab(
         self, company_id: uuid.UUID, filters: DelayEventFilter
@@ -266,6 +291,16 @@ class DelayEventReadRepository:
             _RUNS, {"company_id": company_id, "delay_event_id": delay_event_id}
         )
         return [RunHistoryRow(**row._mapping) for row in result]
+
+
+def _status_filter_params(company_id: uuid.UUID, filters: DelayEventFilter) -> dict:
+    """탭·최종 선택 여부까지 포함한 목록 필터 값"""
+    return _filter_params(company_id, filters) | {
+        "run_statuses": list(filters.run_statuses)
+        if filters.run_statuses is not None
+        else None,
+        "has_final_decision": filters.has_final_decision,
+    }
 
 
 def _filter_params(company_id: uuid.UUID, filters: DelayEventFilter) -> dict:

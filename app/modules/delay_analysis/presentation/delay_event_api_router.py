@@ -4,6 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 
 from app.core.exceptions import ErrorResponse
+from app.core.pagination import PageParams
 from app.core.security.auth import CurrentUser, require_roles
 from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventQueryService,
@@ -36,7 +37,8 @@ _COMMON_ERRORS = {
     summary="지연 목록 (API 15)",
     description=(
         "고객사의 지연 건을 감지 시각 최신순으로 반환합니다. 각 행에 현재 분석 실행 상태와 최종 선택 여부를 붙이고, "
-        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 UTC 날짜이며 to 날짜를 포함합니다."
+        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 UTC 날짜이며 to 날짜를 포함합니다. "
+        "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다."
     ),
     response_model=DelayEventListResponse,
     responses=_COMMON_ERRORS
@@ -65,6 +67,7 @@ async def list_delay_events(
         alias="hasFinalDecision",
         description="최종 선택 여부. 새 지연 알림은 false 로 조회",
     ),
+    page: PageParams = Depends(),
     current_user: CurrentUser = Depends(require_client),
     service: DelayEventQueryService = Depends(get_delay_event_query_service),
 ) -> DelayEventListResponse:
@@ -76,8 +79,9 @@ async def list_delay_events(
         detected_to=detected_to,
         q=q,
         has_final_decision=has_final_decision,
+        page=page,
     )
-    return DelayEventListResponse.of(result)
+    return DelayEventListResponse.from_result(result)
 
 
 @router.get(
