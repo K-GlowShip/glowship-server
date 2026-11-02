@@ -37,6 +37,6 @@ class ExternalSystemSyncStatusResponse(CamelModel):
 class LatestDataSyncRunsResponse(CamelModel):
     """GET /api/v1/data-sync-runs/latest 응답"""
 
-    external_systems: list[ExternalSystemSyncStatusResponse] = Field(
+    items: list[ExternalSystemSyncStatusResponse] = Field(
         description="외부 시스템별 동기화 상태. 항상 ORDER·INVENTORY·SHIPMENT 순서로 세 항목"
     )

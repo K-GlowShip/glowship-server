@@ -17,7 +17,7 @@ sequenceDiagram
     S->>DB: set_config('app.user_id', 사용자) · set_config('app.company_id', 고객사)
     S->>DB: data_sync_runs 도메인별 최신 실행 조회 (SQL 1회)
     S->>S: 카탈로그(ORDER·INVENTORY·SHIPMENT)와 합쳐 isSynced 판정
-    S-->>W: 200 {externalSystems: [3건]}
+    S-->>W: 200 {items: [3건]}
 ```
 
 - 고객사 범위는 요청 본문이 아니라 **토큰의 `company_id`** 입니다. OWNER·ADMIN은 소속 고객사가 없어 403입니다.
@@ -40,7 +40,7 @@ HTTP/1.1 200 OK
 
 ```json
 {
-  "externalSystems": [
+  "items": [
     {
       "sourceDomain": "ORDER",
       "systemName": "ERP",

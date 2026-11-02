@@ -136,13 +136,13 @@ async def test_고객사_사용자는_200과_camelCase_세_항목을_받는다(
     assert "set-cookie" not in response.headers
 
     body = response.json()
-    assert list(body) == ["externalSystems"]
-    assert [s["sourceDomain"] for s in body["externalSystems"]] == [
+    assert list(body) == ["items"]
+    assert [s["sourceDomain"] for s in body["items"]] == [
         "ORDER",
         "INVENTORY",
         "SHIPMENT",
     ]
-    assert body["externalSystems"][0] == {
+    assert body["items"][0] == {
         "sourceDomain": "ORDER",
         "systemName": "ERP",
         "displayName": "주문 데이터",
@@ -150,7 +150,7 @@ async def test_고객사_사용자는_200과_camelCase_세_항목을_받는다(
         "lastSyncedAt": "2026-11-02T03:15:00Z",
         "updateIntervalSeconds": 600,
     }
-    assert body["externalSystems"][2]["lastSyncedAt"] is None
+    assert body["items"][2]["lastSyncedAt"] is None
 
 
 async def test_토큰의_고객사로_RLS_컨텍스트를_설정하고_서비스에_넘긴다(

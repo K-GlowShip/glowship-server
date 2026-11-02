@@ -41,7 +41,7 @@ async def get_latest_data_sync_runs(
     """외부 시스템 최신 동기화 상태 조회 API 엔드포인트"""
     statuses = await service.get_latest_statuses(tenant)
     return LatestDataSyncRunsResponse(
-        external_systems=[
+        items=[
             ExternalSystemSyncStatusResponse.model_validate(status)
             for status in statuses
         ]
