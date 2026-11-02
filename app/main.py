@@ -9,6 +9,9 @@ from app.modules.data_sync.presentation.data_sync_run_api_router import (
 from app.modules.delay_analysis.presentation.agent_dev_api_router import (
     router as agent_dev_router,
 )
+from app.modules.delay_analysis.presentation.delay_event_api_router import (
+    router as delay_event_router,
+)
 from app.modules.user.presentation.auth_api_router import router as auth_router
 from app.modules.user.presentation.client_account_api_router import (
     router as client_account_router,
@@ -27,6 +30,7 @@ include_exception_handlers(app)
 app.include_router(auth_router)
 app.include_router(client_account_router)
 app.include_router(data_sync_run_router)
+app.include_router(delay_event_router)
 
 # 개발 확인용 (운영 환경 제외)
 if get_settings().app_env != "prod":

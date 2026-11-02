@@ -10,7 +10,9 @@ STALE 판정(D-13 의존 입력 기반, 정책 결정 ST-3)에 필요한 v6.2 �
   - delay_events: closed_at, close_reason (ck4, ck5, ck7) — 종료된 지연의 실행 동결에 사용,
     delay_events_open_uq — 한 선적에 열린 에피소드는 하나만
   - 열·제약·인덱스 이름과 식은 erd_glowship_postgres_v6_2_analysis_ddl.sql 과 같다
-  - v6.2 DDL로 직접 만든 DB에는 이미 있으므로 upgrade 대신 `alembic stamp head` 로 기준점만 맞춘다
+  - v6.2 DDL로 직접 만든 DB에는 이미 있으므로 upgrade 대신 `alembic stamp 0003` 으로 기준점만 맞춘다
+    (`stamp head` 를 쓰면 뒤의 마이그레이션까지 건너뛴다. 이어서 `alembic upgrade 0004` 로 users 열을 맞추고,
+     그 뒤 마이그레이션은 각 docstring 의 안내를 따른다)
   - upgrade 는 다음 경우 실패한다 (데이터를 먼저 정리해야 함)
     - 기존 STALE 행이 있으면 ck27(주 사유 필수)
     - 같은 선적에 지연 이벤트가 2건 이상이면 delay_events_open_uq

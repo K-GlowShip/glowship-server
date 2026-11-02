@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from datetime import date, timedelta
 from typing import Any
 
+from app.modules.delay_analysis.infrastructure.analysis_enums import StaleReasonCode
 from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
     ScopedChange,
 )
@@ -17,10 +18,10 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 운영 기준은 행을 고치지 않고 새 버전을 만드는 원칙이라 변경 기록에 나타나지 않습니다.
 """
 
-ORDER_CHANGED = "RELEVANT_ORDER_CHANGED"
-INVENTORY_CHANGED = "RELEVANT_INVENTORY_CHANGED"
-INBOUND_CHANGED = "RELEVANT_INBOUND_CHANGED"
-SKU_ATTRIBUTE_CHANGED = "RELEVANT_SKU_ATTRIBUTE_CHANGED"
+ORDER_CHANGED = StaleReasonCode.RELEVANT_ORDER_CHANGED
+INVENTORY_CHANGED = StaleReasonCode.RELEVANT_INVENTORY_CHANGED
+INBOUND_CHANGED = StaleReasonCode.RELEVANT_INBOUND_CHANGED
+SKU_ATTRIBUTE_CHANGED = StaleReasonCode.RELEVANT_SKU_ATTRIBUTE_CHANGED
 
 # 예정된 정상 출고·배송 완료로 바뀐 주문은 결과를 바꾸지 않으므로 관련 변경이 아닙니다 (ST-2)
 # change_summary 가 아래 문장과 정확히 같을 때만 정상 출고로 봅니다 (2026 상반기 합성 데이터의 형식).

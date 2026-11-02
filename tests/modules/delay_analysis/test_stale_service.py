@@ -70,10 +70,14 @@ class FakeChangeRepository:
     changes: list = field(default_factory=list)
     shipment_skus: tuple | None = None
     closed_run_ids: set = field(default_factory=set)
+    max_applied_seq: int = 0
     change_queries: list = field(default_factory=list)
 
     async def find_target_run_ids(self, company_id, applied_seq):
         return [run.analysis_run_id for run in self.runs]
+
+    async def find_max_applied_seq(self, company_id):
+        return self.max_applied_seq
 
     async def find_closed_episode_run_ids(self, analysis_run_ids):
         return set(analysis_run_ids) & self.closed_run_ids
@@ -260,12 +264,35 @@ async def test_recheck_run_stops_at_first_seq_whose_signature_changed(locked):
     recalculator = ChangesAtSecondSync(changed=False)
 
     result = await _service(repo, recalculator).recheck_run(
-        run.analysis_run_id, 12, NOW
+        run.analysis_run_id, NOW, up_to_seq=12
     )
 
     assert result is run
     assert run.stale_detected_seq == 12
     assert recalculator.calls == [[11], [11, 12]]  # 앞선 수집까지 누적해 재계산합니다
+
+
+async def test_recheck_run_reads_company_max_applied_seq_when_omitted(locked):
+    run = _run()
+    locked([run])
+    repo = FakeChangeRepository(
+        changes=[_order_change(11), _order_change(13)], max_applied_seq=12
+    )
+
+    result = await _service(repo).recheck_run(run.analysis_run_id, detected_at=NOW)
+
+    assert result is run
+    assert repo.change_queries == [(10, 12)]  # 입력 순번 10 초과 ~ 현재 최대 12
+    assert run.stale_detected_seq == 11
+
+
+async def test_recheck_run_with_no_change_after_input_keeps_run(locked):
+    run = _run()
+    locked([run])
+    repo = FakeChangeRepository(max_applied_seq=10)
+
+    assert await _service(repo).recheck_run(run.analysis_run_id, NOW) is None
+    assert run.status == "READY_FOR_REVIEW"
 
 
 # --- mark_runs_stale --------------------------------------------------------------
@@ -310,7 +337,9 @@ async def test_recheck_run_keeps_run_of_closed_episode(locked):
         changes=[_order_change(11)], closed_run_ids={run.analysis_run_id}
     )
 
-    assert await _service(repo).recheck_run(run.analysis_run_id, 11, NOW) is None
+    assert (
+        await _service(repo).recheck_run(run.analysis_run_id, NOW, up_to_seq=11) is None
+    )
     assert run.status == "READY_FOR_REVIEW"
 
 
