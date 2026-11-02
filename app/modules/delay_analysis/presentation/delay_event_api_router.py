@@ -36,7 +36,7 @@ _COMMON_ERRORS = {
     "/delay-events",
     summary="지연 목록 (API 15)",
     description=(
-        "고객사의 지연 건을 감지 시각 최신순으로 반환합니다. 각 행에 현재 분석 실행 상태와 최종 선택 여부를 붙이고, "
+        "고객사의 지연 건을 감지 시각 최신순(같으면 지연 ID 순)으로 반환합니다. 각 행에 현재 분석 실행(currentRun)과 최종 선택 여부를 붙이고, "
         "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 UTC 날짜이며 to 날짜를 포함합니다. "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다."
     ),
@@ -48,7 +48,7 @@ async def list_delay_events(
     status: DelayEventTab = Query(
         DelayEventTab.ALL,
         description=(
-            "탭: ALL(전체), PENDING_DECISION(선택 대기), ANALYZING(분석 중), "
+            "탭(현재 실행 상태 이름): ALL(전체), READY_FOR_REVIEW(선택 대기), ANALYZING(분석 중), "
             "ON_HOLD(분석 보류), NEEDS_REANALYSIS(재분석 필요: STALE·FAILED)"
         ),
     ),
@@ -87,7 +87,7 @@ async def list_delay_events(
 @router.get(
     "/delay-events/{delay_event_id}",
     summary="지연 상세 (API 16)",
-    description="지연 건의 선적·일정(계획·이전 예상·현재 예상)과 분석 실행 버전 이력을 반환합니다.",
+    description="지연 건의 선적·일정(계획·현재 예상, 감지 직전 예상)과 분석 실행 버전 이력을 반환합니다. 단계·입고일·지연 일수는 선적의 현재 값입니다.",
     response_model=DelayEventDetailResponse,
     responses=_COMMON_ERRORS
     | {404: {"model": ErrorResponse, "description": "지연 건 없음 (다른 고객사 포함)"}},

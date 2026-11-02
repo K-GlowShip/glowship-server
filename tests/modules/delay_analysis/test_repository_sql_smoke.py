@@ -165,7 +165,7 @@ async def test_delay_event_counts_match_list_per_tab(db_session):
     detected = [row.detected_at for row in rows]
     assert detected == sorted(detected, reverse=True)
     tab_statuses = {
-        "pending_decision": ["READY_FOR_REVIEW"],
+        "ready_for_review": ["READY_FOR_REVIEW"],
         "on_hold": ["ON_HOLD"],
         "needs_reanalysis": ["STALE", "FAILED"],
     }

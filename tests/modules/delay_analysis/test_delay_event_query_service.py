@@ -29,7 +29,7 @@ SHIPMENT_ID = uuid.uuid7()
 SNAPSHOT_ID = uuid.uuid7()
 EVENT_ID = uuid.uuid7()
 COUNTS = DelayEventCounts(
-    all_count=1, pending_decision=1, analyzing=0, on_hold=0, needs_reanalysis=0
+    all_count=1, ready_for_review=1, analyzing=0, on_hold=0, needs_reanalysis=0
 )
 
 
@@ -42,10 +42,13 @@ def _row(**kwargs) -> DelayEventRow:
         "expected_3pl_inbound_date": date(2026, 1, 30),
         "detected_at": datetime(2026, 1, 20, tzinfo=UTC),
         "closed_at": None,
+        "close_reason": None,
         "previous_shipment_schedule_snapshot_id": SNAPSHOT_ID,
         "shipment_code": "OCN-20251215",
         "transport_mode": "OCEAN",
         "warehouse_id": uuid.uuid7(),
+        "warehouse_code": "WH-WEST",
+        "region_code": "WEST",
         "us_port_name": "LOS ANGELES, CA",
         "origin_region_code": "KR",
         "run_id": uuid.uuid7(),
@@ -130,10 +133,9 @@ async def test_list_computes_route_representative_sku_and_delay_days(rls_calls):
 
     [item] = result.items
     assert item.shipment.route == "KR → LOS ANGELES"
-    assert (
-        item.shipment.representative_sku == "세럼"
-    )  # 300개 동률이면 줄 번호가 작은 쪽
-    assert item.shipment.representative_sku_code == "SKU-002"
+    # 300개 동률이면 줄 번호가 작은 쪽
+    assert item.shipment.representative_line.product_name == "세럼"
+    assert item.shipment.representative_line.sku_code == "SKU-002"
     assert item.shipment.sku_count == 3
     assert item.delay_days == 3
     assert result.counts == COUNTS
@@ -193,7 +195,7 @@ async def test_list_uses_default_origin_and_handles_shipment_without_lines():
     [item] = (await _service(repo).list_delay_events(actor=ACTOR)).items
 
     assert item.shipment.route == "KR → LOS ANGELES"
-    assert item.shipment.representative_sku is None
+    assert item.shipment.representative_line is None
     assert item.shipment.sku_count == 0
 
 
@@ -207,6 +209,9 @@ async def test_detail_returns_previous_expected_date_and_runs():
         status="READY_FOR_REVIEW",
         is_latest=True,
         trigger_type="AUTO",
+        parent_analysis_run_id=None,
+        stale_detected_at=None,
+        stale_primary_reason=None,
         started_at=datetime(2026, 1, 20, tzinfo=UTC),
         finished_at=None,
     )
@@ -216,7 +221,7 @@ async def test_detail_returns_previous_expected_date_and_runs():
 
     assert detail.previous_expected_3pl_inbound_date == date(2026, 1, 28)
     assert detail.runs == [run]
-    assert detail.shipment.representative_sku == "토너"
+    assert detail.shipment.representative_line.product_name == "토너"
 
 
 async def test_detail_raises_not_found_for_unknown_event():

@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
@@ -13,7 +14,7 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventList,
     DelayEventListItem,
     DelayEventTab,
-    ShipmentSummary,
+    ShipmentDisplay,
 )
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
@@ -23,23 +24,31 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repos
     DelayEventCounts,
     DelayEventRow,
     RunHistoryRow,
+    ShipmentLineRow,
 )
 
 COMPANY_ID = uuid.uuid7()
 EVENT_ID = uuid.uuid7()
 RUN_ID = uuid.uuid7()
+PARENT_RUN_ID = uuid.uuid7()
+SHIPMENT_ID = uuid.uuid7()
+WAREHOUSE_ID = uuid.uuid7()
+SKU_ID = uuid.uuid7()
 ROW = DelayEventRow(
     delay_event_id=EVENT_ID,
-    shipment_id=uuid.uuid7(),
+    shipment_id=SHIPMENT_ID,
     stage="AT_SEA",
     planned_3pl_inbound_date=date(2026, 1, 27),
     expected_3pl_inbound_date=date(2026, 1, 30),
     detected_at=datetime(2026, 1, 20, tzinfo=UTC),
     closed_at=None,
+    close_reason=None,
     previous_shipment_schedule_snapshot_id=None,
     shipment_code="OCN-20251215",
     transport_mode="OCEAN",
-    warehouse_id=uuid.uuid7(),
+    warehouse_id=WAREHOUSE_ID,
+    warehouse_code="WH-WEST",
+    region_code="WEST",
     us_port_name="LOS ANGELES, CA",
     origin_region_code="KR",
     run_id=RUN_ID,
@@ -47,10 +56,16 @@ ROW = DelayEventRow(
     has_final_decision=False,
     at_risk_order_count=4,
 )
-SHIPMENT = ShipmentSummary(
+SHIPMENT = ShipmentDisplay(
     route="KR → LOS ANGELES",
-    representative_sku="세럼",
-    representative_sku_code="SKU-002",
+    representative_line=ShipmentLineRow(
+        shipment_id=SHIPMENT_ID,
+        line_no=2,
+        sku_id=SKU_ID,
+        shipped_quantity=300,
+        sku_code="SKU-002",
+        product_name="세럼",
+    ),
     sku_count=3,
 )
 
@@ -85,7 +100,7 @@ class FakeQueryService:
             items=[DelayEventListItem(row=ROW, shipment=SHIPMENT, delay_days=3)],
             counts=DelayEventCounts(
                 all_count=1,
-                pending_decision=1,
+                ready_for_review=1,
                 analyzing=0,
                 on_hold=0,
                 needs_reanalysis=0,
@@ -99,10 +114,13 @@ class FakeQueryService:
             raise DelayEventNotFoundException()
         run = RunHistoryRow(
             analysis_run_id=RUN_ID,
-            version_no=1,
+            version_no=2,
             status="READY_FOR_REVIEW",
             is_latest=True,
-            trigger_type="AUTO",
+            trigger_type="REANALYSIS",
+            parent_analysis_run_id=PARENT_RUN_ID,
+            stale_detected_at=None,
+            stale_primary_reason=None,
             started_at=datetime(2026, 1, 20, tzinfo=UTC),
             finished_at=None,
         )
@@ -150,15 +168,36 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
     [item] = body["items"]
     assert item["planned3plInboundDate"] == "2026-01-27"
     assert item["expected3plInboundDate"] == "2026-01-30"
+    assert item["shipment"] == {
+        "shipmentId": str(SHIPMENT_ID),
+        "shipmentCode": "OCN-20251215",
+    }
+    assert item["warehouse"] == {
+        "warehouseId": str(WAREHOUSE_ID),
+        "warehouseCode": "WH-WEST",
+        "regionCode": "WEST",
+    }
+    assert item["representativeSku"] == {
+        "skuId": str(SKU_ID),
+        "skuCode": "SKU-002",
+        "productName": "세럼",
+    }
     assert item["route"] == "KR → LOS ANGELES"
-    assert item["representativeSku"] == "세럼"
+    assert item["transportMode"] == "OCEAN"
     assert item["delayDays"] == 3
-    assert item["runId"] == str(RUN_ID)
-    assert item["runCode"] is None
+    assert (item["closedAt"], item["closeReason"]) == (None, None)
+    assert item["currentRun"] == {
+        "runId": str(RUN_ID),
+        "runCode": None,
+        "status": "READY_FOR_REVIEW",
+        "resultClass": None,
+    }
+    assert "runStatus" not in item
     assert item["atRiskOrderCount"] == 4
+    assert item["episodeNo"] is None  # 0005 병합 전
     assert body["counts"] == {
         "all": 1,
-        "pendingDecision": 1,
+        "readyForReview": 1,
         "analyzing": 0,
         "onHold": 0,
         "needsReanalysis": 0,
@@ -233,9 +272,17 @@ async def test_detail_returns_schedule_and_run_history(fake_service):
     assert response.status_code == 200
     body = response.json()
     assert body["shipment"]["shipmentCode"] == "OCN-20251215"
+    assert body["warehouse"]["warehouseCode"] == "WH-WEST"
+    assert body["representativeSku"]["skuCode"] == "SKU-002"
     assert body["previousExpected3plInboundDate"] == "2026-01-28"
-    assert body["runs"][0]["versionNo"] == 1
-    assert body["runs"][0]["runCode"] is None
+    [run] = body["runs"]
+    assert run["versionNo"] == 2
+    assert run["parentRunId"] == str(PARENT_RUN_ID)
+    assert run["triggerType"] == "REANALYSIS"
+    assert (run["staleDetectedAt"], run["stalePrimaryReason"]) == (None, None)
+    # 0005·0006 병합 전에는 null
+    pending = ("runCode", "triggerReason", "completedStatus", "resultClass")
+    assert [run[key] for key in pending] == [None] * 4
 
 
 async def test_detail_of_unknown_event_returns_404(fake_service):
@@ -243,3 +290,36 @@ async def test_detail_of_unknown_event_returns_404(fake_service):
 
     assert response.status_code == 404
     assert response.json()["code"] == "DELAY_EVENT_NOT_FOUND"
+
+
+async def test_list_accepts_ready_for_review_tab(fake_service):
+    response = await _get("/api/v1/delay-events", params={"status": "READY_FOR_REVIEW"})
+
+    assert response.status_code == 200
+    assert fake_service.calls[0]["tab"] == DelayEventTab.READY_FOR_REVIEW
+
+
+async def test_list_rejects_old_pending_decision_tab(fake_service):
+    response = await _get("/api/v1/delay-events", params={"status": "PENDING_DECISION"})
+
+    assert response.status_code == 422
+
+
+async def test_list_item_without_run_has_null_current_run(fake_service, monkeypatch):
+    no_run = DelayEventListItem(
+        row=replace(ROW, run_id=None, run_status=None, at_risk_order_count=None),
+        shipment=replace(SHIPMENT, representative_line=None),
+        delay_days=3,
+    )
+
+    async def list_without_run(**kwargs):
+        result = await FakeQueryService.list_delay_events(fake_service, **kwargs)
+        return replace(result, items=[no_run])
+
+    monkeypatch.setattr(fake_service, "list_delay_events", list_without_run)
+
+    [item] = (await _get("/api/v1/delay-events")).json()["items"]
+
+    assert item["currentRun"] is None
+    assert item["representativeSku"] is None
+    assert item["atRiskOrderCount"] is None

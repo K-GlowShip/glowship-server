@@ -36,6 +36,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repos
     지연 목록·상세 조회 서비스 (API 15·16, API 명세 4.4절)
       - 고객사 범위는 로그인 토큰의 company_id 로 정하고, 같은 값으로 RLS 컨텍스트를 설정합니다.
       - 경로·대표 상품·SKU 수·지연 일수는 delay_display 의 순수 함수로 계산합니다 (D13).
+      - 단계·계획·예상 입고일·지연 일수는 선적의 현재 값 기준입니다 (Repository 참고).
       - 표시용 실행 ID(runCode, D14)는 analysis_runs.run_code 마이그레이션 전이라 아직 없습니다.
 """
 
@@ -44,10 +45,10 @@ DEFAULT_ORIGIN_REGION = "KR"
 
 
 class DelayEventTab(StrEnum):
-    """지연 목록 탭 = 현재 실행 상태 묶음 (API 명세 4.4절 탭 표)"""
+    """지연 목록 탭 = 현재 실행 상태 묶음 (API 명세 4.4절 탭 표). 값은 실행 상태 이름과 같게 둡니다."""
 
     ALL = "ALL"
-    PENDING_DECISION = "PENDING_DECISION"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
     ANALYZING = "ANALYZING"
     ON_HOLD = "ON_HOLD"
     NEEDS_REANALYSIS = "NEEDS_REANALYSIS"
@@ -55,7 +56,7 @@ class DelayEventTab(StrEnum):
 
 _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
     DelayEventTab.ALL: None,
-    DelayEventTab.PENDING_DECISION: (AnalysisRunStatus.READY_FOR_REVIEW,),
+    DelayEventTab.READY_FOR_REVIEW: (AnalysisRunStatus.READY_FOR_REVIEW,),
     DelayEventTab.ANALYZING: IN_PROGRESS_STATUSES,
     DelayEventTab.ON_HOLD: (AnalysisRunStatus.ON_HOLD,),
     DelayEventTab.NEEDS_REANALYSIS: (AnalysisRunStatus.STALE, AnalysisRunStatus.FAILED),
@@ -63,17 +64,18 @@ _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
 
 
 @dataclass(frozen=True)
-class ShipmentSummary:
+class ShipmentDisplay:
+    """선적 상세 줄로 계산한 표시값 (D13). 상세 줄이 없으면 대표 상품은 None"""
+
     route: str
-    representative_sku: str | None
-    representative_sku_code: str | None
+    representative_line: ShipmentLineRow | None
     sku_count: int
 
 
 @dataclass(frozen=True)
 class DelayEventListItem:
     row: DelayEventRow
-    shipment: ShipmentSummary
+    shipment: ShipmentDisplay
     delay_days: int
 
 
@@ -88,7 +90,7 @@ class DelayEventList:
 @dataclass(frozen=True)
 class DelayEventDetail:
     row: DelayEventRow
-    shipment: ShipmentSummary
+    shipment: ShipmentDisplay
     delay_days: int
     previous_expected_3pl_inbound_date: date | None
     runs: list[RunHistoryRow]
@@ -197,7 +199,7 @@ def _group_lines(
     return grouped
 
 
-def _summarize(row: DelayEventRow, lines: list[ShipmentLineRow]) -> ShipmentSummary:
+def _summarize(row: DelayEventRow, lines: list[ShipmentLineRow]) -> ShipmentDisplay:
     quantities = [
         ShipmentLineQuantity(
             line_no=line.line_no,
@@ -212,15 +214,10 @@ def _summarize(row: DelayEventRow, lines: list[ShipmentLineRow]) -> ShipmentSumm
         if representative
         else None
     )
-    return ShipmentSummary(
+    return ShipmentDisplay(
         route=build_route(
             row.origin_region_code or DEFAULT_ORIGIN_REGION, row.us_port_name
         ),
-        representative_sku=representative_line.product_name
-        if representative_line
-        else None,
-        representative_sku_code=representative_line.sku_code
-        if representative_line
-        else None,
+        representative_line=representative_line,
         sku_count=count_skus(quantities),
     )

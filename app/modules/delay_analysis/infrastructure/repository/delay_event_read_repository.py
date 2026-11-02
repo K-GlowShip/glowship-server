@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 지연 이벤트에 선적·도착 항구·현재 실행(is_latest)·최종 선택 여부·위험 주문 수를 붙여 읽습니다.
       - 모든 조회는 고객사(company_id)로 거릅니다. 로컬 superuser 접속은 RLS 를 우회하므로 조건을 직접 겁니다.
       - 경로·대표 상품·지연 일수 같은 표시값은 여기서 만들지 않고 서비스가 delay_display 로 계산합니다.
+      - episode_no(delay_events), result_class·completed_status·trigger_reason(analysis_runs)은 v6.2 DDL 에만 있고
+        develop 마이그레이션(0004까지)에는 없어 읽지 않습니다. 개발자 3의 0005 병합 후 연결합니다 (응답에서는 null).
 """
 
 # 진행 중 상태 (탭 "분석 중")
@@ -30,8 +32,10 @@ _BASE = f"""
     SELECT e.delay_event_id, e.shipment_id, s.current_stage AS stage,
            s.planned_3pl_inbound_date,
            s.current_expected_3pl_inbound_date AS expected_3pl_inbound_date,
-           e.detected_at, e.closed_at, e.previous_shipment_schedule_snapshot_id,
+           e.detected_at, e.closed_at, e.close_reason,
+           e.previous_shipment_schedule_snapshot_id,
            s.shipment_code, s.transport_mode, s.warehouse_id,
+           wh.warehouse_code, wh.region_code,
            m.us_port_name,
            (SELECT w.region_code
               FROM warehouses w
@@ -58,6 +62,8 @@ _BASE = f"""
       FROM delay_events e
       JOIN shipments s
         ON s.company_id = e.company_id AND s.shipment_id = e.shipment_id
+      JOIN warehouses wh
+        ON wh.company_id = s.company_id AND wh.warehouse_id = s.warehouse_id
       JOIN market_leadtime_references m
         ON m.market_leadtime_reference_id = s.market_leadtime_reference_id
       LEFT JOIN analysis_runs r
@@ -117,7 +123,7 @@ _COUNT_FILTERED = text(
 _COUNTS = text(
     f"""
     SELECT count(*) AS all_count,
-           count(*) FILTER (WHERE b.run_status = 'READY_FOR_REVIEW') AS pending_decision,
+           count(*) FILTER (WHERE b.run_status = 'READY_FOR_REVIEW') AS ready_for_review,
            count(*) FILTER (WHERE b.run_status IN ({_IN_PROGRESS})) AS analyzing,
            count(*) FILTER (WHERE b.run_status = 'ON_HOLD') AS on_hold,
            count(*) FILTER (WHERE b.run_status IN ('STALE','FAILED')) AS needs_reanalysis
@@ -158,6 +164,7 @@ _SNAPSHOT_EXPECTED_DATE = text(
 _RUNS = text(
     """
     SELECT analysis_run_id, version_no, status, is_latest, trigger_type,
+           parent_analysis_run_id, stale_detected_at, stale_primary_reason,
            started_at, finished_at
       FROM analysis_runs
      WHERE company_id = :company_id AND delay_event_id = :delay_event_id
@@ -177,10 +184,13 @@ class DelayEventRow:
     expected_3pl_inbound_date: date
     detected_at: datetime
     closed_at: datetime | None
+    close_reason: str | None
     previous_shipment_schedule_snapshot_id: uuid.UUID | None
     shipment_code: str
     transport_mode: str
     warehouse_id: uuid.UUID
+    warehouse_code: str
+    region_code: str
     us_port_name: str
     origin_region_code: str | None
     run_id: uuid.UUID | None
@@ -192,7 +202,7 @@ class DelayEventRow:
 @dataclass(frozen=True)
 class DelayEventCounts:
     all_count: int
-    pending_decision: int
+    ready_for_review: int
     analyzing: int
     on_hold: int
     needs_reanalysis: int
@@ -215,6 +225,9 @@ class RunHistoryRow:
     status: str
     is_latest: bool
     trigger_type: str
+    parent_analysis_run_id: uuid.UUID | None
+    stale_detected_at: datetime | None
+    stale_primary_reason: str | None
     started_at: datetime
     finished_at: datetime | None
 
