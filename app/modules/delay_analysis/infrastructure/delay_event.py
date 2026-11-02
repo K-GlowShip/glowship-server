@@ -1,7 +1,13 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped
 
 from app.core.orm import Base, uuid_pk
@@ -53,6 +59,14 @@ class DelayEvent(Base):
                 "shipment_schedule_snapshots.shipment_schedule_snapshot_id",
             ],
             name="fk_delay_events__previous_shipment_schedule_snapshot_id",
+        ),
+        # v6.2: 한 선적에 열린 지연 에피소드는 하나만
+        Index(
+            "delay_events_open_uq",
+            "company_id",
+            "shipment_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
         ),
     )
 

@@ -7,10 +7,14 @@ Create Date: 2026-10-30 18:00:00
 STALE 판정(D-13 의존 입력 기반, 정책 결정 ST-3)에 필요한 v6.2 열·제약을 더한다.
   - analysis_runs: STALE 사유 4열, dependency_scope (ck27~ck33, ck36, ck38)
   - data_change_records: changed_fields (ck5) — SKU 속성 변경 판정에 사용
-  - delay_events: closed_at, close_reason (ck4, ck5, ck7) — 종료된 지연의 실행 동결에 사용
-  - 열·제약 이름과 식은 erd_glowship_postgres_v6_2_analysis_ddl.sql 과 같다
+  - delay_events: closed_at, close_reason (ck4, ck5, ck7) — 종료된 지연의 실행 동결에 사용,
+    delay_events_open_uq — 한 선적에 열린 에피소드는 하나만
+  - 열·제약·인덱스 이름과 식은 erd_glowship_postgres_v6_2_analysis_ddl.sql 과 같다
   - v6.2 DDL로 직접 만든 DB에는 이미 있으므로 upgrade 대신 `alembic stamp head` 로 기준점만 맞춘다
-  - upgrade 는 기존 STALE 행이 있으면 ck27(주 사유 필수)에 걸려 실패한다
+  - upgrade 는 다음 경우 실패한다 (데이터를 먼저 정리해야 함)
+    - 기존 STALE 행이 있으면 ck27(주 사유 필수)
+    - 같은 선적에 지연 이벤트가 2건 이상이면 delay_events_open_uq
+      (기존 행의 closed_at 은 모두 NULL 로 들어가므로 모두 열린 에피소드로 보임)
 """
 
 from collections.abc import Sequence
@@ -110,9 +114,17 @@ def upgrade() -> None:
     op.add_column("delay_events", sa.Column("close_reason", sa.Text(), nullable=True))
     for name, condition in _DELAY_EVENT_CHECKS.items():
         op.create_check_constraint(name, "delay_events", condition)
+    op.create_index(
+        "delay_events_open_uq",
+        "delay_events",
+        ["company_id", "shipment_id"],
+        unique=True,
+        postgresql_where=sa.text("closed_at IS NULL"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("delay_events_open_uq", table_name="delay_events")
     for name in reversed(_DELAY_EVENT_CHECKS):
         op.drop_constraint(name, "delay_events", type_="check")
     op.drop_column("delay_events", "close_reason")
