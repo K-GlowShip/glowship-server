@@ -1,7 +1,13 @@
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
-from sqlalchemy.orm import Mapped
+from sqlalchemy import (
+    ARRAY,
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.orm import Base, uuid_pk
 
@@ -39,6 +45,11 @@ class DataChangeRecord(Base):
             "(entity_type = 'SKU') = (warehouse_id IS NULL)",
             name="data_change_records_ck4",
         ),
+        CheckConstraint(
+            "changed_fields IS NULL"
+            " OR (change_type = 'UPDATE' AND cardinality(changed_fields) >= 1)",
+            name="data_change_records_ck5",
+        ),
         ForeignKeyConstraint(
             ["company_id", "data_sync_run_id"],
             ["data_sync_runs.company_id", "data_sync_runs.data_sync_run_id"],
@@ -64,4 +75,5 @@ class DataChangeRecord(Base):
     change_type: Mapped[str]
     sku_id: Mapped[uuid.UUID | None]
     warehouse_id: Mapped[uuid.UUID | None]
+    changed_fields: Mapped[list[str] | None] = mapped_column(ARRAY(Text()))
     change_summary: Mapped[str]
