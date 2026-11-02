@@ -43,7 +43,9 @@ async def _rollback_session(*, read_only: bool) -> AsyncGenerator[AsyncSession]:
         pytest.skip(f"DB 에 접속할 수 없어 건너뜀: {type(error).__name__}")
 
     transaction = await connection.begin()
-    session = AsyncSession(bind=connection)
+    # create_savepoint: 테스트 대상 코드가 commit·rollback 해도 바깥 트랜잭션 안의 SAVEPOINT 만 바뀌고,
+    # 테스트가 끝나면 바깥 트랜잭션을 롤백하므로 DB 는 그대로다 (수집 적재 서비스처럼 직접 커밋하는 코드 테스트용).
+    session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint")
     try:
         if read_only:
             await session.execute(text("SET TRANSACTION READ ONLY"))
