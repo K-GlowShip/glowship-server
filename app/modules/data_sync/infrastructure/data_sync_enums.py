@@ -11,6 +11,13 @@ class SourceDomain(str, Enum):
     INVENTORY = "INVENTORY"
 
 
+class ConnectionMethod(str, Enum):
+    """수집 연결 방식. data_sync_runs.connection_method CHECK 제약(data_sync_runs_ck2)과 같은 값이다."""
+
+    API = "API"
+    FILE = "FILE"
+
+
 class DataSyncRunStatus(str, Enum):
     """수집 실행 상태. data_sync_runs.status CHECK 제약(data_sync_runs_ck3)과 같은 값이다."""
 
