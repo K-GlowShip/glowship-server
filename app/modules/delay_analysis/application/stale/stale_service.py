@@ -107,15 +107,23 @@ class StaleJudgmentService:
         return staled
 
     async def recheck_run(
-        self, analysis_run_id: uuid.UUID, up_to_seq: int, detected_at: datetime
+        self,
+        analysis_run_id: uuid.UUID,
+        detected_at: datetime,
+        *,
+        up_to_seq: int | None = None,
     ) -> AnalysisRun | None:
         """
         분석 완료 처리 때, 의존 범위가 확정된 실행을 입력 순번 이후 변경 전체로 다시 판정합니다 (Q-13a).
+        up_to_seq 를 생략하면 실행 고객사의 현재 최대 적용 순번까지 봅니다.
         STALE 로 바뀌면 그 실행을, 아니면 None 을 반환합니다.
+            await service.recheck_run(run.analysis_run_id, detected_at=now)
         """
         run = await lock_analysis_run(self.db, analysis_run_id)
         if run is None or not _is_target(run) or not await self._unfrozen([run]):
             return None
+        if up_to_seq is None:
+            up_to_seq = await self.change_repo.find_max_applied_seq(run.company_id)
         changes = await self.change_repo.find_changes_after(
             run.company_id, run.input_seq, up_to_seq
         )
