@@ -189,7 +189,7 @@ DB 함수 경로는 로컬 DB에서 트랜잭션 안에 임시 고객사·ADMIN�
 | 계정 수정·비활성화 | DB 함수 `app_admin_update_client_user(user_id, role_code, status)`가 이미 있음. 같은 서비스에 메서드를 추가하고 `PATCH /api/v1/admin/users/{userId}` 등으로 노출 |
 | OWNER의 계정 생성 | DB 함수가 `role_code = 'ADMIN'`과 배정 여부를 검사하므로 OWNER는 허용되지 않음. 열려면 함수를 바꾸는 마이그레이션 필요 |
 | Admin 여러 고객사 배정 선택 | 명세 D7은 `X-Company-Id` 헤더를 예정. 이 API는 본문 `companyId`로 이미 고객사를 지정하므로 영향 없음 |
-| Client API용 컨텍스트 의존성 | 토큰의 `company_id`로 `set_rls_context`를 자동 호출하는 FastAPI 의존성. 주문·선적 조회 API를 만들 때 추가 |
+| ~~Client API용 컨텍스트 의존성~~ | 구현됨. `app/core/security/tenant.py`의 `get_tenant_context`가 토큰의 `company_id`로 `set_rls_context`를 호출한다 (`docs/data-sync/latest-sync-status.md` 4절) |
 | 초기 비밀번호 변경 강제 | 비밀번호 재설정 API가 없으므로(명세 D19) 운영으로 보완 |
 
 ## 8. 관련 파일

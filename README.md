@@ -44,7 +44,8 @@ app/
 │       ├── auth.py                # access_token 쿠키 인증 의존성, 역할 제한(require_roles)
 │       ├── cookies.py             # 인증 쿠키 발급·삭제
 │       ├── hashing.py             # bcrypt 비밀번호 해싱
-│       └── jwt.py                 # access / refresh 토큰 발급·검증
+│       ├── jwt.py                 # access / refresh 토큰 발급·검증
+│       └── tenant.py              # 고객사 범위 의존성 (토큰의 company_id 로 RLS 컨텍스트 설정)
 └── modules/                       # 도메인 모듈
     ├── user/
     │   ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
@@ -54,7 +55,7 @@ app/
     ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)
     ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references
     ├── operating_rule/            # operating_rule_sets, operating_lead_times
-    ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records
+    ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records + 외부 시스템 동기화 상태 조회 API
     ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
     ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
@@ -65,7 +66,7 @@ scripts/
 └── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```
 
-> 사용자·고객사 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
+> 사용자·고객사·데이터 수집 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
 
 ### 모듈 계층
 
