@@ -12,8 +12,13 @@ from app.modules.data_sync.application.ingest.change_detection import (
     diff_sku,
     diff_warehouse,
 )
+from app.modules.data_sync.application.ingest.run_counts import RunCounts
 from app.modules.data_sync.application.ingest.source_records import OrderLineRecord
 from app.modules.data_sync.infrastructure.data_change_record import DataChangeRecord
+from app.modules.data_sync.infrastructure.data_sync_enums import (
+    ConnectionMethod,
+    SourceDomain,
+)
 from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
@@ -354,3 +359,77 @@ async def test_next_applied_seq_is_max_plus_one(db_write_session):
 
     assert await repo.next_applied_seq(company_id) == current + 1
     assert await repo.next_applied_seq(uuid.uuid7()) == 1
+
+
+# --- 수집 실행 기록 -----------------------------------------------------------------
+
+
+async def _run_row(db, run_id: uuid.UUID):
+    return (
+        await db.execute(
+            text(
+                "SELECT status, received_record_count, loaded_record_count,"
+                " rejected_record_count, applied_seq, finished_at"
+                " FROM data_sync_runs WHERE data_sync_run_id = :r"
+            ),
+            {"r": run_id},
+        )
+    ).one()
+
+
+async def test_run_starts_running_and_completes_with_counts(db_write_session):
+    db = db_write_session
+    repo = IngestRepository(db)
+    company_id = await _company(db)
+    run_id = await repo.start_run(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, NOW
+    )
+
+    assert (await _run_row(db, run_id)).status == "RUNNING"
+
+    seq = await repo.next_applied_seq(company_id)
+    finished = NOW + timedelta(seconds=5)
+    await repo.complete_run(company_id, run_id, RunCounts(10, 9, 1), seq, finished)
+
+    assert tuple(await _run_row(db, run_id)) == (
+        "PARTIAL_SUCCESS",
+        10,
+        9,
+        1,
+        seq,
+        finished,
+    )
+    assert await repo.next_applied_seq(company_id) == seq + 1
+
+
+async def test_failed_run_has_no_applied_seq(db_write_session):
+    db = db_write_session
+    repo = IngestRepository(db)
+    company_id = await _company(db)
+    run_id = await repo.start_run(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.FILE, NOW
+    )
+
+    await repo.fail_run(company_id, run_id, NOW + timedelta(seconds=1))
+
+    row = await _run_row(db, run_id)
+    assert (row.status, row.applied_seq, row.received_record_count) == (
+        "FAILED",
+        None,
+        None,
+    )
+
+
+async def test_finished_run_cannot_be_finished_again(db_write_session):
+    db = db_write_session
+    repo = IngestRepository(db)
+    company_id = await _company(db)
+    run_id = await repo.start_run(
+        company_id, SourceDomain.INVENTORY, ConnectionMethod.API, NOW
+    )
+    await repo.fail_run(company_id, run_id, NOW)
+
+    with pytest.raises(LookupError):
+        await repo.fail_run(company_id, run_id, NOW)
+    with pytest.raises(LookupError):
+        await repo.fail_run(uuid.uuid7(), run_id, NOW)  # 다른 고객사

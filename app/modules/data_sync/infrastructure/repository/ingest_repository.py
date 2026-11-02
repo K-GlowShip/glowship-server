@@ -15,6 +15,7 @@ from app.modules.data_sync.application.ingest.change_detection import (
     RowChange,
     ShipmentDiff,
 )
+from app.modules.data_sync.application.ingest.run_counts import RunCounts
 from app.modules.data_sync.application.ingest.source_records import (
     InventoryRecord,
     OrderLineRecord,
@@ -25,6 +26,11 @@ from app.modules.data_sync.application.ingest.source_records import (
     WarehouseRecord,
 )
 from app.modules.data_sync.infrastructure.data_change_record import DataChangeRecord
+from app.modules.data_sync.infrastructure.data_sync_enums import (
+    ConnectionMethod,
+    DataSyncRunStatus,
+    SourceDomain,
+)
 from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
 from app.modules.inventory.infrastructure.inventory_daily import InventoryDaily
 from app.modules.master_data.infrastructure.sku import Sku
@@ -380,6 +386,78 @@ class IngestRepository:
             )
         )
         return current + 1
+
+    # --- 수집 실행 기록 ---------------------------------------------------------------
+
+    async def start_run(
+        self,
+        company_id: uuid.UUID,
+        source_domain: SourceDomain,
+        connection_method: ConnectionMethod,
+        started_at: datetime,
+    ) -> uuid.UUID:
+        """수집 실행을 RUNNING 으로 남깁니다. 서비스가 적재 트랜잭션과 따로 커밋해 진행 중 상태를 보이게 합니다."""
+        run_id = uuid.uuid7()
+        await self.db.execute(
+            insert(DataSyncRun).values(
+                data_sync_run_id=run_id,
+                company_id=company_id,
+                source_domain=source_domain.value,
+                connection_method=connection_method.value,
+                started_at=started_at,
+                status=DataSyncRunStatus.RUNNING.value,
+            )
+        )
+        return run_id
+
+    async def complete_run(
+        self,
+        company_id: uuid.UUID,
+        data_sync_run_id: uuid.UUID,
+        counts: RunCounts,
+        applied_seq: int,
+        finished_at: datetime,
+    ) -> None:
+        """적재를 마친 수집: 건수·적용 순번과 함께 SUCCEEDED·PARTIAL_SUCCESS 로 바꿉니다 (ck4~ck8)."""
+        await self._finish(
+            company_id,
+            data_sync_run_id,
+            status=counts.status.value,
+            finished_at=finished_at,
+            received_record_count=counts.received,
+            loaded_record_count=counts.loaded,
+            rejected_record_count=counts.rejected,
+            applied_seq=applied_seq,
+        )
+
+    async def fail_run(
+        self, company_id: uuid.UUID, data_sync_run_id: uuid.UUID, finished_at: datetime
+    ) -> None:
+        """적재가 실패한 수집: FAILED. 적용한 것이 없으므로 적용 순번은 비웁니다 (ck8)."""
+        await self._finish(
+            company_id,
+            data_sync_run_id,
+            status=DataSyncRunStatus.FAILED.value,
+            finished_at=finished_at,
+            applied_seq=None,
+        )
+
+    async def _finish(
+        self, company_id: uuid.UUID, data_sync_run_id: uuid.UUID, **values
+    ) -> None:
+        """RUNNING 인 실행만 바꿉니다. 이미 끝난 실행을 다시 바꾸려 하면 오류입니다."""
+        result = await self.db.execute(
+            update(DataSyncRun)
+            .where(
+                DataSyncRun.company_id == company_id,
+                DataSyncRun.data_sync_run_id == data_sync_run_id,
+                DataSyncRun.status == DataSyncRunStatus.RUNNING.value,
+            )
+            .values(values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise LookupError(f"RUNNING 인 수집 실행이 아닙니다: {data_sync_run_id}")
 
     # --- 내부 -----------------------------------------------------------------------
 
