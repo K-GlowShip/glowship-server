@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Secure 쿠키는 HTTPS 에서만 전송된다. 미설정(None)이면 local 환경만 False, 그 외는 True 로 둔다.
     cookie_secure: bool | None = None
 
+    # Data sync
+    # 수집 멈춤 판정 배수. 마지막 수집 시작이 갱신 주기 × 배수보다 오래되면 동기화 안 됨으로 본다.
+    # 0 이면 판정하지 않는다 (합성데이터처럼 오래된 이력으로 화면을 확인할 때).
+    sync_stale_multiplier: int = Field(default=2, ge=0)
+
     @property
     def database_url(self) -> str:
         return (
