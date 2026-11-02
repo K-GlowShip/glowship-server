@@ -11,11 +11,12 @@ from app.modules.delay_analysis.application.stale.relevance import (
     relevant_reasons,
     relevant_reasons_in_progress,
 )
-from app.modules.delay_analysis.infrastructure.analysis_run import (
-    MULTIPLE_RELEVANT_CHANGES,
-    STALE_REASON_CODES,
-    AnalysisRun,
+from app.modules.delay_analysis.infrastructure.analysis_enums import (
+    AnalysisRunStatus,
+    StaleReason,
+    StaleReasonCode,
 )
+from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
     ScopedChange,
     StaleChangeRepository,
@@ -34,13 +35,17 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
 """
 
 IN_PROGRESS_STATUSES = (
-    "DETECTED",
-    "VALIDATING",
-    "ANALYZING_IMPACT",
-    "ANALYZING_OPTIONS",
-    "VALIDATING_OUTPUT",
+    AnalysisRunStatus.DETECTED,
+    AnalysisRunStatus.VALIDATING,
+    AnalysisRunStatus.ANALYZING_IMPACT,
+    AnalysisRunStatus.ANALYZING_OPTIONS,
+    AnalysisRunStatus.VALIDATING_OUTPUT,
 )
-STALE_TARGET_STATUSES = (*IN_PROGRESS_STATUSES, "READY_FOR_REVIEW", "NO_RISK")
+STALE_TARGET_STATUSES = (
+    *IN_PROGRESS_STATUSES,
+    AnalysisRunStatus.READY_FOR_REVIEW,
+    AnalysisRunStatus.NO_RISK,
+)
 
 
 class SignatureRecalculator(Protocol):
@@ -59,13 +64,13 @@ def mark_stale(
 ) -> None:
     """실행을 STALE 로 바꾸고 사유를 기록합니다. 사유가 2개 이상이면 주 사유는 MULTIPLE_RELEVANT_CHANGES 입니다."""
     codes = sorted(set(reason_codes))
-    if not codes or not set(codes) <= set(STALE_REASON_CODES):
+    if not codes or not set(codes) <= set(StaleReasonCode):
         raise ValueError(f"알 수 없는 STALE 사유: {codes}")
-    if (codes == ["TIME_ELAPSED"]) != (detected_seq is None):
+    if (codes == [StaleReasonCode.TIME_ELAPSED]) != (detected_seq is None):
         raise ValueError("적용 순번은 TIME_ELAPSED 일 때만 비웁니다")
-    run.status = "STALE"
+    run.status = AnalysisRunStatus.STALE
     run.stale_primary_reason = (
-        codes[0] if len(codes) == 1 else MULTIPLE_RELEVANT_CHANGES
+        codes[0] if len(codes) == 1 else StaleReason.MULTIPLE_RELEVANT_CHANGES
     )
     run.stale_reason_codes = codes
     run.stale_detected_seq = detected_seq

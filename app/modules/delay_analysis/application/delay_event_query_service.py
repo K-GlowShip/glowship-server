@@ -18,6 +18,10 @@ from app.modules.delay_analysis.application.delay_display import (
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
 )
+from app.modules.delay_analysis.application.stale.stale_service import (
+    IN_PROGRESS_STATUSES,
+)
+from app.modules.delay_analysis.infrastructure.analysis_enums import AnalysisRunStatus
 from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repository import (
     DelayEventCounts,
     DelayEventFilter,
@@ -48,18 +52,12 @@ class DelayEventTab(StrEnum):
     NEEDS_REANALYSIS = "NEEDS_REANALYSIS"
 
 
-_TAB_STATUSES: dict[DelayEventTab, tuple[str, ...] | None] = {
+_TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
     DelayEventTab.ALL: None,
-    DelayEventTab.PENDING_DECISION: ("READY_FOR_REVIEW",),
-    DelayEventTab.ANALYZING: (
-        "DETECTED",
-        "VALIDATING",
-        "ANALYZING_IMPACT",
-        "ANALYZING_OPTIONS",
-        "VALIDATING_OUTPUT",
-    ),
-    DelayEventTab.ON_HOLD: ("ON_HOLD",),
-    DelayEventTab.NEEDS_REANALYSIS: ("STALE", "FAILED"),
+    DelayEventTab.PENDING_DECISION: (AnalysisRunStatus.READY_FOR_REVIEW,),
+    DelayEventTab.ANALYZING: IN_PROGRESS_STATUSES,
+    DelayEventTab.ON_HOLD: (AnalysisRunStatus.ON_HOLD,),
+    DelayEventTab.NEEDS_REANALYSIS: (AnalysisRunStatus.STALE, AnalysisRunStatus.FAILED),
 }
 
 

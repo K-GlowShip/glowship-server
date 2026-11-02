@@ -9,15 +9,20 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventList,
     DelayEventListItem,
 )
+from app.modules.delay_analysis.presentation.analysis_run_schemas import (
+    EXPECTED_3PL,
+    PLANNED_3PL,
+)
 
 """
     지연 목록·상세 응답 (API 15·16, API 명세 4.4절)
       - "3pl" 이 들어간 필드는 to_camel 이 "3Pl" 로 바꾸므로 명세 이름(planned3plInboundDate 등)을 별칭으로 직접 줍니다.
+        계획·예상 입고일 별칭은 분석 실행 응답(analysis_run_schemas)과 같은 상수를 씁니다.
       - runCode(D14)는 analysis_runs.run_code 마이그레이션 전이라 항상 null 입니다.
 """
 
-_PLANNED = "planned3plInboundDate"
-_EXPECTED = "expected3plInboundDate"
+_PLANNED = PLANNED_3PL
+_EXPECTED = EXPECTED_3PL
 _PREVIOUS_EXPECTED = "previousExpected3plInboundDate"
 
 
