@@ -10,7 +10,6 @@ from app.core.database import get_db
 from app.core.security.cookies import ACCESS_TOKEN_COOKIE
 from app.core.security.jwt import create_access_token
 from app.main import app
-from app.modules.data_sync.application.data_source_catalog import ExternalSystem
 from app.modules.data_sync.application.data_sync_status_service import (
     ExternalSystemSyncStatus,
 )
@@ -49,6 +48,16 @@ class FakeSession:
         self.executed.append((str(statement), params))
 
 
+def _status(source_domain, source_system_name, is_synced, last_synced_at):
+    return ExternalSystemSyncStatus(
+        source_domain=source_domain,
+        source_system_name=source_system_name,
+        sync_interval_minutes=10,
+        is_synced=is_synced,
+        last_synced_at=last_synced_at,
+    )
+
+
 class FakeDataSyncStatusService:
     """서비스는 단위 테스트에서 검증하므로, 라우터 테스트에서는 받은 테넌트만 기록하고 고정 결과를 돌려준다."""
 
@@ -58,30 +67,11 @@ class FakeDataSyncStatusService:
     async def get_latest_statuses(self, tenant):
         self.tenants.append(tenant)
         return [
-            ExternalSystemSyncStatus(
-                source_domain=SourceDomain.ORDER,
-                system_name=ExternalSystem.ERP,
-                display_name="주문 데이터",
-                is_synced=True,
-                last_synced_at=SYNCED_AT,
-                update_interval_seconds=600,
-            ),
-            ExternalSystemSyncStatus(
-                source_domain=SourceDomain.INVENTORY,
-                system_name=ExternalSystem.WMS,
-                display_name="재고 데이터",
-                is_synced=False,
-                last_synced_at=SYNCED_AT,
-                update_interval_seconds=600,
-            ),
-            ExternalSystemSyncStatus(
-                source_domain=SourceDomain.SHIPMENT,
-                system_name=ExternalSystem.TMS,
-                display_name="선적 데이터",
-                is_synced=False,
-                last_synced_at=None,
-                update_interval_seconds=600,
-            ),
+            _status(SourceDomain.ORDER, "SAP ERP", True, SYNCED_AT),
+            _status(SourceDomain.INVENTORY, "WMS", False, SYNCED_AT),
+            _status(SourceDomain.SHIPMENT, "TMS", False, None),
+            _status(SourceDomain.PRODUCT, "SAP ERP", False, None),
+            _status(SourceDomain.WAREHOUSE, "WMS", False, None),
         ]
 
 
@@ -127,7 +117,7 @@ async def test_고객사_범위가_없는_역할은_403을_반환한다(
 
 
 @pytest.mark.parametrize("role_code", ["CLIENT_MEMBER", "CLIENT_LEAD"])
-async def test_고객사_사용자는_200과_camelCase_세_항목을_받는다(
+async def test_고객사_사용자는_200과_camelCase_다섯_항목을_받는다(
     fake_service, fake_session, role_code
 ):
     response = await _get(cookies=_access_cookie(role_code, company_id=COMPANY_ID))
@@ -141,14 +131,15 @@ async def test_고객사_사용자는_200과_camelCase_세_항목을_받는다(
         "ORDER",
         "INVENTORY",
         "SHIPMENT",
+        "PRODUCT",
+        "WAREHOUSE",
     ]
     assert body["items"][0] == {
         "sourceDomain": "ORDER",
-        "systemName": "ERP",
-        "displayName": "주문 데이터",
+        "sourceSystemName": "SAP ERP",
+        "syncIntervalMinutes": 10,
         "isSynced": True,
         "lastSyncedAt": "2026-11-02T03:15:00Z",
-        "updateIntervalSeconds": 600,
     }
     assert body["items"][2]["lastSyncedAt"] is None
 

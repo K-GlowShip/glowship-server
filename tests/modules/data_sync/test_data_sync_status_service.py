@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.security.tenant import TenantContext
-from app.modules.data_sync.application.data_source_catalog import ExternalSystem
 from app.modules.data_sync.application.data_sync_status_service import (
     DataSyncStatusService,
 )
@@ -16,7 +15,8 @@ from app.modules.data_sync.infrastructure.repository.data_sync_run_repository im
 
 TENANT = TenantContext(user_id=uuid.uuid7(), company_id=uuid.uuid7())
 NOW = datetime(2026, 11, 2, 11, 0, tzinfo=UTC)
-INTERVAL = timedelta(seconds=600)
+INTERVAL = timedelta(minutes=10)
+ALL_DOMAINS = ["ORDER", "INVENTORY", "SHIPMENT", "PRODUCT", "WAREHOUSE"]
 
 
 @dataclass
@@ -59,7 +59,7 @@ async def _order_status(summaries: dict, stale_multiplier: int = 2):
 # --- 항목 구성 -----------------------------------------------------------------
 
 
-async def test_카탈로그_순서대로_세_항목을_돌려주고_고객사와_도메인으로_조회한다():
+async def test_카탈로그_순서대로_다섯_항목을_돌려주고_고객사와_원천으로_조회한다():
     service, repo = _service({})
 
     statuses = await service.get_latest_statuses(TENANT)
@@ -68,19 +68,18 @@ async def test_카탈로그_순서대로_세_항목을_돌려주고_고객사와
         SourceDomain.ORDER,
         SourceDomain.INVENTORY,
         SourceDomain.SHIPMENT,
+        SourceDomain.PRODUCT,
+        SourceDomain.WAREHOUSE,
     ]
-    assert [s.system_name for s in statuses] == [
-        ExternalSystem.ERP,
-        ExternalSystem.WMS,
-        ExternalSystem.TMS,
+    assert [s.source_system_name for s in statuses] == [
+        "SAP ERP",
+        "WMS",
+        "TMS",
+        "SAP ERP",
+        "WMS",
     ]
-    assert [s.display_name for s in statuses] == [
-        "주문 데이터",
-        "재고 데이터",
-        "선적 데이터",
-    ]
-    assert all(s.update_interval_seconds == 600 for s in statuses)
-    assert repo.calls == [(TENANT.company_id, ["ORDER", "INVENTORY", "SHIPMENT"])]
+    assert all(s.sync_interval_minutes == 10 for s in statuses)
+    assert repo.calls == [(TENANT.company_id, ALL_DOMAINS)]
 
 
 async def test_수집_이력이_없으면_동기화_안_됨이고_시각은_null이다():
