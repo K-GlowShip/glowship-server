@@ -4,6 +4,7 @@
 
 | 메서드 | 경로 | 설명 | 티켓 | 추가일 |
 | --- | --- | --- | --- | --- |
+| GET | `/data-sync-runs/latest` | 원천 유형(ORDER·INVENTORY·SHIPMENT·PRODUCT·WAREHOUSE)별 마지막 수집 실행·미해결 이슈 수·원천 시스템 이름·수집 주기와 서버 판정 `isSynced`·`lastSyncedAt` (명세 v6.2 4.3). 고객사 사용자 전용. [문서](data-sync/latest-sync-status.md) | GLOW-97 | 2026-11-02 |
 | GET | `/delay-events` | 지연 목록·탭별 건수. 필터 `status`(`ALL`·`READY_FOR_REVIEW`·`ANALYZING`·`ON_HOLD`·`NEEDS_REANALYSIS`), `warehouseId`, `from`·`to`(UTC 날짜, `to` 포함), `q`, `hasFinalDecision`, `page`·`size`. 응답 `items`·`page`·`size`·`totalCount`·`totalPages`와 `counts`(키 `all`·`readyForReview`·`analyzing`·`onHold`·`needsReanalysis`, 탭·`hasFinalDecision` 필터 제외). 정렬은 `detectedAt` 최신순, 같으면 `delayEventId` | GLOW-16 | 11/02 |
 | GET | `/delay-events/{delayEventId}` | 지연 상세·분석 실행 버전 이력(`runs[]`, 최신 버전 먼저). 다른 고객사 건은 404 | GLOW-16 | 11/02 |
 
