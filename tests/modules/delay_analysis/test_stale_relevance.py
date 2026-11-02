@@ -83,9 +83,25 @@ def test_order_outside_order_scope_is_not_relevant():
 
 
 def test_planned_shipment_of_order_is_not_relevant():
-    change = _change("ORDER", change_summary="주문 상태 SHIPPED")
+    changes = [
+        _change("ORDER", change_summary="주문 상태 SHIPPED"),
+        _change("ORDER", change_summary="주문 상태 DELIVERED"),
+        _change("ORDER_LINE", change_summary="출고 수량"),
+    ]
 
-    assert relevant_reasons(SCOPE, [change]) == []
+    assert relevant_reasons(SCOPE, changes) == []
+
+
+def test_order_summary_only_containing_shipped_word_is_relevant():
+    # 정상 출고 문장과 정확히 같지 않으면(취소·다른 형식) 관련 변경으로 남깁니다
+    for summary in (
+        "주문 상태 SHIPPED → CANCELLED",
+        "주문 상태 shipped",
+        "출고 수량 정정",
+    ):
+        change = _change("ORDER", change_summary=summary)
+
+        assert relevant_reasons(SCOPE, [change]) == [ORDER_CHANGED], summary
 
 
 def test_new_order_counts_only_inside_horizon():

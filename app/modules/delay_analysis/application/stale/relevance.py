@@ -23,7 +23,13 @@ INBOUND_CHANGED = "RELEVANT_INBOUND_CHANGED"
 SKU_ATTRIBUTE_CHANGED = "RELEVANT_SKU_ATTRIBUTE_CHANGED"
 
 # 예정된 정상 출고·배송 완료로 바뀐 주문은 결과를 바꾸지 않으므로 관련 변경이 아닙니다 (ST-2)
-_PLANNED_SHIPMENT_MARKERS = ("SHIPPED", "DELIVERED", "출고 수량")
+# change_summary 가 아래 문장과 정확히 같을 때만 정상 출고로 봅니다 (2026 상반기 합성 데이터의 형식).
+# 부분 일치로 보면 "주문 상태 SHIPPED → CANCELLED" 같은 취소도 빠지므로, 모르는 형식은 관련 변경으로 남깁니다.
+# 수집 적재(GLOW-13)가 같은 형식으로 요약을 만들어야 합니다.
+_PLANNED_SHIPMENT_SUMMARIES = {
+    "ORDER": frozenset({"주문 상태 SHIPPED", "주문 상태 DELIVERED"}),
+    "ORDER_LINE": frozenset({"출고 수량"}),
+}
 
 
 def relevant_reasons(
@@ -124,9 +130,8 @@ def _pairs(items: Iterable[dict[str, str]]) -> set[tuple[uuid.UUID, uuid.UUID]]:
 
 
 def _is_planned_shipment(change: ScopedChange) -> bool:
-    return change.change_type == "UPDATE" and any(
-        marker in change.change_summary for marker in _PLANNED_SHIPMENT_MARKERS
-    )
+    planned = _PLANNED_SHIPMENT_SUMMARIES.get(change.entity_type, frozenset())
+    return change.change_type == "UPDATE" and change.change_summary.strip() in planned
 
 
 def _is_relevant_order(change: ScopedChange, base_date: date, horizon_to: date) -> bool:
