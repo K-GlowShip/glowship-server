@@ -3,7 +3,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    StrictInt,
+    StrictStr,
+    StringConstraints,
+)
 
 from app.core.schemas import CamelModel
 from app.modules.delay_analysis.infrastructure.analysis_enums import (
@@ -39,7 +47,10 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
       - 응답 필드는 camelCase(D2). 저장 위치는 ERD v6.2 analysis_runs 와 분석 결과 4개 테이블.
       - 저장된 JSON(explanation.v1, sku_results.v1)은 저장된 그대로 snake_case 키로 내려준다(D20).
         데이터 팀 계약이 키를 고정하고 알 수 없는 키를 금지하므로, 이 두 모델은 CamelModel 을 쓰지 않고 extra="forbid" 로 둔다.
-      - 응답에 넣지 않는 것: dependency_scope, decision_signature(·sha256), raw_*_shortage_quantity (명세 4.5)
+        저장 JSON 의 정수는 StrictInt 로 받아 불리언·문자열을 정수로 바꿔 쓰지 않는다.
+      - 응답에 넣지 않는 DB 열: dependency_scope, decision_signature, decision_signature_sha256, raw_*_shortage_quantity (명세 4.5)
+        explanation.v1 안의 decision_signature_hash·prompt_template_sha256 은 계약의 필수 메타데이터라 그대로 둔다
+        (명세 4.5 AI 설명 표: "표시하지 않음" = 화면에 표시하지 않음).
 """
 
 # 소수 4자리 10진 문자열 (JSON 계약 0절 raw 값, 예: "2.8929")
@@ -57,6 +68,12 @@ StoredUuid = Annotated[
 PLANNED_3PL = "planned3plInboundDate"
 EXPECTED_3PL = "expected3plInboundDate"
 BASELINE_PLANNED_3PL = "baselinePlanned3plInboundDate"
+
+# DB numeric 값. 서버 안에서는 Decimal 로 정확히 두고, JSON 응답에서만 숫자(number)로 내보낸다.
+# Pydantic 기본값은 Decimal 을 문자열("1.2500")로 내보내 프론트가 정렬·비교에 쓰기 불편하다.
+JsonNumberDecimal = Annotated[
+    Decimal, PlainSerializer(float, return_type=float, when_used="json")
+]
 
 
 class StoredJsonModel(BaseModel):
@@ -83,7 +100,8 @@ class ExplanationEvidence(StoredJsonModel):
 
     id: str = Field(pattern=r"^E[1-9][0-9]?$")
     path: str = Field(pattern=r"^(/[A-Za-z0-9_\-]+)+$")
-    value: str | int | None
+    # 스키마 타입은 string·integer·null. bool 은 int 의 하위 타입이라 Strict 로 막는다(True → 1 방지)
+    value: StrictStr | StrictInt | None
 
 
 class Explanation(StoredJsonModel):
@@ -101,7 +119,7 @@ class Explanation(StoredJsonModel):
     generated_at: str = Field(
         pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     )
-    retry_no: int = Field(ge=1, le=3)
+    retry_no: StrictInt = Field(ge=1, le=3)
     run_summary: str = Field(min_length=1, max_length=600)
     risk_summary: str = Field(min_length=1, max_length=600)
     option_explanations: list[ExplanationOption] = Field(min_length=1, max_length=4)
@@ -119,16 +137,16 @@ class SkuResultDonor(StoredJsonModel):
     source_warehouse_id: StoredUuid
     next_inbound_basis: Literal["N2"]
     next_inbound_date: date | None  # null 이면 NOT_ESTIMABLE
-    on_hand: int
-    reserved: int
-    open_commitment_net: int
-    safety_stock_quantity: int
+    on_hand: StrictInt
+    reserved: StrictInt
+    open_commitment_net: StrictInt
+    safety_stock_quantity: StrictInt
     forecast_until_next_raw: RawDecimal | None
     transferable_raw: RawDecimal | None
-    transferable_quantity: int | None
-    order_layer_used_quantity: int | None
+    transferable_quantity: StrictInt | None
+    order_layer_used_quantity: StrictInt | None
     forecast_channel_share: RawDecimal | None
-    forecast_securable_quantity: int | None
+    forecast_securable_quantity: StrictInt | None
 
 
 class SkuResultItem(StoredJsonModel):
@@ -144,11 +162,11 @@ class SkuResultItem(StoredJsonModel):
     raw_increment_shortage: RawDecimal | None
     raw_reduction: RawDecimal | None
     raw_residual_increment: RawDecimal | None
-    baseline_prepare_quantity: int | None
-    increment_prepare_quantity: int | None
-    reduction_committed_quantity: int | None
-    residual_prepare_quantity: int | None
-    supply_quantity: int | None
+    baseline_prepare_quantity: StrictInt | None
+    increment_prepare_quantity: StrictInt | None
+    reduction_committed_quantity: StrictInt | None
+    residual_prepare_quantity: StrictInt | None
+    supply_quantity: StrictInt | None
     supply_available_date: date | None
     donor: SkuResultDonor | None
 
@@ -232,7 +250,7 @@ class InventoryImpact(CamelModel):
     sales_basis_end_date: date | None
     sales_basis_event_days: int | None
     sales_basis_event_names: list[str] | None
-    average_daily_sales: Decimal | None
+    average_daily_sales: JsonNumberDecimal | None
     safety_stock_days: int
     safety_stock_quantity: int | None
     baseline_planned_3pl_inbound_date: date = Field(alias=BASELINE_PLANNED_3PL)

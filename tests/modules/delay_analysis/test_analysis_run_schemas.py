@@ -1,9 +1,12 @@
 import copy
+import json
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
+from pydantic.alias_generators import to_camel
 
 from app.modules.delay_analysis.presentation.analysis_run_schemas import (
     AnalysisRunDetailResponse,
@@ -324,17 +327,33 @@ def test_stored_json_keeps_snake_case_keys():
     assert item["donor"]["forecast_channel_share"] == "0.2340"
 
 
-def test_response_does_not_expose_internal_fields():
-    """판정 서명·의존 범위·raw 부족 원값은 서버 내부 판정용이라 응답에 없다(명세 4.5)"""
-    text = AnalysisRunDetailResponse.model_validate(_ready_run()).model_dump_json()
+def test_response_does_not_expose_internal_columns():
+    """analysis_runs·inventory_impact_results 의 내부 판정 열은 응답에 없다(명세 4.5 "응답에 넣지 않는 것").
+    저장 JSON(explanation·skuResults)은 계약 키를 그대로 두므로 따로 확인한다(아래 테스트)."""
+    got = _dump(_ready_run())
+    got.pop("explanation")
+    for option in got["responseOptions"]:
+        option.pop("skuResults")
+    text = json.dumps(got)
 
-    for internal in (
-        "dependencyScope",
-        "decisionSignature",
-        "rawShortageQuantity",
-        "rawBaselineShortageQuantity",
+    for column in (
+        "dependency_scope",
+        "decision_signature",
+        "decision_signature_sha256",
+        "raw_baseline_shortage_quantity",
+        "raw_shortage_quantity",
+        "raw_increment_shortage_quantity",
     ):
-        assert internal not in text
+        assert column not in text
+        assert to_camel(column) not in text
+
+
+def test_explanation_keeps_contract_metadata():
+    """explanation.v1 의 필수 메타데이터(판정 서명 해시·프롬프트 해시)는 저장된 그대로 나간다(D20, 명세 4.5 AI 설명 표 "표시하지 않음")"""
+    explanation = _dump(_ready_run())["explanation"]
+
+    assert explanation["decision_signature_hash"] == HASH
+    assert explanation["prompt_template_sha256"] == HASH
 
 
 # --- 저장 JSON 계약 -------------------------------------------------------------------------------
@@ -365,6 +384,27 @@ def test_stored_json_ids_must_be_lowercase_hyphenated(bad_id):
 
     with pytest.raises(ValidationError):
         Explanation.model_validate(body)
+
+
+def test_explanation_evidence_rejects_bool_value():
+    """근거 value 는 explanation.v1 에서 string·integer·null 만 허용한다. True 를 1 로 바꿔 내보내지 않는다"""
+    body = _explanation()
+    body["evidence_references"][0]["value"] = True
+
+    with pytest.raises(ValidationError):
+        Explanation.model_validate(body)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("supply_quantity", True), ("increment_prepare_quantity", "7")]
+)
+def test_sku_results_integers_are_not_coerced(field, value):
+    """저장 JSON 정수는 JSON 정수만 받는다(계약 0절). 불리언·문자열을 정수로 바꿔 쓰지 않는다"""
+    body = _sku_results()
+    body["items"][0][field] = value
+
+    with pytest.raises(ValidationError):
+        SkuResults.model_validate(body)
 
 
 @pytest.mark.parametrize("raw", [1.5, "1.5", "-1.0000"])
@@ -456,3 +496,13 @@ def test_on_hold_run_has_failure_summary_and_empty_results():
     assert got["failedStep"] == "VALIDATING"
     assert got["responseOptions"] == [] and got["explanation"] is None
     assert got["inputBasis"]["baseDate"] is None
+
+
+def test_average_daily_sales_is_json_number():
+    """평균 판매량은 서버 안에서는 Decimal, JSON 응답에서는 숫자(number)다. 프론트가 정렬·비교에 쓴다"""
+    impact = AnalysisRunDetailResponse.model_validate(_ready_run()).inventory_impacts[0]
+    assert impact.average_daily_sales == Decimal("1.2500")
+
+    got = _dump(_ready_run())["inventoryImpacts"][0]["averageDailySales"]
+
+    assert isinstance(got, float) and got == 1.25
