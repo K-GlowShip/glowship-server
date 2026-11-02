@@ -33,13 +33,15 @@ class FakeDataSyncRunRepository:
 def _summary(
     *,
     started_ago: timedelta = timedelta(minutes=5),
+    status: str = "SUCCEEDED",
     completed_status: str | None = "SUCCEEDED",
     synced_ago: timedelta | None = timedelta(minutes=5),
+    open_issue_count: int = 0,
 ) -> LatestRunSummary:
     return LatestRunSummary(
         data_sync_run_id=RUN_ID,
         connection_method="API",
-        status="SUCCEEDED",
+        status=status,
         started_at=NOW - started_ago,
         finished_at=NOW - started_ago + timedelta(seconds=30),
         received_count=100,
@@ -47,7 +49,7 @@ def _summary(
         rejected_count=2,
         latest_completed_status=completed_status,
         last_synced_at=NOW - synced_ago if synced_ago is not None else None,
-        open_issue_count=0,
+        open_issue_count=open_issue_count,
     )
 
 
@@ -91,11 +93,38 @@ async def test_카탈로그_순서대로_다섯_항목을_돌려주고_고객사
     assert repo.calls == [(TENANT.company_id, ALL_DOMAINS)]
 
 
-async def test_수집_이력이_없으면_동기화_안_됨이고_시각은_null이다():
+async def test_수집_이력이_없으면_실행_필드는_null_이고_이슈_0건_동기화_안_됨이다():
     status = await _order_status({})
 
+    assert status.data_sync_run_id is None
+    assert status.connection_method is None
+    assert status.status is None
+    assert status.started_at is None
+    assert status.finished_at is None
+    assert status.received_count is None
+    assert status.loaded_count is None
+    assert status.rejected_count is None
+    assert status.open_issue_count == 0
     assert status.is_synced is False
     assert status.last_synced_at is None
+
+
+async def test_가장_최근_실행의_필드와_이슈_수를_그대로_옮긴다():
+    status = await _order_status(
+        {"ORDER": _summary(status="PARTIAL_SUCCESS", open_issue_count=6)}
+    )
+
+    assert status.data_sync_run_id == RUN_ID
+    assert status.connection_method == "API"
+    assert status.status == "PARTIAL_SUCCESS"
+    assert status.started_at == NOW - timedelta(minutes=5)
+    assert status.finished_at == NOW - timedelta(minutes=5) + timedelta(seconds=30)
+    assert (status.received_count, status.loaded_count, status.rejected_count) == (
+        100,
+        98,
+        2,
+    )
+    assert status.open_issue_count == 6
 
 
 # --- isSynced 판정 ---------------------------------------------------------------
@@ -121,6 +150,7 @@ async def test_최근_수집이_실패면_동기화_안_됨이고_이전_성공_
         {
             "ORDER": _summary(
                 started_ago=timedelta(minutes=5),
+                status="FAILED",
                 completed_status="FAILED",
                 synced_ago=timedelta(minutes=15),
             )
@@ -134,10 +164,10 @@ async def test_최근_수집이_실패면_동기화_안_됨이고_이전_성공_
 async def test_진행_중이면_직전에_끝난_실행으로_판정한다():
     # 리포지토리가 RUNNING 을 뺀 최근 실행 상태를 completed 로 주므로, 서비스는 그 값만 본다.
     running_after_success = _summary(
-        started_ago=timedelta(minutes=1), completed_status="SUCCEEDED"
+        started_ago=timedelta(minutes=1), status="RUNNING", completed_status="SUCCEEDED"
     )
     running_after_failure = _summary(
-        started_ago=timedelta(minutes=1), completed_status="FAILED"
+        started_ago=timedelta(minutes=1), status="RUNNING", completed_status="FAILED"
     )
 
     assert (await _order_status({"ORDER": running_after_success})).is_synced is True
@@ -146,7 +176,10 @@ async def test_진행_중이면_직전에_끝난_실행으로_판정한다():
 
 async def test_끝난_실행이_아직_없으면_동기화_안_됨이다():
     first_run_in_progress = _summary(
-        started_ago=timedelta(minutes=1), completed_status=None, synced_ago=None
+        started_ago=timedelta(minutes=1),
+        status="RUNNING",
+        completed_status=None,
+        synced_ago=None,
     )
 
     status = await _order_status({"ORDER": first_run_in_progress})
@@ -185,7 +218,8 @@ async def test_배수가_0이면_오래된_성공도_동기화됨으로_본다()
 
 async def test_배수가_0이어도_실패는_동기화_안_됨이다():
     status = await _order_status(
-        {"ORDER": _summary(completed_status="FAILED")}, stale_multiplier=0
+        {"ORDER": _summary(status="FAILED", completed_status="FAILED")},
+        stale_multiplier=0,
     )
 
     assert status.is_synced is False

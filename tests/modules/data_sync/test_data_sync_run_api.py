@@ -11,14 +11,17 @@ from app.core.security.cookies import ACCESS_TOKEN_COOKIE
 from app.core.security.jwt import create_access_token
 from app.main import app
 from app.modules.data_sync.application.data_sync_status_service import (
-    ExternalSystemSyncStatus,
+    DataSourceSyncStatus,
 )
 from app.modules.data_sync.dependencies import get_data_sync_status_service
 from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
 
 URL = "/api/v1/data-sync-runs/latest"
 COMPANY_ID = uuid.uuid7()
-SYNCED_AT = datetime(2026, 11, 2, 3, 15, tzinfo=UTC)
+RUN_ID = uuid.uuid7()
+STARTED_AT = datetime(2026, 11, 2, 3, 10, tzinfo=UTC)
+FINISHED_AT = datetime(2026, 11, 2, 3, 10, 30, tzinfo=UTC)
+SYNCED_AT = datetime(2026, 11, 2, 3, 0, 30, tzinfo=UTC)
 
 
 def _access_cookie(role_code: str, company_id: uuid.UUID | None = None) -> dict:
@@ -48,14 +51,40 @@ class FakeSession:
         self.executed.append((str(statement), params))
 
 
-def _status(source_domain, source_system_name, is_synced, last_synced_at):
-    return ExternalSystemSyncStatus(
-        source_domain=source_domain,
-        source_system_name=source_system_name,
-        sync_interval_minutes=10,
-        is_synced=is_synced,
-        last_synced_at=last_synced_at,
-    )
+def _status(source_domain, source_system_name, **overrides) -> DataSourceSyncStatus:
+    values = {
+        "source_domain": source_domain,
+        "source_system_name": source_system_name,
+        "sync_interval_minutes": 10,
+        "data_sync_run_id": RUN_ID,
+        "connection_method": "API",
+        "status": "PARTIAL_SUCCESS",
+        "started_at": STARTED_AT,
+        "finished_at": FINISHED_AT,
+        "received_count": 43806,
+        "loaded_count": 43800,
+        "rejected_count": 6,
+        "open_issue_count": 6,
+        "is_synced": True,
+        "last_synced_at": FINISHED_AT,
+    }
+    values.update(overrides)
+    return DataSourceSyncStatus(**values)
+
+
+NO_HISTORY = {
+    "data_sync_run_id": None,
+    "connection_method": None,
+    "status": None,
+    "started_at": None,
+    "finished_at": None,
+    "received_count": None,
+    "loaded_count": None,
+    "rejected_count": None,
+    "open_issue_count": 0,
+    "is_synced": False,
+    "last_synced_at": None,
+}
 
 
 class FakeDataSyncStatusService:
@@ -67,11 +96,22 @@ class FakeDataSyncStatusService:
     async def get_latest_statuses(self, tenant):
         self.tenants.append(tenant)
         return [
-            _status(SourceDomain.ORDER, "SAP ERP", True, SYNCED_AT),
-            _status(SourceDomain.INVENTORY, "WMS", False, SYNCED_AT),
-            _status(SourceDomain.SHIPMENT, "TMS", False, None),
-            _status(SourceDomain.PRODUCT, "SAP ERP", False, None),
-            _status(SourceDomain.WAREHOUSE, "WMS", False, None),
+            _status(SourceDomain.ORDER, "SAP ERP"),
+            _status(
+                SourceDomain.INVENTORY,
+                "WMS",
+                status="FAILED",
+                finished_at=None,
+                received_count=None,
+                loaded_count=None,
+                rejected_count=None,
+                open_issue_count=0,
+                is_synced=False,
+                last_synced_at=SYNCED_AT,
+            ),
+            _status(SourceDomain.SHIPMENT, "TMS", **NO_HISTORY),
+            _status(SourceDomain.PRODUCT, "SAP ERP", **NO_HISTORY),
+            _status(SourceDomain.WAREHOUSE, "WMS", **NO_HISTORY),
         ]
 
 
@@ -135,13 +175,62 @@ async def test_고객사_사용자는_200과_camelCase_다섯_항목을_받는�
         "WAREHOUSE",
     ]
     assert body["items"][0] == {
+        "dataSyncRunId": str(RUN_ID),
         "sourceDomain": "ORDER",
+        "connectionMethod": "API",
+        "status": "PARTIAL_SUCCESS",
+        "startedAt": "2026-11-02T03:10:00Z",
+        "finishedAt": "2026-11-02T03:10:30Z",
+        "receivedCount": 43806,
+        "loadedCount": 43800,
+        "rejectedCount": 6,
+        "openIssueCount": 6,
         "sourceSystemName": "SAP ERP",
         "syncIntervalMinutes": 10,
         "isSynced": True,
-        "lastSyncedAt": "2026-11-02T03:15:00Z",
+        "lastSyncedAt": "2026-11-02T03:10:30Z",
     }
-    assert body["items"][2]["lastSyncedAt"] is None
+
+
+async def test_실패한_실행은_건수가_null_이고_이전_성공_시각을_유지한다(
+    fake_service, fake_session
+):
+    response = await _get(
+        cookies=_access_cookie("CLIENT_MEMBER", company_id=COMPANY_ID)
+    )
+
+    inventory = response.json()["items"][1]
+    assert inventory["status"] == "FAILED"
+    assert inventory["finishedAt"] is None
+    assert inventory["receivedCount"] is None
+    assert inventory["isSynced"] is False
+    assert inventory["lastSyncedAt"] == "2026-11-02T03:00:30Z"
+
+
+async def test_이력_없는_원천은_실행_필드가_null_이고_필드를_빼지_않는다(
+    fake_service, fake_session
+):
+    response = await _get(
+        cookies=_access_cookie("CLIENT_MEMBER", company_id=COMPANY_ID)
+    )
+
+    product = response.json()["items"][3]
+    assert product == {
+        "dataSyncRunId": None,
+        "sourceDomain": "PRODUCT",
+        "connectionMethod": None,
+        "status": None,
+        "startedAt": None,
+        "finishedAt": None,
+        "receivedCount": None,
+        "loadedCount": None,
+        "rejectedCount": None,
+        "openIssueCount": 0,
+        "sourceSystemName": "SAP ERP",
+        "syncIntervalMinutes": 10,
+        "isSynced": False,
+        "lastSyncedAt": None,
+    }
 
 
 async def test_토큰의_고객사로_RLS_컨텍스트를_설정하고_서비스에_넘긴다(

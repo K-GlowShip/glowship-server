@@ -7,7 +7,7 @@ from app.modules.data_sync.application.data_sync_status_service import (
 )
 from app.modules.data_sync.dependencies import get_data_sync_status_service
 from app.modules.data_sync.presentation.data_sync_run_schemas import (
-    ExternalSystemSyncStatusResponse,
+    DataSourceSyncStatusResponse,
     LatestDataSyncRunsResponse,
 )
 
@@ -16,11 +16,12 @@ router = APIRouter(prefix="/api/v1/data-sync-runs", tags=["외부 데이터 수�
 
 @router.get(
     "/latest",
-    summary="외부 시스템 최신 동기화 상태 조회",
+    summary="원천 유형별 마지막 수집 상태 조회",
     description=(
-        "고객사가 연동한 외부 시스템(ERP·WMS·TMS)별로 동기화 여부, 마지막 수집 시각, 갱신 주기를 돌려줍니다. "
+        "원천 유형(ORDER·INVENTORY·SHIPMENT·PRODUCT·WAREHOUSE)별로 가장 최근 수집 실행 1건과 "
+        "미해결 검증 이슈 수, 운영 설정 값(원천 시스템 이름·수집 주기), 서버가 판정한 동기화 여부를 돌려줍니다. "
         "고객사 범위는 access_token 쿠키의 company_id 입니다. "
-        "수집 이력이 없는 시스템도 isSynced=false, lastSyncedAt=null 로 항상 세 항목이 내려갑니다."
+        "수집 이력이 없는 원천도 실행 필드 null, isSynced=false 로 항상 다섯 항목이 내려갑니다."
     ),
     response_model=LatestDataSyncRunsResponse,
     responses={
@@ -38,11 +39,10 @@ async def get_latest_data_sync_runs(
     tenant: TenantContext = Depends(get_tenant_context),
     service: DataSyncStatusService = Depends(get_data_sync_status_service),
 ) -> LatestDataSyncRunsResponse:
-    """외부 시스템 최신 동기화 상태 조회 API 엔드포인트"""
+    """원천 유형별 마지막 수집 상태 조회 API 엔드포인트"""
     statuses = await service.get_latest_statuses(tenant)
     return LatestDataSyncRunsResponse(
         items=[
-            ExternalSystemSyncStatusResponse.model_validate(status)
-            for status in statuses
+            DataSourceSyncStatusResponse.model_validate(status) for status in statuses
         ]
     )

@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,18 +19,31 @@ from app.modules.data_sync.infrastructure.repository.data_sync_run_repository im
 
 
 @dataclass(frozen=True)
-class ExternalSystemSyncStatus:
-    """원천 유형 하나의 동기화 상태. 응답 스키마와 같은 필드 이름이다."""
+class DataSourceSyncStatus:
+    """
+    원천 유형 하나의 마지막 수집 상태. 응답 스키마와 같은 필드 이름이다.
+      - 마지막 실행 필드(data_sync_run_id ~ rejected_count)는 수집 이력이 없으면 모두 None
+      - is_synced·last_synced_at 은 명세 필드에 더한 서버 판정값(카드 배지·"마지막 수집" 표시용)
+    """
 
     source_domain: SourceDomain
     source_system_name: str
     sync_interval_minutes: int
+    data_sync_run_id: uuid.UUID | None
+    connection_method: str | None
+    status: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    received_count: int | None
+    loaded_count: int | None
+    rejected_count: int | None
+    open_issue_count: int
     is_synced: bool
     last_synced_at: datetime | None
 
 
 class DataSyncStatusService:
-    """연동 데이터 조회 화면에 보여줄 원천 유형별 동기화 상태를 만든다."""
+    """연동 데이터 조회 화면에 보여줄 원천 유형별 마지막 수집 상태를 만든다."""
 
     def __init__(
         self,
@@ -50,7 +64,7 @@ class DataSyncStatusService:
 
     async def get_latest_statuses(
         self, tenant: TenantContext
-    ) -> list[ExternalSystemSyncStatus]:
+    ) -> list[DataSourceSyncStatus]:
         """카탈로그 순서대로 원천 유형별 상태를 돌려준다. 수집 이력이 없는 원천도 항목에 포함된다."""
         summaries = await self.repo.find_latest_by_domain(
             tenant.company_id,
@@ -64,11 +78,20 @@ class DataSyncStatusService:
 
     def _build_status(
         self, spec: DataSourceSpec, summary: LatestRunSummary | None, now: datetime
-    ) -> ExternalSystemSyncStatus:
-        return ExternalSystemSyncStatus(
+    ) -> DataSourceSyncStatus:
+        return DataSourceSyncStatus(
             source_domain=spec.source_domain,
             source_system_name=spec.source_system_name,
             sync_interval_minutes=spec.sync_interval_minutes,
+            data_sync_run_id=summary.data_sync_run_id if summary else None,
+            connection_method=summary.connection_method if summary else None,
+            status=summary.status if summary else None,
+            started_at=summary.started_at if summary else None,
+            finished_at=summary.finished_at if summary else None,
+            received_count=summary.received_count if summary else None,
+            loaded_count=summary.loaded_count if summary else None,
+            rejected_count=summary.rejected_count if summary else None,
+            open_issue_count=summary.open_issue_count if summary else 0,
             is_synced=self._is_synced(spec, summary, now),
             last_synced_at=summary.last_synced_at if summary else None,
         )
