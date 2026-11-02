@@ -348,6 +348,29 @@ def test_new_shipment_takes_a_schedule_snapshot():
     assert line_summaries == ["선적 상세 OCN-1#1", "선적 상세 OCN-1#2"]
 
 
+def test_new_shipment_already_received_takes_no_snapshot():
+    """결정 1-10: 처음 들어올 때 이미 입고 완료인 선적은 지켜볼 일정이 없어 기준 스냅샷을 남기지 않는다"""
+    received = replace(
+        SHIPMENT, current_stage="RECEIVED", actual_3pl_inbound_date=date(2026, 1, 27)
+    )
+
+    diff = diff_shipment(None, received)
+
+    assert diff.header.change_type == "INSERT"
+    assert not diff.schedule_changed
+    assert {r.change_summary for r in diff.records if r.entity_type == "SHIPMENT"} == {
+        "선적 OCN-1 RECEIVED"
+    }
+
+
+def test_received_after_tracking_takes_a_snapshot():
+    diff = diff_shipment(
+        _existing_shipment(), replace(SHIPMENT, current_stage="RECEIVED")
+    )
+
+    assert diff.schedule_changed
+
+
 def test_expected_date_change_takes_a_snapshot():
     diff = diff_shipment(
         _existing_shipment(),

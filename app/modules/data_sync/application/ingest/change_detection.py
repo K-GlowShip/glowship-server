@@ -27,6 +27,8 @@ from app.modules.data_sync.application.ingest.source_records import (
 
 ChangeType = Literal["INSERT", "UPDATE"]
 
+RECEIVED = "RECEIVED"
+
 
 @dataclass(frozen=True)
 class Existing[R]:
@@ -256,7 +258,7 @@ def diff_order(
 def diff_shipment(
     existing: ExistingShipment | None, incoming: ShipmentRecord
 ) -> ShipmentDiff | None:
-    """선적 머리와 상세를 함께 비교합니다. 새 선적이거나 단계·예상일이 바뀌면 일정 스냅샷을 남깁니다."""
+    """선적 머리와 상세를 함께 비교합니다. 새 운송 중 선적이거나 단계·예상일이 바뀌면 일정 스냅샷을 남깁니다."""
     header = diff_row(
         Existing(existing.row_id, existing.record) if existing else None, incoming
     )
@@ -290,8 +292,10 @@ def diff_shipment(
 
     if header is None and not lines:
         return None
+    # 기준 스냅샷은 지켜볼 일정이 있는 새 선적만 남깁니다. 이미 입고 완료(RECEIVED)로 처음 들어온 선적은 남기지 않습니다
+    # (결정 1-10 "초기 선적 스냅샷", 2026 생성기 gen2026.py 의 관측 비교와 같음).
     schedule_changed = header is not None and (
-        header.change_type == "INSERT"
+        (header.change_type == "INSERT" and incoming.current_stage != RECEIVED)
         or any(name in SCHEDULE_FIELDS for name in header.changed_fields)
     )
     if header is not None:
