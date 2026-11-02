@@ -55,7 +55,7 @@ app/
     ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)
     ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references
     ├── operating_rule/            # operating_rule_sets, operating_lead_times
-    ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records + 외부 시스템 동기화 상태 조회 API
+    ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records + 원천 유형별 마지막 수집 상태 조회 API
     ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
     ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
