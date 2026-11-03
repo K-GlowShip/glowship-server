@@ -511,7 +511,18 @@ class IngestRepository:
         거부 사유를 검증 이슈 OPEN 으로 남깁니다 (GLOW-15). 수집과 같은 트랜잭션이라 수집이 FAILED 면 함께 되돌아갑니다.
           - 확정 기준선의 검증 이슈는 모두 ERROR·분석 차단(blocks_analysis)입니다. ck2 는 ERROR 면 분석 차단을 강제합니다.
           - detected_at 은 수집 완료 시각(data_sync_runs.finished_at)입니다. 확정 기준선 이슈 9행이 모두 이렇습니다.
+          - (원천 유형, 키, 오류 코드)마다 OPEN 은 1건입니다. 이미 열린 이슈가 있으면 새로 넣지 않고(detected_at = 처음 감지),
+            같은 수집 안에서 겹친 것도 1건만 넣습니다. 기준선 9행이 키마다 1건이고, 10분 주기 수집이 같은 오류를 반복해
+            GET /validation-issues 목록이 쌓이지 않게 합니다 (PR #17 리뷰, 설계 담당 결정 2026-11-03).
         """
+        open_now = await self._open_issue_codes(
+            company_id, source_domain, [r.source_record_key for r in rejections]
+        )
+        fresh: dict[tuple[str, str], Rejection] = {}
+        for r in rejections:
+            key = (r.source_record_key, r.error_code)
+            if key not in open_now and key not in fresh:
+                fresh[key] = r
         rows = [
             {
                 "data_validation_issue_id": uuid.uuid7(),
@@ -527,10 +538,30 @@ class IngestRepository:
                 "detected_at": detected_at,
                 "status": ISSUE_OPEN,
             }
-            for r in rejections
+            for r in fresh.values()
         ]
         if rows:
             await self.db.execute(insert(DataValidationIssue), rows)
+
+    async def _open_issue_codes(
+        self, company_id: uuid.UUID, source_domain: SourceDomain, keys: Sequence[str]
+    ) -> set[tuple[str, str]]:
+        """그 원천 유형에서 키가 같은 OPEN 이슈의 (키, 오류 코드)"""
+        found: set[tuple[str, str]] = set()
+        for chunk in _chunked(sorted(set(keys))):
+            rows = await self.db.execute(
+                select(
+                    DataValidationIssue.source_record_key,
+                    DataValidationIssue.error_code,
+                ).where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.source_entity_type == source_domain.value,
+                    DataValidationIssue.status == ISSUE_OPEN,
+                    DataValidationIssue.source_record_key.in_(chunk),
+                )
+            )
+            found.update((row.source_record_key, row.error_code) for row in rows)
+        return found
 
     async def resolve_validation_issues(
         self,

@@ -553,28 +553,50 @@ async def test_issue_recorded_before_sku_mapping_resolves_after_mapping(
 
 
 async def test_issue_stays_open_when_rejected_again_or_absent(db_write_session):
-    """다시 거부된 키는 이전 이슈도 OPEN 이고 새 이슈가 하나 더 생김. 응답에 없던 키의 이슈도 OPEN (빠진 행은 정정이 아님)"""
+    """다시 같은 오류로 거부된 키는 OPEN 1건 그대로(처음 감지한 수집), 응답에 없던 키의 이슈도 OPEN (빠진 행은 정정이 아님)"""
     db = db_write_session
     row, record = await _mapped_inventory(db)
     again = replace(record, on_hand_quantity=-1, available_quantity=-1)
     absent = replace(again, inventory_date=record.inventory_date - timedelta(days=1))
 
-    await _service(db).ingest(
+    first = await _service(db).ingest(
         row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [again, absent]
     )
-    await _service_at(db, LATER).ingest(
+    second = await _service_at(db, LATER).ingest(
         row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [again]
     )
 
     again_key = f"{row.wh}|{row.sku_code}|2026-07-01"
     absent_key = f"{row.wh}|{row.sku_code}|2026-06-30"
-    assert [i.status for i in await _issue_states(db, row.company_id, again_key)] == [
-        "OPEN",
-        "OPEN",
-    ]
+    assert [
+        (i.data_sync_run_id, i.status)
+        for i in await _issue_states(db, row.company_id, again_key)
+    ] == [(first.data_sync_run_id, "OPEN")]
+    assert second.counts.rejected == 1  # 수집 건수는 레코드 기준이라 그대로 거부 1
     assert [i.status for i in await _issue_states(db, row.company_id, absent_key)] == [
         "OPEN"
     ]
+
+
+async def test_one_open_issue_per_key_and_error_code(db_write_session):
+    """같은 수집 안에서 겹친 (키, 오류 코드)는 1건, 오류 코드가 다르면 따로 (PR #17 리뷰 크리티컬 2, 설계 담당 결정)"""
+    db = db_write_session
+    company_id = await _company(db)
+    same = Rejection("TEST-PARSE-1", "orderedAt", "INVALID_DATE", "읽을 수 없음")
+    other_code = Rejection("TEST-PARSE-1", "orderedAt", "MISSING_REQUIRED", "없음")
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[same, same, other_code],
+    )
+
+    assert result.counts.rejected == 3
+    assert sorted(
+        i.error_code for i in await _issue_states(db, company_id, "TEST-PARSE-1")
+    ) == ["INVALID_DATE", "MISSING_REQUIRED"]
 
 
 async def test_resolution_matches_source_type(db_write_session):
