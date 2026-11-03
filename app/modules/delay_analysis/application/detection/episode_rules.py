@@ -17,6 +17,8 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerReas
           열림 · 예상일·단계 모두 같음                                     → 아무것도 하지 않음
 
       - 계획 3PL 입고일은 선적의 저장된 값(새 선적일 때 한 번 정함, serviceflow 1절)입니다.
+      - 초기 적재(고객사의 첫 SHIPMENT 수집)의 기준 스냅샷은 호출하는 쪽(저장 단계)이 넣지 않습니다(결정 1-10).
+        이 함수는 그 신호를 받지 않고, previous 가 없다는 것만으로 초기 적재로 보지 않습니다 (docs/analysis/delay-detection.md 4절).
       - DB 를 읽지 않는 순수 함수입니다. 에피소드 저장(episode_no·dedupe_key)과 실행 생성 연결은
         0005·create_analysis_run 뒤에 붙입니다.
 """
