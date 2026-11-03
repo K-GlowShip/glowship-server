@@ -36,9 +36,9 @@ class SkuRecord:
     sku_code: str
     product_name: str
     brand_name: str
-    hs10: str | None
+    hs10: str
     category: str
-    subcategory: str | None
+    subcategory: str
     popularity_tier: str
     unit_code: str
     units_per_case: int

@@ -47,6 +47,12 @@ sequenceDiagram
 
 - 선적은 TMS 응답 그대로입니다(`shipmentNo`·`mode`·`destWh`·`plannedKrRelease`·`stage`·`etaPort`·`eta3pl`·`actual3pl`·`items`). 운송 수단은 `OCEAN`·`AIR`입니다.
 - 원천 삭제는 행을 지우지 않고 상태 `REMOVED_AT_SOURCE`로 옵니다(UPDATE). 응답에서 빠진 행·상세는 삭제로 보지 않습니다.
+- **파서가 보장할 조건**(원천 응답 → 레코드, 적재 서비스는 다시 검사하지 않음):
+  1. 선언한 타입 그대로 넘깁니다(날짜 `date`, 일시 `datetime`, 수량 `int`, 참거짓 `bool`).
+  2. `| None`이 아닌 필드는 None이 아닙니다. 값이 없으면 그 레코드를 `MISSING_REQUIRED`로 거부합니다. 상품의 `hs10`·`subcategory`도 필수입니다(DDL NOT NULL).
+  3. 일시는 시간대가 있는 UTC입니다. 시간대가 없거나 읽을 수 없는 날짜·일시는 `INVALID_DATE`로 거부합니다.
+  4. 거부는 레코드 단위이고, 키·`field_name`·오류 코드 형식은 6절과 같습니다.
+- 값의 의미(음수·수량 관계·상태 값 등 DB 제약)는 파서가 아니라 적재 서비스가 적용 전에 검사합니다.
 
 ## 3. 선적의 항구·리드타임 기준·계획 입고일 (`code_resolver.py`)
 
