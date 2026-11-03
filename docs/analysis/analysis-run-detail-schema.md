@@ -1,7 +1,7 @@
 # 분석 실행 상세 응답 스키마
 
 `GET /api/v1/analysis-runs/{runId}`(API 명세 v6.2 4.5절)의 응답 모양을 Pydantic 모델로 정의한 내용과, **왜 이렇게 만들었는지**를 설명합니다.
-이번 작업 범위는 응답 스키마와 코드값 열거형까지입니다. 라우터·서비스·DB 조회는 아직 없습니다(6절). 서버의 분석 테이블이 아직 ERD v5 구조라, v6.2 전환을 팀이 정한 뒤에 연결합니다.
+이번 작업 범위는 응답 스키마와 코드값 열거형까지입니다. 라우터·서비스·DB 조회는 아직 없습니다(6절). 서버의 분석 표는 마이그레이션 `0005`에서 v6.2 DDL과 같아졌고(`analysis_runs`와 분석 결과 표 4개, ORM 모델 포함), 조회는 다음 작업에서 이 스키마에 연결합니다.
 
 작업 중 실패한 것과 그 원인은 8절에 빠짐없이 남겼습니다.
 
@@ -39,7 +39,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | --- | --- |
 | `app/modules/delay_analysis/infrastructure/analysis_enums.py` | 코드값 열거형 25종 (DDL CHECK·설명 스키마·JSON 계약과 같은 값) |
 | `app/modules/delay_analysis/presentation/analysis_run_schemas.py` | 응답 모델 |
-| `tests/modules/delay_analysis/test_analysis_run_schemas.py` | 단위 테스트 16개 함수, 매개변수 포함 20건 |
+| `tests/modules/delay_analysis/test_analysis_run_schemas.py` | 단위 테스트 17개 함수, 매개변수 포함 21건 |
 
 ## 3. 왜 이렇게 만들었나
 
@@ -59,7 +59,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | SKU별 결과의 원값·수량은 모두 null 허용 | `raw_*`, `*_quantity` | 계약은 "EVALUATED면 not null"만 정함. 실제 데이터에는 NOT_ESTIMABLE 항목에도 원값이 채워져 있음(3건). 둘 다 읽을 수 있어야 함 |
 | `impact_source`만 키가 없어도 됨 | 기본값 `None` | 계약 v3 0.1절: v1·v2 엔진 산출물에는 키가 없고 "기록 없음"으로 읽음. 다른 키는 "키 생략 금지"(계약 0절) |
 | 위험 주문을 주문으로 묶음 | `AtRiskOrder.lines[]` | 명세 D21: `at_risk_orders`는 주문 상세 1행. 화면 "위험 주문 N건"은 주문 수 |
-| 기준일은 `date \| None` | `inputBasis.baseDate` | `analysis_runs`에 열이 없고 `dependency_scope.base_date`에만 있음. `ON_HOLD`·`FAILED`는 `dependency_scope`가 NULL(DDL ck36) |
+| 기준일은 `date \| None` | `inputBasis.baseDate` | `analysis_runs`에 열이 없고 `dependency_scope.base_date`에만 있음. `ON_HOLD`·`FAILED`는 `dependency_scope`가 NULL(DDL ck36). 진행 중에 STALE이 된 실행도 의존 범위를 저장하기 전이라 NULL(5절) |
 | `runCode`는 `str \| None` | | 명세 D14: v6.2에도 `run_code` 열이 없음. 열이 생기기 전까지 null |
 | 응답에서 뺀 DB 열 | `analysis_runs.dependency_scope`·`decision_signature`·`decision_signature_sha256`, `inventory_impact_results.raw_*_shortage_quantity` | 명세 4.5 "응답에 넣지 않는 것"(428줄): 서버 내부 STALE 판정·검증용. 단, `explanation.v1` 안의 `decision_signature_hash`·`prompt_template_sha256`은 계약의 필수 메타데이터라 그대로 나감. 명세 4.5 AI 설명 표(482줄)가 이 메타데이터를 "표시하지 않음"(화면에 표시하지 않음)으로 두고, D20이 설명을 저장된 그대로 내리게 함. 판정 서명 본문(`decision_signature`)과 의존 범위는 나가지 않음(8절 F9) |
 | `stage`·`sourceDomain`은 `str` | 열거형을 만들지 않음 | 선적·수집 코드값은 다른 영역(B) 모듈이 소유. 이 모듈에서 따로 정의하면 두 곳을 맞춰야 함 |
@@ -112,15 +112,18 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `NO_RISK` | 재고 영향만 | null | null | null |
 | `NO_DELAY`·`ON_HOLD`·도구 실패 `FAILED` | 빈 목록 | null | `ON_HOLD`·`FAILED`만 있음 | null |
 | `FAILED`(`EXPLANATION_GENERATION_FAILED`) | 있음 | null | 있음 | null |
-| `STALE` | 완료 당시 값 | 완료 당시 값 | null | 있음 |
+| `STALE`(완료 뒤에 STALE) | 완료 당시 값 | 완료 당시 값 | null | 있음 |
+| `STALE`(진행 중에 STALE) | 빈 목록 | null | null | 있음 |
+
+진행 중(`DETECTED`~`VALIDATING_OUTPUT`)인 실행도 수집 적재 때 STALE이 됩니다. develop `stale_service.py`의 STALE 대상(`STALE_TARGET_STATUSES`)에 진행 중 상태가 들어 있고, 의존 범위 없이 판정합니다. 이 실행은 `completedStatus`·`resultClass`·`inputBasis.baseDate`도 null입니다(DDL ck25는 STALE이면서 `completed_status`가 없는 경우를 허용).
 
 ## 6. 아직 없는 것
 
 | 항목 | 상태 |
 | --- | --- |
-| 라우터·서비스·DB 조회 | 없음. 서버 분석 테이블이 v5 구조(Alembic `0001`). v6.2 전환 방식(Alembic/DDL)·담당 결정 뒤에 구현 |
+| 라우터·서비스·DB 조회 | 없음. 분석 표 5개와 ORM 모델은 Alembic `0005`에서 v6.2 DDL과 같아짐(`0003`은 STALE 사유 4열·`dependency_scope`만, `0005`가 실행 사유·완료 상태·결과 분류·판정 서명과 결과 표 4개). 조회 구현 작업에서 연결 |
 | ORM 행 → 응답 변환 | 없음. 위험 주문을 주문으로 묶는 것, `dependency_scope.base_date` 읽기, route·대표 상품(D13, B의 계산 함수)은 조회 구현에서 함 |
-| `runCode` | null. `run_code` 열 추가(D14) 뒤에 채움 |
+| `runCode` | null. `run_code` 열 추가(D14, Alembic `0006`) 뒤에 채움 |
 | 공통 camelCase 변환의 `3pl` 표기 | 이 스키마만 별칭으로 고침. 같은 필드를 쓰는 다른 API(지연 목록·선적)도 같은 문제가 있어 공통 베이스 담당과 공유 필요 |
 
 ## 7. 검증
@@ -136,7 +139,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 검사가 틀린 것을 잡는지 | 옛 `EAST_FULFILL` 추가, NOT NULL 열을 null 허용으로, null 열을 필수로, 설명 길이 600→900, 명세 필드 하나 삭제 | 5건 모두 잡음 |
 | 테스트가 틀린 것을 잡는지 | `3pl` 별칭을 지우고 실행 | 1건 실패 확인 후 복원(해시 같음) |
 | 리뷰 반영(PR #8) | 새 테스트 5건(근거 값 불리언, SKU 정수 불리언·문자열, 평균 판매량 숫자, 설명 메타데이터 유지)을 고치기 전 코드에서 먼저 실행 → 메타데이터 유지(현재 동작 확인용)를 뺀 4건 실패 확인. 내부 열 검사에 snake·camel 이름과 묶음 안 이름을 주입 → 3건 모두 잡음. overlay 설명 13·SKU별 결과 39가 `StrictInt`로 읽히고, 평균 판매량 391건은 숫자로 바꿔도 값이 같음 | 통과 |
-| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과. 이 PR 의 테스트 20건, 전체 92건 (develop `12bd94c` 기준. `4d15845` 기준 63건, 첫 작성 때 53건) |
+| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과. 이 문서의 테스트 21건, 전체 229건 (develop `213214c` + `0005` + 이 후속 수정 기준. 후속 수정을 처음 쓴 `e96db1f` 기준 93건, PR #8 머지 때 92건, 첫 작성 때 53건) |
 
 **검증의 한계**
 
@@ -161,6 +164,9 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | F10 | (리뷰) 근거 `value`에 `True`를 넣으면 `1`로 바뀜 | `str \| int`의 `int`가 `True`를 받아들임(bool은 int의 하위 타입). 7절 explanation.v1 대조는 패턴·길이·개수만 비교하고 타입(`string·integer·null`)은 비교하지 않음 | `StrictStr \| StrictInt \| None`. 같은 원칙으로 저장 JSON의 정수 필드를 모두 `StrictInt`로 바꿈 |
 | F11 | (리뷰) 7절 "열거형 24종"이 2절 "25종"과 다르고, "전체 53건"이 rebase 뒤 실제(58건)와 다름 | 24종은 "기준과 직접 비교한 수"였는데 설명 없이 적음. 테스트 수는 develop 변경 뒤 다시 세지 않음 | 25종 안의 비교 방식을 나눠 적고, 테스트 수는 기준 커밋과 함께 다시 센 값으로 적음 |
 | F12 | (리뷰) `averageDailySales`가 JSON에서 문자열로 나감 | Pydantic이 `Decimal`을 문자열로 직렬화하는 것을 프론트 쓰임새와 함께 고려하지 않음 | JSON에서만 숫자로 내보내는 `JsonNumberDecimal` |
+| F13 | (리뷰) 5절이 STALE을 "완료 당시 값"으로만 적고, 3절·`baseDate` 설명이 비는 경우를 `ON_HOLD`·`FAILED`로만 적음. develop(PR #9)은 진행 중 실행도 STALE로 바꾸고, 이때 `dependency_scope`·결과·설명이 없음 | develop(PR #9)을 merge할 때 테스트 수만 고치고, PR #9의 동작(진행 중 실행도 STALE 대상)이 문서와 맞는지 다시 보지 않음 | 5절에 "진행 중에 STALE" 줄과 설명 추가, 3절·`baseDate` 설명·결과 목록 주석에 추가, 응답 모양을 고정하는 테스트 추가 |
+| F14 | (리뷰) 첫머리·6절의 "서버 분석 테이블이 v5 구조(Alembic `0001`)"가 develop과 다름. develop에는 `0002`·`0003`이 있고 `0003`이 STALE 사유 4열·`dependency_scope`를 추가함 | F13과 같은 원인. merge 뒤 문서 표현을 다시 확인하지 않음 | `0003`까지 반영된 상태와 아직 남은 v6.2 전환 범위로 고쳐 씀(F15에서 다시 고침) |
+| F15 | F13·F14 수정을 11-02에 `0003` 기준으로 써 두고 push하지 않은 사이, develop에 `0004`가 들어오고 이 PR의 `0005`가 분석 표를 v6.2로 바꿈. "0003까지, 나머지는 다음 리비전"이 다시 사실과 달라짐 | 리뷰어 요청대로 DB 연결 PR(`0005`)에 함께 넣으면서, 써 둔 문장을 그 PR 기준으로 다시 확인하지 않으면 같은 문제가 반복됨 | 첫머리·6절을 `0005` 상태로, `runCode`를 `0006`으로, 테스트 수를 다시 세어 고쳐 씀 |
 
 ## 9. 테스트
 
@@ -183,6 +189,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `test_v5_codes_are_rejected` | `EAST_FULFILL`·`PARTIAL` 거부 |
 | `test_stale_reason_codes_exclude_multiple` | 대표 사유는 `MULTIPLE_RELEVANT_CHANGES` 허용, 배열은 거부 |
 | `test_on_hold_run_has_failure_summary_and_empty_results` | `ON_HOLD`: 결과 없음, 실패 요약, 기준일 null |
+| `test_in_progress_stale_run_has_no_results` | 진행 중에 STALE이 된 실행: 완료 상태·결과·설명·기준일 없음, STALE 사유만 있음 |
 | `test_average_daily_sales_is_json_number` | 평균 판매량이 서버 안에서는 `Decimal`, JSON에서는 숫자 |
 
 ## 10. 관련 파일

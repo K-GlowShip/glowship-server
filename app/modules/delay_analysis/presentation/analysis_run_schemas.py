@@ -218,7 +218,8 @@ class DataWarning(CamelModel):
 class InputBasis(CamelModel):
     input_seq: int
     base_date: date | None = Field(
-        description="기준일 D. dependency_scope.base_date 에서 읽는다(ON_HOLD·FAILED 는 없음)."
+        description="기준일 D. dependency_scope.base_date 에서 읽는다. "
+        "ON_HOLD·FAILED 와 진행 중에 STALE 이 된 실행은 dependency_scope 가 없어 null."
     )
     operating_rule_set_id: uuid.UUID
     operating_rule_version_no: int
@@ -379,7 +380,7 @@ class AnalysisRunDetailResponse(CamelModel):
     target: AnalysisTarget
     input_basis: InputBasis
 
-    # 결과 (NO_DELAY·ON_HOLD·도구 실패 FAILED 는 빈 목록)
+    # 결과 (NO_DELAY·ON_HOLD·도구 실패 FAILED·진행 중에 STALE 이 된 실행은 빈 목록)
     inventory_impacts: list[InventoryImpact]
     at_risk_orders: list[AtRiskOrder]
     response_options: list[ResponseOption]
