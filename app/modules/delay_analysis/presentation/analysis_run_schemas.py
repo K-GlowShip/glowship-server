@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from app.core.schemas import CamelModel
+from app.core.summary_schemas import ShipmentSummary, SkuSummary, WarehouseSummary
 from app.modules.delay_analysis.infrastructure.analysis_enums import (
     AnalysisRunStatus,
     CalculationStatus,
@@ -182,21 +183,30 @@ class SkuResults(StoredJsonModel):
 
 
 class AnalysisTarget(CamelModel):
-    """분석 대상 지연. route·대표 상품·지연 일수는 지연 쪽 계산 함수(D13)를 쓴다."""
+    """
+    분석 대상 지연 (명세 4.5 대상 칸). 값은 지연 목록·상세(4.4)와 같은 계산 함수(D13, delay_display)로 만든다.
+      - 선적·창고·대표 상품은 지연 목록과 같은 요약 객체(app/core/summary_schemas)다.
+      - 단계·입고일·지연 일수는 선적의 현재 값이다(지연 목록과 같음).
+    """
 
     delay_event_id: uuid.UUID
     episode_no: int
-    shipment_code: str
-    representative_sku: str = Field(
-        description="대표 상품명 (선적에서 수량이 가장 많은 SKU)"
+    shipment: ShipmentSummary
+    warehouse: WarehouseSummary = Field(description="도착 창고")
+    representative_sku: SkuSummary | None = Field(
+        description="선적에서 수량이 가장 많은 SKU (같으면 상세 줄 번호가 작은 SKU, 상세가 없으면 null)"
     )
     route: str = Field(description="예: KR → LOS ANGELES (D13)")
     stage: str = Field(
-        description="운송 단계 코드 (PRE_DEPARTURE·AT_SEA·IN_AIR·AT_PORT·RECEIVED)"
+        description="선적의 현재 운송 단계 (PRE_DEPARTURE·AT_SEA·IN_AIR·AT_PORT·RECEIVED)"
     )
     planned_3pl_inbound_date: date = Field(alias=PLANNED_3PL)
-    expected_3pl_inbound_date: date = Field(alias=EXPECTED_3PL)
-    delay_days: int
+    expected_3pl_inbound_date: date = Field(
+        alias=EXPECTED_3PL, description="선적의 현재 예상 3PL 입고일"
+    )
+    delay_days: int = Field(
+        description="예상 3PL 입고일 − 계획 3PL 입고일 (일). 회복되어 예상일 ≤ 계획일이면 0"
+    )
 
 
 class DataVersion(CamelModel):
@@ -380,7 +390,7 @@ class AnalysisRunDetailResponse(CamelModel):
     target: AnalysisTarget
     input_basis: InputBasis
 
-    # 결과 (NO_DELAY·ON_HOLD·도구 실패 FAILED·진행 중에 STALE 이 된 실행은 빈 목록)
+    # 결과 (NO_DELAY·ON_HOLD·도구 실패 FAILED 는 빈 목록. 진행 중에 STALE 이 된 실행은 그때까지 저장된 결과만)
     inventory_impacts: list[InventoryImpact]
     at_risk_orders: list[AtRiskOrder]
     response_options: list[ResponseOption]

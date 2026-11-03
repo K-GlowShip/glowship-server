@@ -20,7 +20,7 @@
 
 ```
 AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요약 필드는 최상위(명세 필드 이름 그대로)
-├── target: AnalysisTarget                대상 지연 (선적·경로·단계·계획/예상 입고일)
+├── target: AnalysisTarget                대상 지연 (선적·도착 창고·대표 상품 요약 객체, 경로·단계·계획/예상 입고일·지연 일수)
 ├── inputBasis: InputBasis                입력 기준 (input_seq, 기준일, 운영 기준, 계산 계약 버전, 사용한 수집)
 │   ├── dataVersions[]: DataVersion
 │   └── dataWarnings[]: DataWarning
@@ -39,7 +39,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | --- | --- |
 | `app/modules/delay_analysis/infrastructure/analysis_enums.py` | 코드값 열거형 25종 (DDL CHECK·설명 스키마·JSON 계약과 같은 값) |
 | `app/modules/delay_analysis/presentation/analysis_run_schemas.py` | 응답 모델 |
-| `tests/modules/delay_analysis/test_analysis_run_schemas.py` | 단위 테스트 17개 함수, 매개변수 포함 21건 |
+| `tests/modules/delay_analysis/test_analysis_run_schemas.py` | 단위 테스트 19개 함수, 매개변수 포함 23건 |
 
 ## 3. 왜 이렇게 만들었나
 
@@ -62,6 +62,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 기준일은 `date \| None` | `inputBasis.baseDate` | `analysis_runs`에 열이 없고 `dependency_scope.base_date`에만 있음. `ON_HOLD`·`FAILED`는 `dependency_scope`가 NULL(DDL ck36). 진행 중에 STALE이 된 실행도 의존 범위를 저장하기 전이라 NULL(5절) |
 | `runCode`는 `str \| None` | | 명세 D14: v6.2에도 `run_code` 열이 없음. 열이 생기기 전까지 null |
 | 응답에서 뺀 DB 열 | `analysis_runs.dependency_scope`·`decision_signature`·`decision_signature_sha256`, `inventory_impact_results.raw_*_shortage_quantity` | 명세 4.5 "응답에 넣지 않는 것"(428줄): 서버 내부 STALE 판정·검증용. 단, `explanation.v1` 안의 `decision_signature_hash`·`prompt_template_sha256`은 계약의 필수 메타데이터라 그대로 나감. 명세 4.5 AI 설명 표(482줄)가 이 메타데이터를 "표시하지 않음"(화면에 표시하지 않음)으로 두고, D20이 설명을 저장된 그대로 내리게 함. 판정 서명 본문(`decision_signature`)과 의존 범위는 나가지 않음(8절 F9) |
+| 대상의 선적·창고·대표 상품은 요약 객체 | `shipment`(`ShipmentSummary`), `warehouse`(`WarehouseSummary`), `representativeSku`(`SkuSummary \| None`) | 명세 4.5 대상 칸, 응답 본문 규칙 5.2. 지연 목록·상세(4.4)와 같은 모델(`app/core/summary_schemas.py`)과 같은 계산 함수(D13, `delay_display`)를 써서 두 화면의 값과 모양이 같음. 상세가 없는 선적은 대표 상품이 null. 단계·입고일·지연 일수도 지연 목록처럼 선적의 현재 값(8절 F16) |
 | `stage`·`sourceDomain`은 `str` | 열거형을 만들지 않음 | 선적·수집 코드값은 다른 영역(B) 모듈이 소유. 이 모듈에서 따로 정의하면 두 곳을 맞춰야 함 |
 
 ### 명세에 이름이 없어서 정한 것
@@ -113,16 +114,16 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `NO_DELAY`·`ON_HOLD`·도구 실패 `FAILED` | 빈 목록 | null | `ON_HOLD`·`FAILED`만 있음 | null |
 | `FAILED`(`EXPLANATION_GENERATION_FAILED`) | 있음 | null | 있음 | null |
 | `STALE`(완료 뒤에 STALE) | 완료 당시 값 | 완료 당시 값 | null | 있음 |
-| `STALE`(진행 중에 STALE) | 빈 목록 | null | null | 있음 |
+| `STALE`(진행 중에 STALE) | 그때까지 저장된 결과(없으면 빈 목록) | null | null | 있음 |
 
-진행 중(`DETECTED`~`VALIDATING_OUTPUT`)인 실행도 수집 적재 때 STALE이 됩니다. develop `stale_service.py`의 STALE 대상(`STALE_TARGET_STATUSES`)에 진행 중 상태가 들어 있고, 의존 범위 없이 판정합니다. 이 실행은 `completedStatus`·`resultClass`·`inputBasis.baseDate`도 null입니다(DDL ck25는 STALE이면서 `completed_status`가 없는 경우를 허용).
+진행 중(`DETECTED`~`VALIDATING_OUTPUT`)인 실행도 수집 적재 때 STALE이 됩니다. develop `stale_service.py`의 STALE 대상(`STALE_TARGET_STATUSES`)에 진행 중 상태가 들어 있고, 의존 범위 없이 판정합니다. 이미 저장한 계산 결과(예: 재고 영향·위험 주문)는 지우지 않고 그대로 보여 주지만, 설명·추천이 없고 선택 대상이 아닙니다(serviceflow 399줄). 이 실행은 `completedStatus`·`resultClass`·`inputBasis.baseDate`도 null입니다(명세 4.5 "이때 `completedStatus`는 비어 있다", DDL ck25는 STALE이면서 `completed_status`가 없는 경우를 허용)(8절 F17).
 
 ## 6. 아직 없는 것
 
 | 항목 | 상태 |
 | --- | --- |
 | 라우터·서비스·DB 조회 | 없음. 분석 표 5개와 ORM 모델은 Alembic `0005`에서 v6.2 DDL과 같아짐(`0003`은 STALE 사유 4열·`dependency_scope`만, `0005`가 실행 사유·완료 상태·결과 분류·판정 서명과 결과 표 4개). 조회 구현 작업에서 연결 |
-| ORM 행 → 응답 변환 | 없음. 위험 주문을 주문으로 묶는 것, `dependency_scope.base_date` 읽기, route·대표 상품(D13, B의 계산 함수)은 조회 구현에서 함 |
+| ORM 행 → 응답 변환 | 없음. 위험 주문을 주문으로 묶는 것, `dependency_scope.base_date` 읽기, 대상 묶음의 route·대표 상품·지연 일수(D13, 지연 목록과 같은 `delay_display` 함수)는 조회 구현에서 함 |
 | `runCode` | null. `run_code` 열 추가(D14, Alembic `0006`) 뒤에 채움 |
 | 공통 camelCase 변환의 `3pl` 표기 | 이 스키마만 별칭으로 고침. 같은 필드를 쓰는 다른 API(지연 목록·선적)도 같은 문제가 있어 공통 베이스 담당과 공유 필요 |
 
@@ -139,7 +140,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 검사가 틀린 것을 잡는지 | 옛 `EAST_FULFILL` 추가, NOT NULL 열을 null 허용으로, null 열을 필수로, 설명 길이 600→900, 명세 필드 하나 삭제 | 5건 모두 잡음 |
 | 테스트가 틀린 것을 잡는지 | `3pl` 별칭을 지우고 실행 | 1건 실패 확인 후 복원(해시 같음) |
 | 리뷰 반영(PR #8) | 새 테스트 5건(근거 값 불리언, SKU 정수 불리언·문자열, 평균 판매량 숫자, 설명 메타데이터 유지)을 고치기 전 코드에서 먼저 실행 → 메타데이터 유지(현재 동작 확인용)를 뺀 4건 실패 확인. 내부 열 검사에 snake·camel 이름과 묶음 안 이름을 주입 → 3건 모두 잡음. overlay 설명 13·SKU별 결과 39가 `StrictInt`로 읽히고, 평균 판매량 391건은 숫자로 바꿔도 값이 같음 | 통과 |
-| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과. 이 문서의 테스트 21건, 전체 368건 (develop `2f651d6` + `0005` + 이 후속 수정 기준, 건너뛴 테스트 없음. 후속 수정을 처음 쓴 `e96db1f` 기준 93건, PR #8 머지 때 92건, 첫 작성 때 53건) |
+| 린트·테스트 | `uv run ruff check . && uv run ruff format --check . && uv run pytest` | 통과. 이 문서의 테스트 23건, 전체 371건 (develop `2f651d6` + `0005` + PR #16 리뷰 반영 기준, 건너뛴 테스트 없음. 리뷰 반영 전 21건·368건, 후속 수정을 처음 쓴 `e96db1f` 기준 93건, PR #8 머지 때 92건, 첫 작성 때 53건) |
 
 **검증의 한계**
 
@@ -167,6 +168,8 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | F13 | (리뷰) 5절이 STALE을 "완료 당시 값"으로만 적고, 3절·`baseDate` 설명이 비는 경우를 `ON_HOLD`·`FAILED`로만 적음. develop(PR #9)은 진행 중 실행도 STALE로 바꾸고, 이때 `dependency_scope`·결과·설명이 없음 | develop(PR #9)을 merge할 때 테스트 수만 고치고, PR #9의 동작(진행 중 실행도 STALE 대상)이 문서와 맞는지 다시 보지 않음 | 5절에 "진행 중에 STALE" 줄과 설명 추가, 3절·`baseDate` 설명·결과 목록 주석에 추가, 응답 모양을 고정하는 테스트 추가 |
 | F14 | (리뷰) 첫머리·6절의 "서버 분석 테이블이 v5 구조(Alembic `0001`)"가 develop과 다름. develop에는 `0002`·`0003`이 있고 `0003`이 STALE 사유 4열·`dependency_scope`를 추가함 | F13과 같은 원인. merge 뒤 문서 표현을 다시 확인하지 않음 | `0003`까지 반영된 상태와 아직 남은 v6.2 전환 범위로 고쳐 씀(F15에서 다시 고침) |
 | F15 | F13·F14 수정을 11-02에 `0003` 기준으로 써 두고 push하지 않은 사이, develop에 `0004`가 들어오고 이 PR의 `0005`가 분석 표를 v6.2로 바꿈. "0003까지, 나머지는 다음 리비전"이 다시 사실과 달라짐 | 리뷰어 요청대로 DB 연결 PR(`0005`)에 함께 넣으면서, 써 둔 문장을 그 PR 기준으로 다시 확인하지 않으면 같은 문제가 반복됨 | 첫머리·6절을 `0005` 상태로, `runCode`를 `0006`으로, 테스트 수를 다시 세어 고쳐 씀 |
+| F16 | (리뷰 #16) 대상 묶음이 `shipmentCode`·대표 상품명 문자열만 주고 도착 창고가 없어, 명세 4.5 대상 칸·지연 목록(4.4)의 요약 객체 모양과 다름 | PR #8에서 대상 묶음을 만들 때는 요약 객체(`summary_schemas.py`)가 없었고, PR #11에서 요약 객체가 생긴 뒤 이 묶음을 다시 맞추지 않음. 같은 값을 두 API가 따로 정의해 한쪽만 바뀜 | 지연 목록과 같은 요약 모델로 바꾸고, 대상 키를 명세와 비교하는 테스트와 두 모델이 같은 클래스인지 보는 테스트를 추가. 고치기 전 코드에서 실패 확인 |
+| F17 | (리뷰 #16) 5절이 진행 중에 STALE이 된 실행의 결과를 "빈 목록"으로 적음. serviceflow 399줄은 "이미 저장한 계산 결과는 보존" | F13을 고칠 때 develop 코드(`stale_service.py`, 의존 범위 없음)만 보고 결과도 없다고 추론하고, serviceflow의 동시성 표를 확인하지 않음 | 5절 표·설명, 응답 모델 주석을 "그때까지 저장된 결과"로 고치고, 테스트를 저장된 결과가 남는 경우로 바꿈. 모델은 원래 두 경우를 다 받아들여서, 이 테스트는 모양을 고정하는 기록용이며 고치기 전 코드에서도 통과함 |
 
 ## 9. 테스트
 
@@ -176,6 +179,8 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | --- | --- |
 | `test_top_level_fields_follow_spec_camel_case` | 최상위 키가 명세 4.5 필드 + 묶음 5개와 정확히 같음 |
 | `test_3pl_dates_use_spec_spelling` | `3pl` 필드가 명세 표기, `3Pl` 없음 |
+| `test_target_matches_spec_and_delay_list_summaries` | 대상 묶음 키가 명세 4.5 대상 칸과 같고, 선적·창고·대표 상품이 지연 목록과 같은 요약 모델 |
+| `test_target_without_shipment_lines_has_null_representative_sku` | 상세가 없는 선적은 `representativeSku: null` |
 | `test_stored_json_keeps_snake_case_keys` | 설명·SKU별 결과 안의 키가 저장된 그대로 |
 | `test_response_does_not_expose_internal_columns` | 저장 JSON을 뺀 응답에 내부 DB 열 이름(snake·camel 모두)이 없음 |
 | `test_explanation_keeps_contract_metadata` | 설명 안의 `decision_signature_hash`·`prompt_template_sha256`은 저장된 그대로 나감 |
@@ -189,7 +194,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `test_v5_codes_are_rejected` | `EAST_FULFILL`·`PARTIAL` 거부 |
 | `test_stale_reason_codes_exclude_multiple` | 대표 사유는 `MULTIPLE_RELEVANT_CHANGES` 허용, 배열은 거부 |
 | `test_on_hold_run_has_failure_summary_and_empty_results` | `ON_HOLD`: 결과 없음, 실패 요약, 기준일 null |
-| `test_in_progress_stale_run_has_no_results` | 진행 중에 STALE이 된 실행: 완료 상태·결과·설명·기준일 없음, STALE 사유만 있음 |
+| `test_in_progress_stale_run_keeps_stored_results` | 진행 중에 STALE이 된 실행: 저장된 재고 영향·위험 주문은 남고, 대응안·설명·완료 상태·기준일은 없음 |
 | `test_average_daily_sales_is_json_number` | 평균 판매량이 서버 안에서는 `Decimal`, JSON에서는 숫자 |
 
 ## 10. 관련 파일

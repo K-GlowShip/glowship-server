@@ -10,11 +10,13 @@ from pydantic.alias_generators import to_camel
 
 from app.modules.delay_analysis.presentation.analysis_run_schemas import (
     AnalysisRunDetailResponse,
+    AnalysisTarget,
     Explanation,
     OptionOrderOutcome,
     ResponseOption,
     SkuResults,
 )
+from app.modules.delay_analysis.presentation.delay_event_schemas import _DelayEventBase
 
 RUN_ID = uuid.uuid7()
 OPTION_ID = uuid.uuid7()
@@ -179,8 +181,17 @@ def _ready_run() -> dict:
         "target": {
             "delay_event_id": uuid.uuid7(),
             "episode_no": 1,
-            "shipment_code": "OCN-20251229",
-            "representative_sku": "수분 크림 50ml",
+            "shipment": {"shipment_id": uuid.uuid7(), "shipment_code": "OCN-20251229"},
+            "warehouse": {
+                "warehouse_id": uuid.uuid7(),
+                "warehouse_code": "US-WEST-LA",
+                "region_code": "US_WEST",
+            },
+            "representative_sku": {
+                "sku_id": SKU_ID,
+                "sku_code": "SKU-001",
+                "product_name": "수분 크림 50ml",
+            },
             "route": "KR → LOS ANGELES",
             "stage": "AT_SEA",
             "planned_3pl_inbound_date": date(2026, 2, 11),
@@ -312,6 +323,33 @@ def test_3pl_dates_use_spec_spelling():
     impact = got["inventoryImpacts"][0]
     assert {"baselinePlanned3plInboundDate", "expected3plInboundDate"} <= set(impact)
     assert not any("3Pl" in key for key in [*got["target"], *impact])
+
+
+def test_target_matches_spec_and_delay_list_summaries():
+    """대상 묶음은 명세 4.5 대상 칸과 같고, 선적·창고·대표 상품은 지연 목록(4.4)과 같은 요약 객체다"""
+    target = _dump(_ready_run())["target"]
+
+    assert set(target) == {
+        "delayEventId", "episodeNo", "shipment", "warehouse", "representativeSku", "route", "stage",
+        "planned3plInboundDate", "expected3plInboundDate", "delayDays",
+    }  # fmt: skip
+    assert set(target["shipment"]) == {"shipmentId", "shipmentCode"}
+    assert set(target["warehouse"]) == {"warehouseId", "warehouseCode", "regionCode"}
+    assert set(target["representativeSku"]) == {"skuId", "skuCode", "productName"}
+    # 지연 목록과 같은 모델을 써야 두 화면의 모양이 따로 바뀌지 않는다
+    for name in ("shipment", "warehouse", "representative_sku"):
+        assert (
+            AnalysisTarget.model_fields[name].annotation
+            == _DelayEventBase.model_fields[name].annotation
+        )
+
+
+def test_target_without_shipment_lines_has_null_representative_sku():
+    """상세가 없는 선적은 대표 상품이 null 이다 (명세 4.5 대상 칸, 지연 목록과 같음)"""
+    body = copy.deepcopy(_ready_run())
+    body["target"]["representative_sku"] = None
+
+    assert _dump(body)["target"]["representativeSku"] is None
 
 
 def test_stored_json_keeps_snake_case_keys():
@@ -498,9 +536,10 @@ def test_on_hold_run_has_failure_summary_and_empty_results():
     assert got["inputBasis"]["baseDate"] is None
 
 
-def test_in_progress_stale_run_has_no_results():
-    """진행 중(DETECTED~VALIDATING_OUTPUT)에 STALE 이 된 실행: 완료 상태·결과·설명·기준일이 없고 STALE 사유만 있다
-    (develop stale_service.py STALE_TARGET_STATUSES 에 진행 중 상태 포함, 이때 dependency_scope 는 NULL)"""
+def test_in_progress_stale_run_keeps_stored_results():
+    """진행 중(DETECTED~VALIDATING_OUTPUT)에 STALE 이 된 실행: 그때까지 저장한 계산 결과는 보존하고, 설명·추천·완료 상태는 없다
+    (serviceflow 399줄 "이미 저장한 계산 결과는 보존하지만 설명·추천이 없고 선택 대상이 아니다", 명세 4.5 "completedStatus 는 비어 있다").
+    재고 영향·위험 주문까지 저장한 뒤 대응안 계산 전에 STALE 이 된 경우. 의존 범위는 완료 때 저장하므로 기준일도 없다."""
     body = copy.deepcopy(_ready_run())
     body.update(
         status="STALE",
@@ -510,8 +549,6 @@ def test_in_progress_stale_run_has_no_results():
         stale_detected_at=NOW,
         stale_primary_reason="RELEVANT_ORDER_CHANGED",
         stale_reason_codes=["RELEVANT_ORDER_CHANGED"],
-        inventory_impacts=[],
-        at_risk_orders=[],
         response_options=[],
         explanation=None,
         explanation_validation_status=None,
@@ -524,7 +561,9 @@ def test_in_progress_stale_run_has_no_results():
     got = _dump(body)
 
     assert got["status"] == "STALE" and got["completedStatus"] is None
-    assert got["inventoryImpacts"] == [] and got["explanation"] is None
+    assert got["resultClass"] is None
+    assert len(got["inventoryImpacts"]) == 1 and len(got["atRiskOrders"]) == 1
+    assert got["responseOptions"] == [] and got["explanation"] is None
     assert got["inputBasis"]["baseDate"] is None
     assert got["stalePrimaryReason"] == "RELEVANT_ORDER_CHANGED"
 
