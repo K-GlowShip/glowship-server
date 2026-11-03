@@ -1,5 +1,6 @@
 import math
 import uuid
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -50,6 +51,9 @@ UNMAPPED_WAREHOUSE_CODE = "UNMAPPED_WAREHOUSE_CODE"
 UNSUPPORTED_TRANSPORT_MODE = "UNSUPPORTED_TRANSPORT_MODE"
 NO_ROUTE_PORT = "NO_ROUTE_PORT"
 NO_LEADTIME_REFERENCE = "NO_LEADTIME_REFERENCE"
+# 주문·선적 안에 같은 상세 줄 번호가 2개 이상: 어느 줄이 맞는지 알 수 없어 부모 레코드 전체를 1건으로 거부합니다
+# (그대로 두면 (부모, line_no) 고유 제약 order_lines_uk2·shipment_lines_uk2 위반으로 수집 전체가 실패).
+DUPLICATE_LINE_NO = "DUPLICATE_LINE_NO"
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,8 @@ class Rejection:
 
 
 def resolve_order(source: SourceOrder, book: CodeBook) -> OrderRecord | Rejection:
+    if duplicate := _duplicate_line_no(source.order_code, source.lines):
+        return duplicate
     warehouse = book.warehouses.get(source.warehouse_code)
     if warehouse is None:
         return _unmapped_warehouse(source.order_code, source.warehouse_code)
@@ -137,6 +143,8 @@ def resolve_shipment(
 ) -> ShipmentRecord | Rejection:
     """existing_plan 이 있으면(이미 있는 선적) 저장된 기준·계획일을 그대로 쓰고, 없으면 새로 정합니다."""
     key = source.shipment_code
+    if duplicate := _duplicate_line_no(key, source.lines):
+        return duplicate
     reference_mode = TRANSPORT_MODE_TO_REFERENCE.get(source.transport_mode)
     if reference_mode is None:
         return Rejection(
@@ -263,6 +271,20 @@ def planned_3pl_inbound_date(
 ) -> date:
     """계획 3PL 입고일 = 한국 계획 출고일 + 올림(시장 리드타임 p90) 일"""
     return planned_kr_release_date + timedelta(days=math.ceil(total_leadtime_p90))
+
+
+def _duplicate_line_no(key: str, lines) -> Rejection | None:
+    """상세 줄 번호가 겹치면 겹친 번호 개수와 관계없이 부모 레코드에 대한 거부 1건"""
+    counts = Counter(line.line_no for line in lines)
+    duplicated = sorted(line_no for line_no, count in counts.items() if count > 1)
+    if not duplicated:
+        return None
+    return Rejection(
+        key,
+        "line_no",
+        DUPLICATE_LINE_NO,
+        f"같은 상세 줄 번호가 2개 이상: {', '.join(map(str, duplicated))}",
+    )
 
 
 def _unmapped_sku(key: str, code: str) -> Rejection:

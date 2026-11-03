@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from app.modules.data_sync.application.ingest.code_resolver import (
+    DUPLICATE_LINE_NO,
     NO_LEADTIME_REFERENCE,
     NO_ROUTE_PORT,
     UNMAPPED_SKU_CODE,
@@ -262,3 +263,63 @@ def test_inventory_uses_internal_codes_for_summary_labels():
     assert (record.warehouse_code, record.sku_code) == ("WH-WEST", "SKU-001")
     rejection = resolve_inventory(replace(INVENTORY, sku_code="X"), BOOK)
     assert rejection.source_record_key == "2026-01-05 TMS-LAX X"
+
+
+# --- 상세 줄 번호 중복 -----------------------------------------------------------------
+
+
+def test_duplicate_order_line_no_rejects_the_order_once():
+    order = replace(
+        ORDER,
+        lines=(
+            SourceOrderLine(1, "TMS-SKU-001", 3, 0, "ACTIVE"),
+            SourceOrderLine(1, "TMS-SKU-001", 2, 0, "ACTIVE"),
+            SourceOrderLine(2, "TMS-SKU-001", 1, 0, "ACTIVE"),
+            SourceOrderLine(2, "TMS-SKU-001", 1, 0, "ACTIVE"),
+            SourceOrderLine(2, "TMS-SKU-001", 1, 0, "ACTIVE"),
+        ),
+    )
+
+    rejection = resolve_order(order, BOOK)
+
+    assert isinstance(rejection, Rejection)
+    assert (
+        rejection.source_record_key,
+        rejection.field_name,
+        rejection.error_code,
+    ) == (
+        "ORD-1",
+        "line_no",
+        DUPLICATE_LINE_NO,
+    )
+    assert "1, 2" in rejection.error_message
+
+
+def test_duplicate_shipment_line_no_rejects_the_shipment():
+    shipment = replace(
+        SHIPMENT,
+        lines=(
+            SourceShipmentLine(1, "TMS-SKU-001", 300),
+            SourceShipmentLine(1, "TMS-SKU-001", 10),
+        ),
+    )
+
+    rejection = resolve_shipment(shipment, BOOK)
+
+    assert (rejection.source_record_key, rejection.error_code) == (
+        "OCN-1",
+        DUPLICATE_LINE_NO,
+    )
+
+
+def test_duplicate_line_no_is_checked_before_code_mapping():
+    """줄 번호가 겹치면 SKU 매핑 실패보다 먼저 같은 사유 1건으로 거부"""
+    order = replace(
+        ORDER,
+        lines=(
+            SourceOrderLine(1, "UNKNOWN", 1, 0, "ACTIVE"),
+            SourceOrderLine(1, "UNKNOWN", 1, 0, "ACTIVE"),
+        ),
+    )
+
+    assert resolve_order(order, BOOK).error_code == DUPLICATE_LINE_NO

@@ -9,6 +9,7 @@ from app.modules.data_sync.application.exception.data_sync_exceptions import (
     SyncInProgressException,
 )
 from app.modules.data_sync.application.ingest.code_resolver import (
+    DUPLICATE_LINE_NO,
     UNMAPPED_SKU_CODE,
 )
 from app.modules.data_sync.application.ingest.ingest_service import (
@@ -493,3 +494,77 @@ async def test_finished_sync_does_not_block_next_one(db_write_session):
     )
 
     assert second.applied_seq == first.applied_seq + 1
+
+
+# --- 상세 줄 번호 중복 -----------------------------------------------------------------
+
+
+async def test_duplicate_line_no_rejects_one_parent_without_failing_the_sync(
+    db_write_session,
+):
+    """상세 줄 번호가 여러 개 겹쳐도 부모 주문 1건만 거부: 받은 = 적재 + 거부 (최상위 레코드 기준)"""
+    db = db_write_session
+    company_id = await _company(db)
+    good, template = await _source_orders(db, company_id, limit=2)
+    first = template.lines[0]
+    broken = replace(
+        template,
+        order_code=f"TEST-{uuid.uuid7().hex[-10:]}",
+        lines=(
+            first,
+            first,
+            replace(first, line_no=first.line_no + 1),
+            replace(first, line_no=first.line_no + 1),
+        ),
+    )
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, [good, broken]
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        2,
+        1,
+        1,
+    )
+    [rejection] = result.rejections
+    assert (rejection.source_record_key, rejection.error_code) == (
+        broken.order_code,
+        DUPLICATE_LINE_NO,
+    )
+    row = await _run_row(db, result.data_sync_run_id)
+    assert (
+        row.received_record_count,
+        row.loaded_record_count,
+        row.rejected_record_count,
+    ) == (2, 1, 1)
+    assert (
+        await db.scalar(
+            text("SELECT count(*) FROM orders WHERE order_code = :o"),
+            {"o": broken.order_code},
+        )
+        == 0
+    )
+
+
+async def test_duplicate_shipment_line_no_rejects_the_shipment(db_write_session):
+    db = db_write_session
+    company_id = await _company(db)
+    template = await _tms_shipment(db, company_id)
+    broken = replace(
+        template,
+        shipment_code=f"TEST-{uuid.uuid7().hex[-10:]}",
+        lines=(template.lines[0], template.lines[0]),
+    )
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, [broken]
+    )
+
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        1,
+        0,
+        1,
+    )
+    assert result.rejections[0].error_code == DUPLICATE_LINE_NO
