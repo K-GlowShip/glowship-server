@@ -2,7 +2,7 @@
 
 원천 시스템(ERP·WMS·TMS)에서 받은 레코드를 업무 테이블에 반영하는 **수집 적재 서비스가 현재 어떻게 동작하는지** 설명합니다.
 기준은 serviceflow v6.2 1절 "계획 입고일"·5.2절 "수집 적재"·7절 결정표 "선적 계획 기준"과, 합성데이터 결정 1-10(초기 선적 스냅샷)·H-4(시장 리드타임 대체)입니다. 두 합성데이터 결정은 공유 문서에 없어 원문을 9절에 옮겨 두었습니다.
-수집을 부르는 쪽(가상 API GLOW-49, 수동 수집 API 25)과 검증 오류에 따른 분석 보류(GLOW-15)는 아직 없습니다(7절).
+수집을 부르는 쪽(가상 API GLOW-49, 수동 수집 API 25)은 아직 없고, 검증 오류에 따른 분석 보류는 판정 함수까지 있습니다(6절, 실행 생성 연결은 7절).
 
 ## 1. 전체 흐름
 
@@ -126,6 +126,12 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
   - 창고 자리는 매핑 여부와 관계없이 원천 외부 창고 코드입니다. 기준선의 매핑 없는 `WMS-ATL01|SKU-201|2025-12-31`, 매핑된 `WMS-EWR01|SKU-215|2026-01-01` 모두 외부 코드이고, 검증 엔진(`04_적재검증도구\glowship_engine\snapshot.py`)도 이 자리를 외부 코드로 조회합니다.
   - SKU 자리는 매핑되면 내부 `sku_code`, 매핑이 없으면 원천 외부 SKU 코드입니다. 상품 탭 `GET /skus`가 `split_part(source_record_key, '|', 2)`를 내부 `sku_code`로 읽습니다.
   - 형식은 `code_resolver.inventory_record_key` 한 곳에서 만들고, 같은 수집 안 중복 거부도 이 함수를 씁니다.
+- **분석 보류 판정** (`application/validation/blocking_issues.py`, 조회는 `ValidationIssueRepository`): 분석 입력을 확정할 때 `BlockingIssueService.find`를 부르면, 분석을 막는 이슈가 있을 때 그 이슈를 돌려줍니다. 그 실행은 `ON_HOLD`(`failed_step = VALIDATING`, `failure_code = REQUIRED_DATA_INVALID`)입니다. 조건은 검증 엔진 `snapshot.py`의 차단 검증 오류와 같습니다.
+  1. 확정 시각까지 감지됐고(`detected_at` ≤ 확정) 그때 아직 해소되지 않은 분석 차단 이슈
+  2. 재고(`INVENTORY`) 이슈이고, 키 `창고|SKU|일자`의 일자 = 기준일 D − 1
+  3. SKU 자리가 지연 선적 SKU의 내부 `sku_code` 중 하나
+  4. 창고 자리(외부 코드)가 확정 시각까지 `MAPPED`된 재고 창고 매핑으로 분석 창고(도착·공여) 중 하나. 매핑 안 된 창고 코드(`UNKNOWN_WAREHOUSE`)는 막지 않습니다.
+  - 주문·선적 이슈는 막지 않습니다(엔진과 같음). 기준선 E9: v1(01-02 00:05 확정)은 보류, v2(01-03 02:00 재분석)는 해소 뒤라 통과.
 - 받은 건수 = 적재 건수 + 거부 건수이고, 셋 다 **최상위 레코드**(상품·창고·주문·선적·재고 행) 기준입니다. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
 - 파서가 거부한 레코드(`MISSING_REQUIRED`·`INVALID_DATE`, 2절 파서 계약)는 `ingest(..., parse_rejections=...)`로 넘깁니다. 받은 건수와 거부 건수에 들어가고 `rejections` 앞쪽에 담깁니다. 기준선 B사 주문 수집(2025-12-31)처럼 형식 오류가 섞여도 나머지는 적재되고 `PARTIAL_SUCCESS`가 됩니다.
 - 거부 사유는 `IngestResult.rejections`로 돌려주고, **같은 트랜잭션에서 검증 이슈(`data_validation_issues`)로 남깁니다**(GLOW-15).
@@ -142,7 +148,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 ## 7. 아직 없는 것
 
 - 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
-- 검증 오류에 따른 분석 보류(GLOW-15). `OPEN` 기록과 해소(6절)는 했고, 분석 입력 확정 때 분석을 막는 이슈를 판정하는 일이 남았습니다(검증 엔진 `snapshot.py`의 차단 검증 오류 조건).
+- 분석 보류 판정의 실행 생성 연결(GLOW-15·18). 판정 함수(6절)는 있고, 실행 생성(`create_analysis_run`, 개발자 3)이 입력 확정 때 이 함수를 불러 `ON_HOLD`로 남기는 연결이 남았습니다.
 - **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
 - **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
@@ -165,6 +171,8 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | --- | --- |
 | `test_change_detection.py` | 변경 판정·요약 문장·스냅샷 조건 (DB 없음) |
 | `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서(HS10 포함)·새 선적 HS10 규칙·거부 사유 (DB 없음) |
+| `test_blocking_issues.py` | 분석 보류 판정: 범위 안 재고 이슈 보류, 날짜·SKU·매핑 없는 창고·분석 창고 밖·재고 키 아님은 통과 (DB 없음) |
+| `test_validation_issue_repository_sql.py` | 기준선 E9: v1 확정 시각 보류, 감지 전·해소 뒤 통과, 매핑 없는 `WMS-ATL01` 통과 |
 | `test_record_validation.py` | 값 검증: CHECK 제약별 거부 코드·위치, 허용 값 목록 = ORM CHECK (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
