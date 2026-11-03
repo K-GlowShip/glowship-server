@@ -20,8 +20,12 @@ C(분석 에이전트) 분석 표 5개와 delay_events 를 v6.2 DDL 과 같게 �
     2025 v5 합성데이터 적재(make db-seed): 0005 뒤에는 분석 표·delay_events 열이 v5 CSV 와 달라
     seed 스크립트가 원본 파일 검증에서 멈춘다. v6.2 공유 묶음은 DDL + CSV 직접 적재가 기준(README 3절)
 
-v6.2 DDL 로 직접 만든 DB(팀 공통 개발 DB)에는 이미 있으므로 upgrade 대신 `alembic stamp 0005` 로 기준점만 맞춘다.
-그런 DB 에서 upgrade 를 하면 시작 전에 멈추고 stamp 를 안내한다(아무것도 바꾸지 않음).
+v6.2 DDL 로 직접 만든 DB(팀 공통 개발 DB)는 이미 이 모양이므로 upgrade 가 아무것도 바꾸지 않고 건너뛴다(0004 와 같은 방식).
+  - 0005 가 만드는 열·제약·인덱스가 모두 있고, 옛 모양(옛 열 이름, 대응안·결과 CHECK 의 v5 코드값)이 없으면 v6.2 DB 로 본다.
+    판별 목록은 아래 생성용 목록(_columns, _CHECKS_BY_TABLE 등)에서 뽑으므로 만드는 것과 어긋나지 않는다.
+  - 일부만 있으면 섞인 상태라 시작 전에 멈추고 빠진 항목을 보여 준다.
+  - 이름만 확인하고 제약 식의 내용은 비교하지 않는다(대응안·결과 CHECK 3개는 v5 코드값이 없는지만 본다).
+  - `alembic stamp 0005` 로 기준점만 맞춰도 결과는 같다.
 
 upgrade·downgrade 는 다음 경우 시작 전에 멈춘다(아무것도 바꾸지 않음)
   - 분석 결과 표 5개에 행이 있으면: 새 NOT NULL 열(생성 사유, SKU별 결과 등)을 채울 값이 없고,
@@ -33,6 +37,7 @@ downgrade 는 서버 마이그레이션(0001→0005)으로 만든 DB 에서만 �
     그런 DB 에서 downgrade 하면 DDL 원본 표가 v5 모양(열 삭제·이름 복원·옛 코드값 CHECK)으로 바뀌므로 명시적으로 허용하게 한다.
 """
 
+import logging
 import os
 from collections.abc import Sequence
 
@@ -229,6 +234,19 @@ _CHECKS_BY_TABLE = {
 # 대응안 주문 집계: NULL = 계산 안 함 (DDL response_options_ck8)
 _NULLABLE_COUNTS = ("fully_recovered_orders", "not_recovered_orders")
 
+# v6.2 DDL DB 판별용 (위 docstring 참고). 열·제약 목록은 _v62_markers 가 생성용 목록에서 뽑는다
+_TRIGGER_FK = "fk_analysis_runs__trigger_shipment_schedule_snapshot_id"
+_NEW_INDEXES = (
+    ("analysis_runs", "analysis_runs_auto_trigger_uq"),
+    ("response_options", "response_options_rank_uq"),
+)
+_OLD_COLUMNS = (
+    ("response_options", "partially_recovered_orders"),
+    ("option_order_outcomes", "allocated_quantity"),
+)
+# _REPLACED_CHECKS_V5 에만 있는 코드값 (따옴표까지 비교해 'NOT_RECOVERED' 안의 FULL 등과 헷갈리지 않게)
+_V5_CODES = ("'EAST_FULFILL'", "'FULL'", "'PARTIAL'", "'EAST_WAREHOUSE'")
+
 # downgrade 를 허용하는 환경 변수 (위 docstring 참고)
 _ALLOW_DOWNGRADE_ENV = "GLOWSHIP_ALLOW_0005_DOWNGRADE"
 
@@ -247,27 +265,84 @@ def _stop_if_analysis_rows(action: str) -> None:
     }
     filled = {table: n for table, n in counts.items() if n}
     if filled:
-        hint = (
-            " v6.2 DDL 로 만든 DB 라면 upgrade 대신 `alembic stamp 0005` 를 쓰세요."
-            if action == "upgrade"
-            else ""
-        )
         raise RuntimeError(
             f"0005 {action}: 분석 결과 표에 행이 있어 멈춥니다 {filled}. "
             "NOT NULL 열을 채우거나 코드값을 바꿀 수 없으므로 행을 먼저 정리하세요."
-            + hint
         )
 
 
+def _rows(sql: str) -> set[tuple]:
+    return {tuple(row) for row in op.get_bind().execute(sa.text(sql))}
+
+
+def _v62_markers() -> dict[str, set[tuple[str, str]]]:
+    """0005 가 만드는 열·제약·인덱스 (표, 이름). 생성에 쓰는 목록에서 뽑는다."""
+    columns = {(table, c.name) for table, cols in _columns().items() for c in cols}
+    columns |= {
+        ("delay_events", "episode_no"),
+        ("response_options", "item_secured_blocked_orders"),
+        ("option_order_outcomes", "secured_quantity"),
+    }
+    constraints = {(t, n) for t, checks in _CHECKS_BY_TABLE.items() for n in checks}
+    constraints |= {("delay_events", n) for n in _DELAY_EVENT_CHECKS}
+    constraints |= {
+        ("delay_events", "delay_events_uk3"),
+        ("analysis_runs", _TRIGGER_FK),
+    }
+    return {"열": columns, "제약": constraints, "인덱스": set(_NEW_INDEXES)}
+
+
+def _shape() -> tuple[dict[str, set], set[str]]:
+    """(0005 가 만드는 것 중 빠진 것, 남아 있는 옛 모양)"""
+    present = {
+        "열": _rows(
+            "SELECT table_name, column_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema()"
+        ),
+        "제약": _rows(
+            "SELECT t.relname, c.conname FROM pg_constraint c"
+            " JOIN pg_class t ON t.oid = c.conrelid"
+            " WHERE t.relnamespace = current_schema()::regnamespace"
+        ),
+        "인덱스": _rows(
+            "SELECT tablename, indexname FROM pg_indexes"
+            " WHERE schemaname = current_schema()"
+        ),
+    }
+    missing = {kind: names - present[kind] for kind, names in _v62_markers().items()}
+    old = {f"{t}.{c}" for t, c in _OLD_COLUMNS if (t, c) in present["열"]}
+    old |= {
+        name
+        for name, definition in _rows(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint"
+            " WHERE conname IN ("
+            + ",".join(f"'{n}'" for n in _REPLACED_CHECKS_V62)
+            + ") AND connamespace = current_schema()::regnamespace"
+        )
+        if any(code in definition for code in _V5_CODES)
+    }
+    return missing, old
+
+
 def upgrade() -> None:
-    if _scalar(
-        "SELECT count(*) FROM information_schema.columns"
-        " WHERE table_schema = current_schema() AND table_name = 'analysis_runs'"
-        " AND column_name = 'trigger_reason'"
+    missing, old = _shape()
+    missing_count = sum(len(names) for names in missing.values())
+    if missing_count == 0 and not old:
+        logging.getLogger("alembic.runtime.migration").info(
+            "0005: 분석 표가 이미 v6.2 DDL 모양이라 아무것도 바꾸지 않고 건너뜁니다"
+        )
+        return
+    total = sum(len(names) for names in _v62_markers().values())
+    if missing_count != total or len(old) != len(_OLD_COLUMNS) + len(
+        _REPLACED_CHECKS_V62
     ):
+        shown = sorted(
+            f"{kind} {t}.{n}" for kind, names in missing.items() for t, n in names
+        )
         raise RuntimeError(
-            "0005 upgrade: 이미 v6.2 분석 표 열(analysis_runs.trigger_reason)이 있습니다. "
-            "v6.2 DDL 로 만든 DB 는 `alembic stamp 0005` 로 기준점만 맞추세요."
+            "0005 upgrade: 분석 표가 v5 모양도 v6.2 모양도 아닌 섞인 상태라 멈춥니다(아무것도 바꾸지 않음). "
+            f"0005 가 만드는 것 중 빠진 것 {missing_count}/{total}건 {shown[:10]}, "
+            f"남아 있는 옛 모양 {sorted(old)}. DB 를 v6.2 DDL 로 다시 만들거나 차이를 먼저 맞추세요."
         )
     _stop_if_analysis_rows("upgrade")
     bad_keys = _scalar(
@@ -320,7 +395,7 @@ def upgrade() -> None:
             op.create_check_constraint(name, table, condition)
 
     op.create_foreign_key(
-        "fk_analysis_runs__trigger_shipment_schedule_snapshot_id",
+        _TRIGGER_FK,
         "analysis_runs",
         "shipment_schedule_snapshots",
         ["company_id", "trigger_shipment_schedule_snapshot_id"],
@@ -354,7 +429,7 @@ def downgrade() -> None:
     op.drop_index("response_options_rank_uq", table_name="response_options")
     op.drop_index("analysis_runs_auto_trigger_uq", table_name="analysis_runs")
     op.drop_constraint(
-        "fk_analysis_runs__trigger_shipment_schedule_snapshot_id",
+        _TRIGGER_FK,
         "analysis_runs",
         type_="foreignkey",
     )
