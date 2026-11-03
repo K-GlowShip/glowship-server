@@ -11,7 +11,7 @@ sequenceDiagram
     participant S as glowship-server
     participant DB as PostgreSQL
 
-    W->>S: POST /api/v1/login {email, password(Base64)}
+    W->>S: POST /api/v1/auth/login {email, password(Base64)}
     S->>DB: users.email 조회
     S->>S: bcrypt 검증 · 상태 확인
     S->>S: access / refresh JWT 발급
@@ -27,7 +27,7 @@ sequenceDiagram
 
 ## 2. 로그인 API
 
-`POST /api/v1/login` — `app/modules/user/presentation/auth_api_router.py`
+`POST /api/v1/auth/login` — `app/modules/user/presentation/auth_api_router.py`
 
 ### 요청
 
@@ -40,7 +40,7 @@ sequenceDiagram
 | `email` | 50자 이하, 이메일 패턴. 공백은 앞뒤를 포함해 허용하지 않음(422). 소문자로 정규화 |
 | `password` | 프론트가 `btoa()`로 Base64 인코딩한 비밀번호. 로그인에서는 비밀번호 정책(영문·숫자 6~16자)을 검사하지 않습니다 |
 
-회원가입(`POST /api/v1/signup`)과 같은 요청 스키마(`EmailLoginRequest`)를 사용합니다.
+회원가입(`POST /api/v1/auth/signup`)과 같은 요청 스키마(`EmailLoginRequest`)를 사용합니다.
 
 ### 성공 응답
 
@@ -170,7 +170,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 
 - `get_current_user`는 DB를 조회하지 않습니다. 계정 비활성화·역할 변경은 access 토큰 만료(최대 30분)까지 반영되지 않으며, 즉시 차단이 필요한 API는 해당 엔드포인트에서 DB를 재조회해야 합니다.
 - `CurrentUser.role_code`는 문자열이지만 `UserRoleCode`는 `str` Enum이므로 `current_user.role_code == UserRoleCode.ADMIN` 비교가 그대로 동작합니다.
-- 쿠키 인증 방식은 OpenAPI `securitySchemes`(`APIKeyCookie`)에 기록됩니다. Swagger UI에서 `/login`을 호출하면 브라우저가 쿠키를 보관하므로 이어서 보호된 API를 바로 호출할 수 있습니다.
+- 쿠키 인증 방식은 OpenAPI `securitySchemes`(`APIKeyCookie`)에 기록됩니다. Swagger UI에서 `/auth/login`을 호출하면 브라우저가 쿠키를 보관하므로 이어서 보호된 API를 바로 호출할 수 있습니다.
 
 ## 6. 설정
 
@@ -200,7 +200,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/auth_api_router.py` | `/login` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login` 엔드포인트, 쿠키 응답 |
 | `app/modules/user/application/auth_service.py` | `login` 비즈니스 로직, `TokenPair` |
 | `app/modules/user/application/exception/user_exceptions.py` | `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED` |
 | `app/core/security/jwt.py` | 토큰 발급·검증, `JwtConfig`, `TokenType`, `TokenError` |
