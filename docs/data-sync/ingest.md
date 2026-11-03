@@ -91,13 +91,18 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 
 | 사유 코드 | 언제 |
 | --- | --- |
-| `UNMAPPED_SKU_CODE`·`UNMAPPED_WAREHOUSE_CODE` | 코드표에 없는 SKU·창고 코드 (상세 하나라도 없으면 레코드 전체) |
+| `UNKNOWN_SKU`·`UNKNOWN_WAREHOUSE` | 코드표에 없는 SKU·창고 코드 (상세 하나라도 없으면 레코드 전체) |
 | `UNSUPPORTED_TRANSPORT_MODE` | `OCEAN`·`AIR`가 아닌 운송 수단 |
 | `NO_ROUTE_PORT` | 경로표에 없는 (창고 지역, 운송 수단) |
 | `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 |
-| `DUPLICATE_IN_BATCH` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상 (모두 거부) |
+| `DUPLICATE_SOURCE_RECORD` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상 (모두 거부) |
 | `DUPLICATE_LINE_NO` | 주문·선적 안에 같은 상세 줄 번호가 2개 이상 (겹친 번호 개수와 관계없이 부모 레코드 1건 거부) |
 
+- 오류 코드 이름은 확정 기준선 `data_validation_issues.csv`와 같습니다.
+- **거부 키(`source_record_key`):** 주문·선적은 부모 코드입니다. 상세 줄이 원인이면 위치를 `field_name`(`lines[i].sku_code`, i는 0부터)에 둡니다. 재고는 `창고|SKU|일자`입니다.
+  - 창고 자리는 매핑 여부와 관계없이 원천 외부 창고 코드입니다. 기준선의 매핑 없는 `WMS-ATL01|SKU-201|2025-12-31`, 매핑된 `WMS-EWR01|SKU-215|2026-01-01` 모두 외부 코드이고, 검증 엔진(`04_적재검증도구\glowship_engine\snapshot.py`)도 이 자리를 외부 코드로 조회합니다.
+  - SKU 자리는 매핑되면 내부 `sku_code`, 매핑이 없으면 원천 외부 SKU 코드입니다. 상품 탭 `GET /skus`가 `split_part(source_record_key, '|', 2)`를 내부 `sku_code`로 읽습니다.
+  - 형식은 `code_resolver.inventory_record_key` 한 곳에서 만들고, 같은 수집 안 중복 거부도 이 함수를 씁니다.
 - 받은 건수 = 적재 건수 + 거부 건수이고, 셋 다 **최상위 레코드**(상품·창고·주문·선적·재고 행) 기준입니다. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
 - 거부 사유는 `IngestResult.rejections`로 돌려줍니다. `data_validation_issues` 기록은 GLOW-15 가 붙입니다.
 

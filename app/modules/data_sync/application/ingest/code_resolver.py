@@ -46,8 +46,9 @@ ROUTE_PORTS = {
     ("WEST", "AIR"): "2720",  # LOS ANGELES 항공
 }
 
-UNMAPPED_SKU_CODE = "UNMAPPED_SKU_CODE"
-UNMAPPED_WAREHOUSE_CODE = "UNMAPPED_WAREHOUSE_CODE"
+# 오류 코드 이름은 확정 기준선(data_validation_issues.csv)과 같게 씁니다.
+UNKNOWN_SKU = "UNKNOWN_SKU"
+UNKNOWN_WAREHOUSE = "UNKNOWN_WAREHOUSE"
 UNSUPPORTED_TRANSPORT_MODE = "UNSUPPORTED_TRANSPORT_MODE"
 NO_ROUTE_PORT = "NO_ROUTE_PORT"
 NO_LEADTIME_REFERENCE = "NO_LEADTIME_REFERENCE"
@@ -111,12 +112,14 @@ def resolve_order(source: SourceOrder, book: CodeBook) -> OrderRecord | Rejectio
         return duplicate
     warehouse = book.warehouses.get(source.warehouse_code)
     if warehouse is None:
-        return _unmapped_warehouse(source.order_code, source.warehouse_code)
+        return _unknown_warehouse(source.order_code, source.warehouse_code)
     lines = []
-    for line in source.lines:
+    for index, line in enumerate(source.lines):
         sku = book.skus.get(line.sku_code)
         if sku is None:
-            return _unmapped_sku(f"{source.order_code}#{line.line_no}", line.sku_code)
+            return _unknown_sku(
+                source.order_code, f"lines[{index}].sku_code", line.sku_code
+            )
         lines.append(
             OrderLineRecord(
                 line_no=line.line_no,
@@ -155,12 +158,12 @@ def resolve_shipment(
         )
     warehouse = book.warehouses.get(source.warehouse_code)
     if warehouse is None:
-        return _unmapped_warehouse(key, source.warehouse_code)
+        return _unknown_warehouse(key, source.warehouse_code)
     lines = []
-    for line in source.lines:
+    for index, line in enumerate(source.lines):
         sku = book.skus.get(line.sku_code)
         if sku is None:
-            return _unmapped_sku(f"{key}#{line.line_no}", line.sku_code)
+            return _unknown_sku(key, f"lines[{index}].sku_code", line.sku_code)
         lines.append(
             ShipmentLineRecord(line.line_no, sku.sku_id, line.shipped_quantity)
         )
@@ -214,15 +217,13 @@ def resolve_shipment(
 def resolve_inventory(
     source: SourceInventory, book: CodeBook
 ) -> InventoryRecord | Rejection:
-    key = (
-        f"{source.inventory_date.isoformat()} {source.warehouse_code} {source.sku_code}"
-    )
+    key = inventory_record_key(source, book)
     warehouse = book.warehouses.get(source.warehouse_code)
     if warehouse is None:
-        return _unmapped_warehouse(key, source.warehouse_code)
+        return _unknown_warehouse(key, source.warehouse_code)
     sku = book.skus.get(source.sku_code)
     if sku is None:
-        return _unmapped_sku(key, source.sku_code)
+        return _unknown_sku(key, "sku_code", source.sku_code)
     return InventoryRecord(
         inventory_date=source.inventory_date,
         warehouse_id=warehouse.warehouse_id,
@@ -234,6 +235,19 @@ def resolve_inventory(
         warehouse_code=warehouse.warehouse_code,
         sku_code=sku.sku_code,
     )
+
+
+def inventory_record_key(source: SourceInventory, book: CodeBook) -> str:
+    """
+    재고 거부 키 `창고|SKU|일자` (확정 기준선 data_validation_issues.csv 와 같은 형식).
+      - 창고 자리는 매핑 여부와 관계없이 원천의 외부 창고 코드입니다
+        (기준선: 매핑 없는 WMS-ATL01, 매핑된 WMS-EWR01 모두 외부 코드. 검증 엔진 snapshot.py 는 이 자리를 외부 코드로 조회).
+      - SKU 자리는 매핑되면 내부 sku_code, 매핑이 없으면 원천의 외부 SKU 코드입니다
+        (상품 탭 GET /skus 가 split_part(key, '|', 2) 를 내부 sku_code 로 읽음).
+    """
+    sku = book.skus.get(source.sku_code)
+    sku_part = sku.sku_code if sku else source.sku_code
+    return f"{source.warehouse_code}|{sku_part}|{source.inventory_date.isoformat()}"
 
 
 def find_leadtime_reference(
@@ -287,16 +301,15 @@ def _duplicate_line_no(key: str, lines) -> Rejection | None:
     )
 
 
-def _unmapped_sku(key: str, code: str) -> Rejection:
-    return Rejection(
-        key, "sku_code", UNMAPPED_SKU_CODE, f"매핑되지 않은 SKU 코드: {code}"
-    )
+def _unknown_sku(key: str, field_name: str, code: str) -> Rejection:
+    """상세 줄의 SKU 이면 키는 부모 코드이고 위치는 field_name(lines[i].sku_code)에 둡니다 (기준선과 같음)."""
+    return Rejection(key, field_name, UNKNOWN_SKU, f"매핑되지 않은 SKU 코드: {code}")
 
 
-def _unmapped_warehouse(key: str, code: str) -> Rejection:
+def _unknown_warehouse(key: str, code: str) -> Rejection:
     return Rejection(
         key,
         "warehouse_code",
-        UNMAPPED_WAREHOUSE_CODE,
+        UNKNOWN_WAREHOUSE,
         f"매핑되지 않은 창고 코드: {code}",
     )

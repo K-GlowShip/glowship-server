@@ -21,6 +21,7 @@ from app.modules.data_sync.application.ingest.change_detection import (
 from app.modules.data_sync.application.ingest.code_resolver import (
     Rejection,
     ShipmentPlan,
+    inventory_record_key,
     resolve_inventory,
     resolve_order,
     resolve_shipment,
@@ -60,7 +61,8 @@ from app.modules.delay_analysis.application.stale.stale_service import (
       - 거부 사유는 결과에 담아 돌려줍니다. 검증 오류 기록(data_validation_issues)은 GLOW-15 가 붙입니다.
 """
 
-DUPLICATE_IN_BATCH = "DUPLICATE_IN_BATCH"
+# 확정 기준선(data_validation_issues.csv)과 같은 이름
+DUPLICATE_SOURCE_RECORD = "DUPLICATE_SOURCE_RECORD"
 
 
 @dataclass(frozen=True)
@@ -256,10 +258,12 @@ class DataIngestService:
         run_id: uuid.UUID,
         records: Sequence[SourceInventory],
     ) -> _Applied:
-        unique, rejections = _unique(
-            records, lambda r: (r.inventory_date, r.warehouse_code, r.sku_code)
-        )
         book = await self.repo.load_code_book(company_id, SourceDomain.INVENTORY)
+        unique, rejections = _unique(
+            records,
+            lambda r: (r.inventory_date, r.warehouse_code, r.sku_code),
+            lambda r: inventory_record_key(r, book),
+        )
         resolved = []
         for source in unique.values():
             result = resolve_inventory(source, book)
@@ -279,9 +283,14 @@ class DataIngestService:
 
 
 def _unique[R](
-    records: Sequence[R], key: Callable[[R], object]
+    records: Sequence[R],
+    key: Callable[[R], object],
+    record_key: Callable[[R], str] | None = None,
 ) -> tuple[dict, list[Rejection]]:
-    """같은 수집 안에서 업무 키가 겹치는 레코드는 모두 거부합니다 (어느 값이 맞는지 알 수 없음)."""
+    """
+    같은 수집 안에서 업무 키가 겹치는 레코드는 모두 거부합니다 (어느 값이 맞는지 알 수 없음).
+    거부 키는 record_key 가 있으면 그 형식(재고: code_resolver.inventory_record_key), 없으면 업무 키 문자열입니다.
+    """
     counts: dict[object, int] = {}
     for record in records:
         counts[key(record)] = counts.get(key(record), 0) + 1
@@ -293,11 +302,9 @@ def _unique[R](
         else:
             rejections.append(
                 Rejection(
-                    source_record_key=" ".join(map(str, k))
-                    if isinstance(k, tuple)
-                    else str(k),
+                    source_record_key=record_key(record) if record_key else str(k),
                     field_name="source_record_key",
-                    error_code=DUPLICATE_IN_BATCH,
+                    error_code=DUPLICATE_SOURCE_RECORD,
                     error_message=f"같은 수집에 같은 업무 키가 {counts[k]}건 있음",
                 )
             )

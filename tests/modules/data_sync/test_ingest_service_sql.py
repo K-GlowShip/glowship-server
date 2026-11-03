@@ -10,13 +10,14 @@ from app.modules.data_sync.application.exception.data_sync_exceptions import (
 )
 from app.modules.data_sync.application.ingest.code_resolver import (
     DUPLICATE_LINE_NO,
-    UNMAPPED_SKU_CODE,
+    UNKNOWN_SKU,
 )
 from app.modules.data_sync.application.ingest.ingest_service import (
-    DUPLICATE_IN_BATCH,
+    DUPLICATE_SOURCE_RECORD,
     DataIngestService,
 )
 from app.modules.data_sync.application.ingest.source_payload import (
+    SourceInventory,
     SourceOrder,
     SourceOrderLine,
     SourceShipment,
@@ -230,8 +231,50 @@ async def test_unmapped_and_duplicate_records_make_partial_success(db_write_sess
         3,
     )
     codes = sorted(r.error_code for r in result.rejections)
-    assert codes == sorted([UNMAPPED_SKU_CODE, DUPLICATE_IN_BATCH, DUPLICATE_IN_BATCH])
+    assert codes == sorted(
+        [UNKNOWN_SKU, DUPLICATE_SOURCE_RECORD, DUPLICATE_SOURCE_RECORD]
+    )
     assert (await _run_row(db, result.data_sync_run_id)).status == "PARTIAL_SUCCESS"
+
+
+async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):
+    """재고 중복 거부 키도 `창고 외부 코드|내부 SKU 코드|일자` (매핑된 창고도 외부 코드, 기준선 WMS-EWR01|SKU-215|2026-01-01)"""
+    db = db_write_session
+    row = (
+        await db.execute(
+            text(
+                "SELECT w.company_id, w.external_code AS wh, s.external_code AS sku, k.sku_code"
+                " FROM external_entity_mappings w"
+                " JOIN external_entity_mappings s ON s.company_id = w.company_id"
+                "  AND s.source_domain = 'INVENTORY' AND s.entity_type = 'SKU'"
+                "  AND s.mapping_status = 'MAPPED'"
+                " JOIN skus k ON k.sku_id = s.sku_id"
+                " WHERE w.source_domain = 'INVENTORY' AND w.entity_type = 'WAREHOUSE'"
+                "  AND w.mapping_status = 'MAPPED'"
+                " ORDER BY w.external_code, s.external_code LIMIT 1"
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        pytest.skip("재고 매핑이 없는 DB")
+    record = SourceInventory(
+        inventory_date=datetime(2026, 7, 1).date(),
+        warehouse_code=row.wh,
+        sku_code=row.sku,
+        on_hand_quantity=10,
+        reserved_quantity=0,
+        available_quantity=10,
+        outbound_quantity=0,
+    )
+
+    result = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [record, record]
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    assert {(r.source_record_key, r.error_code) for r in result.rejections} == {
+        (f"{row.wh}|{row.sku_code}|2026-07-01", DUPLICATE_SOURCE_RECORD)
+    }
 
 
 # --- 실패 ------------------------------------------------------------------------------

@@ -8,8 +8,8 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     DUPLICATE_LINE_NO,
     NO_LEADTIME_REFERENCE,
     NO_ROUTE_PORT,
-    UNMAPPED_SKU_CODE,
-    UNMAPPED_WAREHOUSE_CODE,
+    UNKNOWN_SKU,
+    UNKNOWN_WAREHOUSE,
     UNSUPPORTED_TRANSPORT_MODE,
     CodeBook,
     LeadtimeReference,
@@ -18,6 +18,7 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     SkuCode,
     WarehouseCode,
     find_leadtime_reference,
+    inventory_record_key,
     planned_3pl_inbound_date,
     resolve_inventory,
     resolve_order,
@@ -187,7 +188,7 @@ def test_existing_shipment_does_not_need_a_reference():
     ("change", "field_name", "error_code"),
     [
         ({"transport_mode": "SEA"}, "transport_mode", UNSUPPORTED_TRANSPORT_MODE),
-        ({"warehouse_code": "WH-WEST"}, "warehouse_code", UNMAPPED_WAREHOUSE_CODE),
+        ({"warehouse_code": "WH-WEST"}, "warehouse_code", UNKNOWN_WAREHOUSE),
         (
             {"warehouse_code": "TMS-EWR", "transport_mode": "OCEAN"},
             "warehouse_code",
@@ -221,9 +222,10 @@ def test_unmapped_line_sku_rejects_the_whole_record():
     )
     order = replace(ORDER, lines=(SourceOrderLine(2, "UNKNOWN", 1, 0, "ACTIVE"),))
 
-    for rejection, key in (
-        (resolve_shipment(shipment, BOOK), "OCN-1#2"),
-        (resolve_order(order, BOOK), "ORD-1#2"),
+    # 키는 부모 코드, 상세 위치는 field_name 의 lines[i] (기준선 B-ORD-ERR-0001 · lines[0].sellerSku 와 같은 방식)
+    for rejection, key, field_name in (
+        (resolve_shipment(shipment, BOOK), "OCN-1", "lines[1].sku_code"),
+        (resolve_order(order, BOOK), "ORD-1", "lines[0].sku_code"),
     ):
         assert (
             rejection.source_record_key,
@@ -231,8 +233,8 @@ def test_unmapped_line_sku_rejects_the_whole_record():
             rejection.error_code,
         ) == (
             key,
-            "sku_code",
-            UNMAPPED_SKU_CODE,
+            field_name,
+            UNKNOWN_SKU,
         )
 
 
@@ -251,7 +253,7 @@ def test_unmapped_order_warehouse_is_rejected():
 
     assert (rejection.field_name, rejection.error_code) == (
         "warehouse_code",
-        UNMAPPED_WAREHOUSE_CODE,
+        UNKNOWN_WAREHOUSE,
     )
     assert "WH-404" in rejection.error_message
 
@@ -261,8 +263,35 @@ def test_inventory_uses_internal_codes_for_summary_labels():
 
     assert (record.warehouse_id, record.sku_id) == (WEST_ID, SKU_ID)
     assert (record.warehouse_code, record.sku_code) == ("WH-WEST", "SKU-001")
-    rejection = resolve_inventory(replace(INVENTORY, sku_code="X"), BOOK)
-    assert rejection.source_record_key == "2026-01-05 TMS-LAX X"
+
+
+@pytest.mark.parametrize(
+    ("change", "key", "field_name", "error_code"),
+    [
+        # SKU 매핑 없음: SKU 자리는 원천 외부 코드
+        ({"sku_code": "X"}, "TMS-LAX|X|2026-01-05", "sku_code", UNKNOWN_SKU),
+        # 창고 매핑 없음: 창고 자리는 외부 코드, 매핑된 SKU 는 내부 코드 (기준선 WMS-ATL01|SKU-201|2025-12-31)
+        (
+            {"warehouse_code": "WMS-ATL01"},
+            "WMS-ATL01|SKU-001|2026-01-05",
+            "warehouse_code",
+            UNKNOWN_WAREHOUSE,
+        ),
+    ],
+)
+def test_inventory_rejection_key_matches_baseline(change, key, field_name, error_code):
+    rejection = resolve_inventory(replace(INVENTORY, **change), BOOK)
+
+    assert (
+        rejection.source_record_key,
+        rejection.field_name,
+        rejection.error_code,
+    ) == (key, field_name, error_code)
+
+
+def test_inventory_key_keeps_external_code_for_mapped_warehouse():
+    """매핑된 창고도 창고 자리는 외부 코드 (기준선 WMS-EWR01|SKU-215|2026-01-01, 검증 엔진 snapshot.py 의 외부 코드 조회)"""
+    assert inventory_record_key(INVENTORY, BOOK) == "TMS-LAX|SKU-001|2026-01-05"
 
 
 # --- 상세 줄 번호 중복 -----------------------------------------------------------------
