@@ -16,6 +16,10 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
         의존 계약의 SKU 속성 규칙(RELEVANT_SKU_ATTRIBUTE_CHANGED)을 더했습니다.
       - 지연 선적 자체의 일정·단계 변경은 여기서 다루지 않습니다. 후속 AUTO 실행이 DELAY_* 사유로 처리합니다 (D-08).
       - 운영 기준은 행을 고치지 않고 새 버전을 만드는 원칙이라 변경 기록에 나타나지 않습니다.
+      - 주문·선적의 창고가 바뀐 변경(changed_fields 에 warehouse_id)은 보수적으로 봅니다. 변경 기록에는 새 창고만 남아
+        (data_change_records_uk2 가 같은 SKU 에 창고별 두 기록을 허용하지 않음) 이전 창고 쪽 영향을 알 수 없기 때문입니다.
+          주문: 의존 범위의 SKU 면 창고 쌍과 관계없이 관련
+          선적: 지연 선적이 아니고 의존 SKU 면 입고 창고·예상 입고일 비교와 관계없이 관련 (진행 중 실행도 같음)
 """
 
 ORDER_CHANGED = StaleReasonCode.RELEVANT_ORDER_CHANGED
@@ -40,6 +44,7 @@ def relevant_reasons(
     base_date = date.fromisoformat(scope["base_date"])
     horizon_to = date.fromisoformat(scope["horizon"]["to"])
     order_scope = _pairs(scope["order_scope"])
+    order_skus = {sku_id for _, sku_id in order_scope}
     inventory_scope = _pairs(scope["inventory_scope"])
     inbound_warehouses = {
         uuid.UUID(scope["warehouses"]["destination"]),
@@ -57,9 +62,12 @@ def relevant_reasons(
         entity_type = change.entity_type
         pair = (change.warehouse_id, change.sku_id)
         if entity_type in ("ORDER", "ORDER_LINE"):
-            relevant = pair in order_scope and _is_relevant_order(
-                change, base_date, horizon_to
+            in_scope = (
+                change.sku_id in order_skus
+                if _is_warehouse_move(change)
+                else pair in order_scope
             )
+            relevant = in_scope and _is_relevant_order(change, base_date, horizon_to)
             reason = ORDER_CHANGED
         elif entity_type == "INVENTORY":
             relevant = pair in inventory_scope and _is_relevant_inventory(
@@ -70,9 +78,14 @@ def relevant_reasons(
             relevant = (
                 change.shipment_id is not None
                 and change.shipment_id != delayed_shipment_id
-                and change.shipment_warehouse_id in inbound_warehouses
                 and change.sku_id in dependent_skus
-                and _is_relevant_inbound(change)
+                and (
+                    _is_warehouse_move(change)
+                    or (
+                        change.shipment_warehouse_id in inbound_warehouses
+                        and _is_relevant_inbound(change)
+                    )
+                )
             )
             reason = INBOUND_CHANGED
         elif entity_type == "SKU":
@@ -107,8 +120,8 @@ def relevant_reasons_in_progress(
             if _is_relevant_inventory(change, base_date):
                 reasons.add(INVENTORY_CHANGED)
         elif entity_type in ("SHIPMENT", "SHIPMENT_LINE"):
-            if change.shipment_id != delayed_shipment_id and _is_relevant_inbound(
-                change
+            if change.shipment_id != delayed_shipment_id and (
+                _is_warehouse_move(change) or _is_relevant_inbound(change)
             ):
                 reasons.add(INBOUND_CHANGED)
         elif entity_type == "SKU":
@@ -128,6 +141,15 @@ def group_by_applied_seq(
 
 def _pairs(items: Iterable[dict[str, str]]) -> set[tuple[uuid.UUID, uuid.UUID]]:
     return {(uuid.UUID(x["warehouse_id"]), uuid.UUID(x["sku_id"])) for x in items}
+
+
+def _is_warehouse_move(change: ScopedChange) -> bool:
+    """주문·선적 머리의 창고가 바뀐 변경 (수집 적재가 changed_fields 에 warehouse_id 를 남김)"""
+    return (
+        change.entity_type in ("ORDER", "SHIPMENT")
+        and change.change_type == "UPDATE"
+        and "warehouse_id" in change.changed_fields
+    )
 
 
 def _is_planned_shipment(change: ScopedChange) -> bool:
