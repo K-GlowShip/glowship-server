@@ -34,6 +34,4 @@ class RunSummary(CamelModel):
         description="표시용 실행 ID (D14). analysis_runs.run_code 마이그레이션(0006) 전에는 null"
     )
     status: str
-    result_class: str | None = Field(
-        description="결과 분류. 완료 전이면 null. analysis_runs 0005 병합 전에는 항상 null"
-    )
+    result_class: str | None = Field(description="결과 분류. 완료 전이면 null")
