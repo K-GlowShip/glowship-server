@@ -70,7 +70,7 @@ from app.modules.delay_analysis.application.stale.stale_service import (
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다
         (serviceflow v6.2 1절 "계획 입고일"·7절 결정표 "선적 계획 기준").
       - 거부 사유는 결과에 담아 돌려주고, 같은 트랜잭션에서 검증 이슈(data_validation_issues) OPEN 으로 남깁니다 (GLOW-15).
-        이번 수집에 정상 적재된 레코드와 (원천 유형, 키)가 같은 이전 수집의 OPEN 이슈는 RESOLVED 로 바꿉니다 (해소).
+        이번 수집에 정상 적재된 레코드와 (엔터티 유형, 키)가 같은 이전 수집의 OPEN 이슈는 RESOLVED 로 바꿉니다 (해소).
 
     실행 전제 (호출 측 계약)
       - DB 역할: 워커 역할(glowship_v4_worker) 연결에서 실행합니다. 이 서비스는 RLS 컨텍스트에 고객사만 넣고

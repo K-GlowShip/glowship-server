@@ -428,6 +428,24 @@ async def test_baseline_issues_are_detected_at_sync_finish(db_write_session):
     assert all(r.at_finish for r in rows), rows
 
 
+async def test_product_issue_entity_type_is_sku(db_write_session):
+    """source_entity_type 은 엔터티 이름: 상품 원천(PRODUCT)의 이슈는 SKU (명세 v6.2 4.3 C21)"""
+    db = db_write_session
+    company_id = await _company(db)
+    rejection = Rejection("SKU-TEST-1", "hs10", "MISSING_REQUIRED", "없음")
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.PRODUCT,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[rejection],
+    )
+
+    [issue] = await _issues(db, result.data_sync_run_id)
+    assert issue.source_entity_type == "SKU"
+
+
 async def test_inventory_issue_keeps_baseline_key(db_write_session):
     """재고 이슈의 원천 유형은 INVENTORY, 키는 창고(외부)|SKU(내부)|일자 (기준선 행과 같은 모양)"""
     db = db_write_session

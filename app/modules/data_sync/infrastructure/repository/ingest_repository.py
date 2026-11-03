@@ -35,6 +35,7 @@ from app.modules.data_sync.application.ingest.source_records import (
 )
 from app.modules.data_sync.infrastructure.data_change_record import DataChangeRecord
 from app.modules.data_sync.infrastructure.data_sync_enums import (
+    ISSUE_ENTITY_TYPE_OF,
     ConnectionMethod,
     DataSyncRunStatus,
     SourceDomain,
@@ -511,7 +512,7 @@ class IngestRepository:
         거부 사유를 검증 이슈 OPEN 으로 남깁니다 (GLOW-15). 수집과 같은 트랜잭션이라 수집이 FAILED 면 함께 되돌아갑니다.
           - 확정 기준선의 검증 이슈는 모두 ERROR·분석 차단(blocks_analysis)입니다. ck2 는 ERROR 면 분석 차단을 강제합니다.
           - detected_at 은 수집 완료 시각(data_sync_runs.finished_at)입니다. 확정 기준선 이슈 9행이 모두 이렇습니다.
-          - (원천 유형, 키, 오류 코드)마다 OPEN 은 1건입니다. 이미 열린 이슈가 있으면 새로 넣지 않고(detected_at = 처음 감지),
+          - (엔터티 유형, 키, 오류 코드)마다 OPEN 은 1건입니다. 이미 열린 이슈가 있으면 새로 넣지 않고(detected_at = 처음 감지),
             같은 수집 안에서 겹친 것도 1건만 넣습니다. 기준선 9행이 키마다 1건이고, 10분 주기 수집이 같은 오류를 반복해
             GET /validation-issues 목록이 쌓이지 않게 합니다 (PR #17 리뷰, 설계 담당 결정 2026-11-03).
         """
@@ -528,7 +529,7 @@ class IngestRepository:
                 "data_validation_issue_id": uuid.uuid7(),
                 "company_id": company_id,
                 "data_sync_run_id": data_sync_run_id,
-                "source_entity_type": source_domain.value,
+                "source_entity_type": ISSUE_ENTITY_TYPE_OF[source_domain].value,
                 "source_record_key": r.source_record_key,
                 "field_name": r.field_name,
                 "error_code": r.error_code,
@@ -555,7 +556,8 @@ class IngestRepository:
                     DataValidationIssue.error_code,
                 ).where(
                     DataValidationIssue.company_id == company_id,
-                    DataValidationIssue.source_entity_type == source_domain.value,
+                    DataValidationIssue.source_entity_type
+                    == ISSUE_ENTITY_TYPE_OF[source_domain].value,
                     DataValidationIssue.status == ISSUE_OPEN,
                     DataValidationIssue.source_record_key.in_(chunk),
                 )
@@ -572,7 +574,7 @@ class IngestRepository:
         resolved_at: datetime,
     ) -> None:
         """
-        이번 수집에 정상 적재된 레코드와 (고객사, 원천 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
+        이번 수집에 정상 적재된 레코드와 (고객사, 엔터티 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
           - 이번 수집이 만든 이슈는 바꾸지 않습니다 (같은 키가 이번에 적재되고 중복으로도 거부된 경우 등).
           - 응답에 없던 레코드의 이슈는 그대로 OPEN 입니다 (빠진 행은 삭제·정정으로 보지 않음).
           - resolved_at 은 해소한 수집의 완료 시각입니다 (detected_at 과 같은 규칙).
@@ -582,7 +584,8 @@ class IngestRepository:
                 update(DataValidationIssue)
                 .where(
                     DataValidationIssue.company_id == company_id,
-                    DataValidationIssue.source_entity_type == source_domain.value,
+                    DataValidationIssue.source_entity_type
+                    == ISSUE_ENTITY_TYPE_OF[source_domain].value,
                     DataValidationIssue.status == ISSUE_OPEN,
                     DataValidationIssue.data_sync_run_id != data_sync_run_id,
                     DataValidationIssue.source_record_key.in_(chunk),

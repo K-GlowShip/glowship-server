@@ -5,7 +5,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.data_sync.application.validation.blocking_issues import OpenIssue
-from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
+from app.modules.data_sync.infrastructure.data_sync_enums import (
+    IssueEntityType,
+    SourceDomain,
+)
 from app.modules.data_sync.infrastructure.data_validation_issue import (
     DataValidationIssue,
 )
@@ -35,7 +38,8 @@ class ValidationIssueRepository:
             )
             .where(
                 DataValidationIssue.company_id == company_id,
-                DataValidationIssue.source_entity_type == SourceDomain.INVENTORY.value,
+                DataValidationIssue.source_entity_type
+                == IssueEntityType.INVENTORY.value,
                 DataValidationIssue.blocks_analysis.is_(True),
                 DataValidationIssue.detected_at <= at,
                 or_(
