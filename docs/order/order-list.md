@@ -4,7 +4,7 @@
 응답 모양은 API 명세 v6.2 4.3 `GET /orders`와 응답 본문 규칙(`api_response_body_rule_glowship.md`) 5.2(요약 객체)·6절(목록)을 따릅니다. 두 문서는 `glowship-plan` 저장소에 있습니다.
 상단 카드와 탭 배지(원천별 `openIssueCount`)는 [동기화 상태 API](../data-sync/latest-sync-status.md), 하단 오류 배너는 `GET /validation-issues`(미구현) 몫입니다.
 
-> 2026-11-03 명세 변경 반영: 기간 필터 `from`·`to`는 **ISO 8601 UTC 시각**이고 범위는 **`[from, to)`**(`to` 미포함)입니다. KST → UTC 변환은 프론트가 합니다(예: KST 6/30 하루 → `from=2026-06-29T15:00:00Z&to=2026-06-30T15:00:00Z`).
+> 2026-11-03 명세 변경(C18·C20) 반영: 기간 필터 `from`·`to`는 **ISO 8601 UTC 시각**(`Z` 또는 시간대 표시 필수)이고 범위는 **`[from, to)`**(`to` 미포함)입니다. 시간대 없는 값·날짜만은 422, `from > to`는 422, `from = to`는 0건입니다. KST → UTC 변환은 프론트가 합니다(예: KST 6/30 하루 → `from=2026-06-29T15:00:00Z&to=2026-06-30T15:00:00Z`).
 >
 > 2026-11-03 범위 조정: 명세 4.3의 주문 상세 `lines[]`는 **보류**해 응답에 없습니다(6절). 검색어의 SKU 코드·상품명 일치는 서버 안에서만 씁니다.
 
@@ -51,7 +51,7 @@ sequenceDiagram
 | `page` | 정수 ≥ 1 | `1` | 페이지 번호 (`app/core/pagination.py` `PageParams`) |
 | `size` | 정수 1~100 | `20` | 페이지 크기 |
 
-- `from`·`to`에 시간대 표시가 없으면 UTC로 보고, 다른 시간대(`+09:00` 등)면 UTC로 맞춰 비교합니다.
+- `from`·`to`에 시간대가 없는 값(`2026-06-30T15:00:00`)이나 날짜만(`2026-06-30`) 보내면 422 `VALIDATION_ERROR`입니다(명세 C18). 다른 시간대(`+09:00` 등)면 UTC로 맞춰 비교합니다.
 - 정렬은 `orderedAt` 최신순, 같으면 `orderId`입니다(명세 4.3). 페이지를 넘겨도 행이 중복·누락되지 않습니다.
 - 서버는 기본 기간을 강제하지 않습니다. 고객사 한 곳의 주문이 10만 건을 넘으므로 화면은 기본 기간을 넣어 조회하는 것을 권합니다.
 
@@ -120,7 +120,7 @@ HTTP/1.1 200 OK
 | --- | --- | --- |
 | `401` | `UNAUTHENTICATED` | 쿠키 없음·만료 |
 | `403` | `FORBIDDEN` | 토큰에 `company_id` 없음(OWNER·ADMIN) |
-| `422` | `VALIDATION_ERROR` | 허용되지 않은 코드값, 시각 형식 오류, `from > to`, `page < 1`, `size` 범위 밖, `q` 길이 초과 |
+| `422` | `VALIDATION_ERROR` | 허용되지 않은 코드값, 시각 형식 오류·시간대 없음·날짜만(C18), `from > to`(C20), `page < 1`, `size` 범위 밖, `q` 길이 초과 |
 
 응답 규칙 6.1은 범위 오류를 400으로 적지만 "현재 구현은 422"라 다른 목록 API와 같이 422입니다.
 
@@ -152,7 +152,7 @@ HTTP/1.1 200 OK
 | 파일 | 내용 |
 | --- | --- |
 | `test_order_api.py` | 401·403, 형식 오류 9종 422, camelCase 응답 모양, 기본값·파라미터 전달, RLS 컨텍스트 |
-| `test_order_list_service.py` | 시간대 정규화, `from > to` 422, 검색어 공백, 행 변환 |
+| `test_order_list_service.py` | 다른 시간대 → UTC, `from > to` 422, 검색어 공백, 행 변환 |
 | `test_order_repository.py` | 가짜 세션으로 SQL 문장·파라미터·행 변환 |
 | `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 주문 번호·SKU 코드·상품명 검색 |
 

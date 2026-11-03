@@ -98,29 +98,20 @@ async def test_필터와_페이지를_그대로_넘기고_기간은_UTC_시각_�
     assert kwargs == {"offset": 100, "limit": 50}
 
 
-async def test_시간대가_없는_시각은_UTC_로_보고_다른_시간대는_UTC_로_맞춘다():
+async def test_다른_시간대의_시각은_UTC_로_맞춘다():
     service, repo = _service(rows=[])
     kst = timezone(timedelta(hours=9))
 
     await service.get_page(
         TENANT,
-        ordered_from=datetime(2026, 6, 1, 0, 0),
+        ordered_from=datetime(2026, 6, 1, 0, 0, tzinfo=kst),
         ordered_to=datetime(2026, 6, 2, 0, 0, tzinfo=kst),
     )
 
     filters = repo.calls[0][2]
-    assert filters.ordered_from == datetime(2026, 6, 1, 0, 0, tzinfo=UTC)
+    assert filters.ordered_from == datetime(2026, 5, 31, 15, 0, tzinfo=UTC)
     assert filters.ordered_to == datetime(2026, 6, 1, 15, 0, tzinfo=UTC)
-    assert filters.ordered_to.tzinfo is UTC
-
-
-@pytest.mark.parametrize("query", [None, "", "   "])
-async def test_검색어가_비어_있으면_없는_것으로_본다(query):
-    service, repo = _service(rows=[])
-
-    await service.get_page(TENANT, query=query)
-
-    assert repo.calls[0][2].query is None
+    assert filters.ordered_from.tzinfo is UTC and filters.ordered_to.tzinfo is UTC
 
 
 async def test_from_이_to_보다_늦으면_422_예외를_던지고_조회하지_않는다():

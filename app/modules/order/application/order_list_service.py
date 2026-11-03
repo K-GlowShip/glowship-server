@@ -16,8 +16,8 @@ from app.modules.order.infrastructure.repository.order_repository import (
 """
     주문 목록 서비스 (API 명세 v6.2 4.3 GET /orders, 연동 데이터 조회 화면의 주문 탭)
       - 고객사 범위는 토큰의 company_id(TenantContext)다. RLS 컨텍스트는 get_tenant_context 가 설정해 둔다.
-      - 주문 기간(from·to)은 ISO 8601 UTC 시각이고 범위는 [from, to) 다 (to 미포함, 명세 변경 2026-11-03).
-        KST → UTC 변환은 프론트가 한다. 시간대 표시가 없는 값은 UTC 로 보고, 다른 시간대 값은 UTC 로 맞춘다.
+      - 주문 기간(from·to)은 ISO 8601 UTC 시각이고 범위는 [from, to) 다 (to 미포함, 명세 v6.2 C18·C20).
+        시간대가 있는 값만 들어온다(시간대 없는 값·날짜만은 라우터가 422 로 거부). 다른 시간대 값은 UTC 로 맞춘다.
       - 주문 상세 줄(lines[])은 보류했다(2026-11-03). 명세 4.3 에는 있으나 화면 확정 뒤 다시 넣는다.
       - 출고 관련 날짜 4개(securedDate 등)는 orders 열(마이그레이션 0005_orders)을 그대로 내린다 (D8, ERP 원천에서 받음).
         수집이 채우기 전에는 null 이다.
@@ -71,7 +71,7 @@ class OrderListService:
     ) -> OrderListResult:
         """page 를 생략하면 첫 페이지(기본 크기)다. 검색어는 양끝 공백을 지우고 비면 없는 것으로 본다.
         from 이 to 보다 늦으면 InvalidOrderedPeriodException(422)."""
-        ordered_from, ordered_to = _as_utc(ordered_from), _as_utc(ordered_to)
+        ordered_from, ordered_to = _to_utc(ordered_from), _to_utc(ordered_to)
         if ordered_from and ordered_to and ordered_from > ordered_to:
             raise InvalidOrderedPeriodException()
         page = page or PageParams()
@@ -112,10 +112,6 @@ class OrderListService:
         )
 
 
-def _as_utc(moment: datetime | None) -> datetime | None:
-    """시간대 표시가 없으면 UTC 로 보고, 있으면 UTC 로 바꾼다."""
-    if moment is None:
-        return None
-    if moment.tzinfo is None:
-        return moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC)
+def _to_utc(moment: datetime | None) -> datetime | None:
+    """시간대가 있는 시각을 UTC 로 맞춘다 (시간대 없는 값은 라우터가 거부해 들어오지 않는다)."""
+    return moment.astimezone(UTC) if moment else None
