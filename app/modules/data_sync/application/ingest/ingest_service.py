@@ -59,6 +59,8 @@ from app.modules.delay_analysis.application.stale.stale_service import (
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다 (1′).
       - 거부 사유는 결과에 담아 돌려줍니다. 검증 오류 기록(data_validation_issues)은 GLOW-15 가 붙입니다.
+      - 파서가 레코드로 바꾸지 못해 거부한 원천 레코드(MISSING_REQUIRED·INVALID_DATE, source_payload 의 파서 계약)는
+        parse_rejections 로 받습니다. 받은 건수·거부 건수에 넣고 결과의 거부 사유에도 앞에 담습니다.
 """
 
 # 확정 기준선(data_validation_issues.csv)과 같은 이름
@@ -101,6 +103,7 @@ class DataIngestService:
         source_domain: SourceDomain,
         connection_method: ConnectionMethod,
         records: Sequence[SourceRecord],
+        parse_rejections: Sequence[Rejection] = (),
     ) -> IngestResult:
         started_at = self.now()
         await set_rls_context(self.db, user_id=None, company_id=company_id)
@@ -119,10 +122,11 @@ class DataIngestService:
             applied = await self._apply(
                 company_id, run_id, source_domain, records, started_at
             )
+            rejections = (*parse_rejections, *applied.rejections)
             counts = RunCounts(
-                received=len(records),
+                received=len(records) + len(parse_rejections),
                 loaded=len(records) - len(applied.rejections),
-                rejected=len(applied.rejections),
+                rejected=len(rejections),
             )
             applied_seq = await self.repo.next_applied_seq(company_id)
             await self.repo.complete_run(
@@ -145,7 +149,7 @@ class DataIngestService:
             counts=counts,
             applied_seq=applied_seq,
             change_record_count=len(applied.records),
-            rejections=tuple(applied.rejections),
+            rejections=rejections,
             staled_run_ids=tuple(run.analysis_run_id for run in staled),
         )
 

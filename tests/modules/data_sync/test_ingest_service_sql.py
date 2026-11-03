@@ -11,6 +11,7 @@ from app.modules.data_sync.application.exception.data_sync_exceptions import (
 from app.modules.data_sync.application.ingest.code_resolver import (
     DUPLICATE_LINE_NO,
     UNKNOWN_SKU,
+    Rejection,
 )
 from app.modules.data_sync.application.ingest.ingest_service import (
     DUPLICATE_SOURCE_RECORD,
@@ -262,6 +263,69 @@ async def test_duplicate_records_load_the_first_one(db_write_session):
         {"o": order.order_code, "c": company_id},
     )
     assert status == "SHIPPED"
+
+
+PARSE_REJECTION = Rejection(
+    "B-ORD-ERR-0003", "orderedAt", "INVALID_DATE", "주문 일시를 읽을 수 없음"
+)
+
+
+@pytest.mark.parametrize("good_count", [1, 0])
+async def test_parse_rejections_are_counted_in_the_run(db_write_session, good_count):
+    """파서가 거부한 레코드도 받은·거부 건수에 들어가 PARTIAL_SUCCESS (기준선 B사 주문 수집의 INVALID_DATE 처럼)"""
+    db = db_write_session
+    company_id = await _company(db)
+    orders = (await _source_orders(db, company_id, limit=1))[:good_count]
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        orders,
+        parse_rejections=[PARSE_REJECTION],
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    expected = (good_count + 1, good_count, 1)
+    assert (
+        result.counts.received,
+        result.counts.loaded,
+        result.counts.rejected,
+    ) == expected
+    assert result.rejections == (PARSE_REJECTION,)
+    row = await _run_row(db, result.data_sync_run_id)
+    assert (
+        row.status,
+        row.received_record_count,
+        row.loaded_record_count,
+        row.rejected_record_count,
+    ) == ("PARTIAL_SUCCESS", *expected)
+
+
+async def test_parse_rejections_come_before_apply_rejections(db_write_session):
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    bad = replace(
+        order,
+        order_code="TEST-BAD",
+        lines=(SourceOrderLine(1, "NO-SUCH-SKU", 1, 0, "ACTIVE"),),
+    )
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [order, bad],
+        parse_rejections=[PARSE_REJECTION],
+    )
+
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        3,
+        1,
+        2,
+    )
+    assert [r.error_code for r in result.rejections] == ["INVALID_DATE", UNKNOWN_SKU]
 
 
 async def _mapped_inventory(db):
