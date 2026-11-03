@@ -95,7 +95,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `UNSUPPORTED_TRANSPORT_MODE` | `OCEAN`·`AIR`가 아닌 운송 수단 |
 | `NO_ROUTE_PORT` | 경로표에 없는 (창고 지역, 운송 수단) |
 | `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 |
-| `DUPLICATE_SOURCE_RECORD` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상 (모두 거부) |
+| `DUPLICATE_SOURCE_RECORD` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상. 첫 레코드만 적재하고 두 번째부터 1건씩 거부 (기준선과 같음) |
 | `DUPLICATE_LINE_NO` | 주문·선적 안에 같은 상세 줄 번호가 2개 이상 (겹친 번호 개수와 관계없이 부모 레코드 1건 거부) |
 
 - 오류 코드 이름은 확정 기준선 `data_validation_issues.csv`와 같습니다.
@@ -121,7 +121,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서·거부 사유 (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
-| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
+| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재, 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.

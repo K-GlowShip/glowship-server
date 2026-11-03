@@ -224,17 +224,44 @@ async def test_unmapped_and_duplicate_records_make_partial_success(db_write_sess
         company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [good, bad, dup, dup]
     )
 
+    # 중복 dup 2건 중 첫 건은 적재, 두 번째만 거부
     assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
     assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
         4,
-        1,
-        3,
+        2,
+        2,
     )
-    codes = sorted(r.error_code for r in result.rejections)
-    assert codes == sorted(
-        [UNKNOWN_SKU, DUPLICATE_SOURCE_RECORD, DUPLICATE_SOURCE_RECORD]
-    )
+    assert sorted((r.source_record_key, r.error_code) for r in result.rejections) == [
+        (dup.order_code, DUPLICATE_SOURCE_RECORD),
+        ("TEST-BAD", UNKNOWN_SKU),
+    ]
     assert (await _run_row(db, result.data_sync_run_id)).status == "PARTIAL_SUCCESS"
+
+
+async def test_duplicate_records_load_the_first_one(db_write_session):
+    """값이 다른 중복이면 첫 레코드의 값이 적재되고, 나머지 2건은 1건씩 거부 (기준선 "첫 레코드만 적재")"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, status="OPEN", limit=1) or [None]
+    if order is None:
+        pytest.skip("OPEN 주문이 없음")
+    first = replace(order, status="SHIPPED")
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [first, order, order]
+    )
+
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        3,
+        1,
+        2,
+    )
+    assert [r.error_code for r in result.rejections] == [DUPLICATE_SOURCE_RECORD] * 2
+    status = await db.scalar(
+        text("SELECT status FROM orders WHERE order_code = :o AND company_id = :c"),
+        {"o": order.order_code, "c": company_id},
+    )
+    assert status == "SHIPPED"
 
 
 async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):

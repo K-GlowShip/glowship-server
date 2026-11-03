@@ -288,24 +288,22 @@ def _unique[R](
     record_key: Callable[[R], str] | None = None,
 ) -> tuple[dict, list[Rejection]]:
     """
-    같은 수집 안에서 업무 키가 겹치는 레코드는 모두 거부합니다 (어느 값이 맞는지 알 수 없음).
+    같은 수집 안에서 업무 키가 겹치면 첫 레코드만 적재하고, 두 번째부터는 DUPLICATE_SOURCE_RECORD 로 거부합니다
+    (확정 기준선 data_validation_issues.csv 의 "첫 레코드만 적재"와 같음).
     거부 키는 record_key 가 있으면 그 형식(재고: code_resolver.inventory_record_key), 없으면 업무 키 문자열입니다.
     """
-    counts: dict[object, int] = {}
-    for record in records:
-        counts[key(record)] = counts.get(key(record), 0) + 1
     unique, rejections = {}, []
     for record in records:
         k = key(record)
-        if counts[k] == 1:
+        if k not in unique:
             unique[k] = record
-        else:
-            rejections.append(
-                Rejection(
-                    source_record_key=record_key(record) if record_key else str(k),
-                    field_name="source_record_key",
-                    error_code=DUPLICATE_SOURCE_RECORD,
-                    error_message=f"같은 수집에 같은 업무 키가 {counts[k]}건 있음",
-                )
+            continue
+        rejections.append(
+            Rejection(
+                source_record_key=record_key(record) if record_key else str(k),
+                field_name="source_record_key",
+                error_code=DUPLICATE_SOURCE_RECORD,
+                error_message="같은 수집에 같은 업무 키가 이미 있음 (첫 레코드만 적재)",
             )
+        )
     return unique, rejections
