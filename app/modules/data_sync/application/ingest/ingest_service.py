@@ -68,6 +68,18 @@ from app.modules.delay_analysis.application.stale.stale_service import (
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다 (1′).
       - 거부 사유는 결과에 담아 돌려줍니다. 검증 오류 기록(data_validation_issues)은 GLOW-15 가 붙입니다.
+
+    실행 전제 (호출 측 계약)
+      - DB 역할: 워커 역할(glowship_v4_worker) 연결에서 실행합니다. 이 서비스는 RLS 컨텍스트에 고객사만 넣고
+        (user_id=None), 워커 역할의 app_context_allowed 는 고객사가 ACTIVE 인지만 봅니다. 앱 역할(glowship_v4_app)은
+        ACTIVE 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고
+        INSERT 가 고유 제약 위반으로 실패합니다 (마이그레이션 0001 app_context_allowed).
+        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 모두 포함합니다.
+      - 세션: 이 서비스 전용 세션을 넘깁니다. 서비스가 직접 commit·rollback 하므로(RUNNING 기록, 적용, FAILED 기록)
+        요청 세션(get_db)을 공유하면 안 됩니다.
+      - 지금 앱 연결은 설정의 postgres_user 하나뿐이고 워커 역할 연결은 아직 없습니다. 수동 수집 API 25
+        (POST /data-sync-runs, 202 뒤 백그라운드 실행)를 붙일 때 워커 역할 전용 세션을 새로 여는 방식으로 연결을 정합니다
+        (아직 확정 아님). 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
       - 파서가 레코드로 바꾸지 못해 거부한 원천 레코드(MISSING_REQUIRED·INVALID_DATE, source_payload 의 파서 계약)는
         parse_rejections 로 받습니다. 받은 건수·거부 건수에 넣고 결과의 거부 사유에도 앞에 담습니다.
 """

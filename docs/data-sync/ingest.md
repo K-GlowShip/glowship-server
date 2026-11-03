@@ -34,6 +34,10 @@ sequenceDiagram
 - 순서대로 따로 들어온 응답의 선후(관측 시각)는 호출 측 계약입니다. 가상 API 는 관측 시각 순서대로 응답합니다.
 - **입력 크기:** 업무 키 IN 조회와 수집 ID 교체는 키 5,000개씩 나눠 실행합니다(asyncpg 바인딩 한도 32,767, 재고 복합 키는 키당 값 3개). 나눠도 수집 1회 = 한 트랜잭션입니다.
 - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 `SUCCEEDED` 수집이 남습니다.
+- **실행 전제(호출 측 계약):**
+  - DB 역할은 워커 역할(`glowship_v4_worker`)입니다. 서비스는 RLS 컨텍스트에 고객사만 넣고(`user_id=None`), 워커 역할의 `app_context_allowed`는 고객사가 `ACTIVE`인지만 봅니다. 앱 역할(`glowship_v4_app`)은 `ACTIVE` 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고 INSERT 가 고유 제약 위반으로 실패합니다(마이그레이션 0001 `app_context_allowed`). 워커 역할 권한은 이 서비스가 쓰는 표를 모두 포함합니다(상품·창고·주문·선적·재고·수집 실행·분석 실행은 SELECT·INSERT·UPDATE, 변경 기록·일정 스냅샷은 SELECT·INSERT, DELETE 없음).
+  - 세션은 이 서비스 전용입니다. 서비스가 직접 commit·rollback 하므로(`RUNNING` 기록, 적용, `FAILED` 기록) 요청 세션(`get_db`)을 공유하면 안 됩니다.
+  - **아직 정하지 않은 것:** 지금 앱 연결은 설정의 `postgres_user` 하나뿐이고 워커 역할 연결이 없습니다. 수동 수집 API 25(`POST /data-sync-runs`, 202 뒤 백그라운드 실행)를 붙일 때 워커 역할 전용 세션을 새로 여는 방식으로 연결을 정합니다. 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
 - 코드: `app/modules/data_sync/application/ingest/`(서비스·규칙), `app/modules/data_sync/infrastructure/repository/ingest_repository.py`(SQL)
 
 ## 2. 원천 레코드 (`source_payload.py`)
