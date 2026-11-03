@@ -10,6 +10,8 @@ from app.modules.data_sync.application.exception.data_sync_exceptions import (
 )
 from app.modules.data_sync.application.ingest.code_resolver import (
     DUPLICATE_LINE_NO,
+    MISSING_REQUIRED,
+    MIXED_HS10_IN_SHIPMENT,
     UNKNOWN_SKU,
     Rejection,
 )
@@ -616,6 +618,105 @@ async def test_existing_shipment_keeps_plan_when_release_date_changes(db_write_s
     assert tuple(after[:2]) == tuple(before)
     assert after.planned_kr_release_date == moved.planned_kr_release_date
     assert await _snapshot_count(db, result.data_sync_run_id) == 0  # 일정 필드는 그대로
+
+
+class OtherHs10Repository(IngestRepository):
+    """코드표에 HS10 이 다른 SKU 코드 TMS-OTHER-HS 를 하나 더 둡니다 (확정 데이터는 HS10 이 하나뿐)."""
+
+    async def load_code_book(self, company_id, source_domain):
+        book = await super().load_code_book(company_id, source_domain)
+        any_sku = next(iter(book.skus.values()))
+        return replace(
+            book,
+            skus={**book.skus, "TMS-OTHER-HS": replace(any_sku, hs10="9999999999")},
+        )
+
+
+async def test_new_shipments_without_single_hs10_are_rejected_not_failed(
+    db_write_session,
+):
+    """새 선적 혼합 HS10·빈 상세는 부모 1건씩 거부, 정상 새 선적은 적재 → PARTIAL_SUCCESS (FAILED 아님)"""
+    db = db_write_session
+    company_id = await _company(db)
+    template = replace(
+        await _tms_shipment(db, company_id),
+        current_stage="AT_SEA",
+        actual_3pl_inbound_date=None,
+    )
+    good, mixed, empty = (
+        replace(template, shipment_code=f"TEST-{uuid.uuid7().hex[-10:]}")
+        for _ in range(3)
+    )
+    next_line = max(line.line_no for line in template.lines) + 1
+    mixed = replace(
+        mixed,
+        lines=(*template.lines, SourceShipmentLine(next_line, "TMS-OTHER-HS", 1)),
+    )
+    empty = replace(empty, lines=())
+
+    result = await _service(db, repo=OtherHs10Repository(db)).ingest(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, [good, mixed, empty]
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        3,
+        1,
+        2,
+    )
+    assert {
+        (r.source_record_key, r.field_name, r.error_code) for r in result.rejections
+    } == {
+        (mixed.shipment_code, "lines", MIXED_HS10_IN_SHIPMENT),
+        (empty.shipment_code, "lines", MISSING_REQUIRED),
+    }
+    stored = set(
+        await db.scalars(
+            text("SELECT shipment_code FROM shipments WHERE shipment_code = ANY(:s)"),
+            {"s": [good.shipment_code, mixed.shipment_code, empty.shipment_code]},
+        )
+    )
+    assert stored == {good.shipment_code}
+
+
+async def test_existing_shipment_without_lines_updates_schedule_and_keeps_lines(
+    db_write_session,
+):
+    """기존 선적 + 빈 상세 + 일정 변경: 기존 상세는 그대로, 일정만 갱신 (응답에서 빠진 상세는 삭제로 보지 않음)"""
+    db = db_write_session
+    company_id = await _company(db)
+    source = await _tms_shipment(db, company_id)
+    lines_sql = text(
+        "SELECT l.line_no, l.sku_id, l.shipped_quantity FROM shipment_lines l"
+        " JOIN shipments h USING (shipment_id)"
+        " WHERE h.shipment_code = :s AND h.company_id = :c ORDER BY l.line_no"
+    )
+    params = {"s": source.shipment_code, "c": company_id}
+    lines_before = (await db.execute(lines_sql, params)).all()
+    header_only = replace(
+        source,
+        current_expected_3pl_inbound_date=source.current_expected_3pl_inbound_date
+        + timedelta(days=3),
+        lines=(),
+    )
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, [header_only]
+    )
+
+    assert result.status == DataSyncRunStatus.SUCCEEDED, result.rejections
+    assert (await db.execute(lines_sql, params)).all() == lines_before
+    expected = await db.scalar(
+        text(
+            "SELECT current_expected_3pl_inbound_date FROM shipments"
+            " WHERE shipment_code = :s AND company_id = :c"
+        ),
+        params,
+    )
+    assert expected == header_only.current_expected_3pl_inbound_date
+    assert await _snapshot_count(db, result.data_sync_run_id) == 1
+    # 머리 변경 기록은 기존 상세의 SKU 마다 남아 STALE 판정 범위가 줄지 않음
+    assert result.change_record_count == len({line.sku_id for line in lines_before})
 
 
 # --- 실제 STALE 판정 서비스와 연결 ----------------------------------------------------------

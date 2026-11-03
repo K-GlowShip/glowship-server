@@ -61,10 +61,13 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 
 | 값 | 규칙 | 근거 |
 | --- | --- | --- |
+| HS10 | 선적 상세 SKU(내부)의 HS10. **정확히 하나**여야 함. 둘 이상이면 `MIXED_HS10_IN_SHIPMENT`, 상세가 없어 정할 수 없으면 `MISSING_REQUIRED`로 부모 1건 거부(첫 값을 고르지 않음) | 기준 고유 키 `market_leadtime_references_uk1 (month, us_port_code, hs10, transport_mode)`, 선적은 기준 하나만 가리킴(`shipments.market_leadtime_reference_id` NOT NULL FK) |
 | 미국 항구 | (도착 창고 지역, 운송 수단) 경로표: 서부+`OCEAN` → `2704`, 동부+`AIR` → `1003`, 서부+`AIR` → `2720` | 생성기 경로표 `ROUTES`, 확정 선적 166건 |
-| 시장 리드타임 기준 | 출고 월 기준 → 인정 범위(≤ `2026-01`) 안 가장 최근 연도의 같은 달 → 같은 경로의 가장 가까운 이전 달. 없으면 거부 | 생성기 `market_row`, 후보 2 보고서 H-4 (마스터의 2026-02 이후 추정 행은 쓰지 않음) |
+| 시장 리드타임 기준 | 같은 (항구, HS10, 운송 수단) 안에서 출고 월 기준 → 인정 범위(≤ `2026-01`) 안 가장 최근 연도의 같은 달 → 같은 경로의 가장 가까운 이전 달. 없으면 거부 | 생성기 `market_row`, 후보 2 보고서 H-4 (마스터의 2026-02 이후 추정 행은 쓰지 않음) |
 | 계획 3PL 입고일 | 한국 계획 출고일 + 올림(p90) | `data_schema_storage_glowship.md` 4.3 |
 
+- **HS10 검사와 상세 필수는 새 선적에만 합니다.** 기존 선적은 저장된 기준을 쓰므로 HS10 을 보지 않고, 상세 없이 머리(단계·예상일)만 와도 됩니다. 응답에서 빠진 기존 상세는 그대로 남고, 머리 변경 기록은 기존 상세의 SKU 마다 남습니다. 이번 응답에 들어온 상세는 기존처럼 SKU 매핑·수량 검증을 합니다.
+- 확정 데이터는 SKU 50개의 HS10 이 모두 `3304995000`이라 선적 166건의 기준·계획일이 그대로입니다(8절 재현 테스트).
 - 인정 범위의 끝 월은 `LAST_ACCEPTED_REFERENCE_MONTH`(코드표 `CodeBook.last_accepted_reference_month`)입니다. 시장 마스터를 새로 적재하면 이 값을 바꿉니다.
 - 생성기의 마지막 단계(운영 기준)는 쓰지 않습니다. `shipments.market_leadtime_reference_id`가 NOT NULL·FK 라 운영 기준을 저장할 자리가 없고, 운영 리드타임에는 해상 운송 기간·p90 이 없습니다.
 
@@ -101,7 +104,9 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `UNKNOWN_SKU`·`UNKNOWN_WAREHOUSE` | 코드표에 없는 SKU·창고 코드 (상세 하나라도 없으면 레코드 전체) |
 | `UNSUPPORTED_TRANSPORT_MODE` | `OCEAN`·`AIR`가 아닌 운송 수단 |
 | `NO_ROUTE_PORT` | 경로표에 없는 (창고 지역, 운송 수단) |
-| `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 |
+| `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 (같은 항구·HS10·운송 수단) |
+| `MIXED_HS10_IN_SHIPMENT` | 새 선적 상세 SKU 의 HS10 이 둘 이상 (`field_name = lines`, 3절) |
+| `MISSING_REQUIRED` | 새 선적에 상세가 없음 (`field_name = lines`, 3절). 파서가 필수값 없음으로 거부할 때도 같은 코드(2절) |
 | `DUPLICATE_SOURCE_RECORD` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상. 첫 레코드만 적재하고 두 번째부터 1건씩 거부 (기준선과 같음). 재고는 외부 코드가 달라도 변환 뒤 내부 (날짜, 창고, SKU)가 같으면 같은 규칙으로 거부 (매핑이 외부 코드 N → 내부 1 을 막지 않음, `inventory_daily_uk2`) |
 | `DUPLICATE_LINE_NO` | 주문·선적 안에 같은 상세 줄 번호가 2개 이상 (겹친 번호 개수와 관계없이 부모 레코드 1건 거부) |
 | `NEGATIVE_QUANTITY` | 음수 수량. 재고 4개 수량(`inventory_daily_ck1~4`), 주문 상세 주문·출고 수량, 선적 상세 수량, 상품 `units_per_case` (기준선과 같은 이름) |
@@ -124,6 +129,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 
 - 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
 - 검증 오류 기록·분석 보류(GLOW-15)
+- **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
 - **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
 
@@ -132,11 +138,11 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | 테스트 | 확인하는 것 |
 | --- | --- |
 | `test_change_detection.py` | 변경 판정·요약 문장·스냅샷 조건 (DB 없음) |
-| `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서·거부 사유 (DB 없음) |
+| `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서(HS10 포함)·새 선적 HS10 규칙·거부 사유 (DB 없음) |
 | `test_record_validation.py` | 값 검증: CHECK 제약별 거부 코드·위치, 허용 값 목록 = ORM CHECK (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
-| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
+| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 새 선적 혼합 HS10·빈 상세 거부(`PARTIAL_SUCCESS`), 기존 선적 빈 상세 + 일정 변경(상세 유지), 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.

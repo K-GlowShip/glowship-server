@@ -25,11 +25,16 @@ from app.modules.data_sync.application.ingest.source_records import (
         검증 오류 기록(data_validation_issues)은 GLOW-15 가 이 거부 사유로 남깁니다.
       - 선적의 미국 항구·시장 리드타임 기준·계획 3PL 입고일은 원천(TMS)이 보내지 않고 서버가 정합니다.
           항구: (도착 창고 지역, 운송 수단) 경로표 ROUTE_PORTS
-          기준: 시장 기준을 아래 순서로 찾고, 끝내 없으면 거부합니다 (생성기 tools/synth2026/ledger2026.py market_row,
+          HS10: 선적 상세 SKU 의 HS10. 정확히 하나여야 합니다 (기준 고유 키 market_leadtime_references_uk1 이
+                (월, 항구, HS10, 운송 수단)이고 선적은 기준 하나만 가리킴). 둘 이상이면 MIXED_HS10_IN_SHIPMENT,
+                상세가 없어 정할 수 없으면 MISSING_REQUIRED 로 거부합니다.
+          기준: 같은 (항구, HS10, 운송 수단)의 시장 기준을 아래 순서로 찾고, 끝내 없으면 거부합니다 (생성기 tools/synth2026/ledger2026.py market_row,
                 후보 2 보고서 H-4 승인). 마지막으로 인정한 기준 월(LAST_ACCEPTED_REFERENCE_MONTH) 뒤의 행은 쓰지 않습니다.
                 1) 출고 월 기준  2) 인정 범위 안 가장 최근 연도의 같은 달  3) 같은 경로의 가장 가까운 이전 달
           계획 3PL 입고일 = 한국 계획 출고일 + 올림(p90) (data_schema_storage_glowship.md 4.3)
         기준과 계획일은 선적이 처음 들어올 때만 정하고, 이미 있는 선적은 저장된 값을 그대로 씁니다.
+        그래서 HS10 검사·상세 필수도 새 선적에만 합니다. 이미 있는 선적은 상세 없이 머리(단계·예상일)만 와도 되고,
+        응답에서 빠진 기존 상세는 그대로 남습니다 (change_detection.diff_shipment).
       - DB 를 읽지 않는 순수 함수입니다. 코드표는 Repository 가 만들어 넘깁니다.
 """
 
@@ -55,6 +60,10 @@ NO_LEADTIME_REFERENCE = "NO_LEADTIME_REFERENCE"
 # 주문·선적 안에 같은 상세 줄 번호가 2개 이상: 어느 줄이 맞는지 알 수 없어 부모 레코드 전체를 1건으로 거부합니다
 # (그대로 두면 (부모, line_no) 고유 제약 order_lines_uk2·shipment_lines_uk2 위반으로 수집 전체가 실패).
 DUPLICATE_LINE_NO = "DUPLICATE_LINE_NO"
+# 새 선적의 상세가 없음: HS10·리드타임 기준을 정할 수 없음 (기준선과 같은 이름)
+MISSING_REQUIRED = "MISSING_REQUIRED"
+# 새 선적 상세 SKU 의 HS10 이 둘 이상: 기준을 하나로 정할 수 없음 (임의로 고르지 않음)
+MIXED_HS10_IN_SHIPMENT = "MIXED_HS10_IN_SHIPMENT"
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,7 @@ class WarehouseCode:
 class SkuCode:
     sku_id: uuid.UUID
     sku_code: str  # 내부 SKU 코드 (변경 요약 문장용)
+    hs10: str  # 새 선적의 시장 리드타임 기준 찾기용
 
 
 @dataclass(frozen=True)
@@ -82,8 +92,8 @@ class CodeBook:
 
     skus: Mapping[str, SkuCode]
     warehouses: Mapping[str, WarehouseCode]
-    # (YYYY-MM, us_port_code, 기준 운송 수단) → 기준. 선적 원천에서만 씁니다.
-    leadtime_references: Mapping[tuple[str, str, str], LeadtimeReference] = field(
+    # (YYYY-MM, us_port_code, hs10, 기준 운송 수단) → 기준 (market_leadtime_references_uk1). 선적 원천에서만 씁니다.
+    leadtime_references: Mapping[tuple[str, str, str, str], LeadtimeReference] = field(
         default_factory=dict
     )
     last_accepted_reference_month: str = LAST_ACCEPTED_REFERENCE_MONTH
@@ -159,7 +169,7 @@ def resolve_shipment(
     warehouse = book.warehouses.get(source.warehouse_code)
     if warehouse is None:
         return _unknown_warehouse(key, source.warehouse_code)
-    lines = []
+    lines, hs10s = [], set()
     for index, line in enumerate(source.lines):
         sku = book.skus.get(line.sku_code)
         if sku is None:
@@ -167,8 +177,24 @@ def resolve_shipment(
         lines.append(
             ShipmentLineRecord(line.line_no, sku.sku_id, line.shipped_quantity)
         )
+        hs10s.add(sku.hs10)
 
     if existing_plan is None:
+        if not hs10s:
+            return Rejection(
+                key,
+                "lines",
+                MISSING_REQUIRED,
+                "새 선적에 상세가 없어 HS10·시장 리드타임 기준을 정할 수 없음",
+            )
+        if len(hs10s) > 1:
+            return Rejection(
+                key,
+                "lines",
+                MIXED_HS10_IN_SHIPMENT,
+                f"새 선적 상세의 HS10 이 둘 이상: {', '.join(sorted(hs10s))}",
+            )
+        [hs10] = hs10s
         port = ROUTE_PORTS.get((warehouse.region_code, source.transport_mode))
         if port is None:
             return Rejection(
@@ -181,6 +207,7 @@ def resolve_shipment(
             book.leadtime_references,
             source.planned_kr_release_date,
             port,
+            hs10,
             reference_mode,
             book.last_accepted_reference_month,
         )
@@ -190,7 +217,7 @@ def resolve_shipment(
                 "planned_kr_release_date",
                 NO_LEADTIME_REFERENCE,
                 f"시장 리드타임 기준 없음: {source.planned_kr_release_date:%Y-%m}"
-                f" {port} {source.transport_mode}",
+                f" {port} HS10 {hs10} {source.transport_mode}",
             )
         existing_plan = ShipmentPlan(
             reference.market_leadtime_reference_id,
@@ -251,21 +278,23 @@ def inventory_record_key(source: SourceInventory, book: CodeBook) -> str:
 
 
 def find_leadtime_reference(
-    references: Mapping[tuple[str, str, str], LeadtimeReference],
+    references: Mapping[tuple[str, str, str, str], LeadtimeReference],
     planned_kr_release_date: date,
     us_port_code: str,
+    hs10: str,
     reference_mode: str,
     last_accepted_month: str = LAST_ACCEPTED_REFERENCE_MONTH,
 ) -> LeadtimeReference | None:
     """
-    출고 월 기준 → 인정 범위 안 가장 최근 연도의 같은 달 → 같은 경로의 가장 가까운 이전 달.
+    같은 (항구, HS10, 운송 수단) 안에서: 출고 월 기준 → 인정 범위 안 가장 최근 연도의 같은 달 → 가장 가까운 이전 달.
     인정 범위는 last_accepted_month 이하이고 출고 월 이하인 기준입니다.
     """
     release_month = planned_kr_release_date.strftime("%Y-%m")
     usable = {
         month: reference
-        for (month, port, mode), reference in references.items()
+        for (month, port, code, mode), reference in references.items()
         if port == us_port_code
+        and code == hs10
         and mode == reference_mode
         and month <= last_accepted_month
         and month <= release_month

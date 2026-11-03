@@ -6,6 +6,8 @@ import pytest
 
 from app.modules.data_sync.application.ingest.code_resolver import (
     DUPLICATE_LINE_NO,
+    MISSING_REQUIRED,
+    MIXED_HS10_IN_SHIPMENT,
     NO_LEADTIME_REFERENCE,
     NO_ROUTE_PORT,
     UNKNOWN_SKU,
@@ -33,16 +35,22 @@ from app.modules.data_sync.application.ingest.source_payload import (
 )
 
 SKU_ID = uuid.uuid7()
+OTHER_HS_SKU_ID = uuid.uuid7()
+HS10 = "3304995000"
 WEST_ID = uuid.uuid7()
 EAST_ID = uuid.uuid7()
 OCEAN_JAN = LeadtimeReference(uuid.uuid7(), 24.35)
 BOOK = CodeBook(
-    skus={"TMS-SKU-001": SkuCode(SKU_ID, "SKU-001")},
+    skus={
+        "TMS-SKU-001": SkuCode(SKU_ID, "SKU-001", HS10),
+        "TMS-SKU-002": SkuCode(uuid.uuid7(), "SKU-002", HS10),
+        "TMS-SKU-901": SkuCode(OTHER_HS_SKU_ID, "SKU-901", "3304991000"),
+    },
     warehouses={
         "TMS-LAX": WarehouseCode(WEST_ID, "WH-WEST", "WEST"),
         "TMS-EWR": WarehouseCode(EAST_ID, "WH-EAST", "EAST"),
     },
-    leadtime_references={("2026-01", "2704", "vessel_container"): OCEAN_JAN},
+    leadtime_references={("2026-01", "2704", HS10, "vessel_container"): OCEAN_JAN},
 )
 SHIPMENT = SourceShipment(
     shipment_code="OCN-1",
@@ -76,8 +84,10 @@ INVENTORY = SourceInventory(
 )
 
 
-def _refs(*months: str, port="2704", mode="vessel_container"):
-    return {(m, port, mode): LeadtimeReference(uuid.uuid7(), 20.0) for m in months}
+def _refs(*months: str, port="2704", hs10=HS10, mode="vessel_container"):
+    return {
+        (m, port, hs10, mode): LeadtimeReference(uuid.uuid7(), 20.0) for m in months
+    }
 
 
 # --- 계획 3PL 입고일 ---------------------------------------------------------------
@@ -94,9 +104,11 @@ def test_planned_inbound_date_rounds_p90_up():
 def test_reference_of_release_month_comes_first():
     refs = _refs("2025-02", "2026-01")
 
-    found = find_leadtime_reference(refs, date(2026, 1, 9), "2704", "vessel_container")
+    found = find_leadtime_reference(
+        refs, date(2026, 1, 9), "2704", HS10, "vessel_container"
+    )
 
-    assert found is refs[("2026-01", "2704", "vessel_container")]
+    assert found is refs[("2026-01", "2704", HS10, "vessel_container")]
 
 
 def test_after_last_accepted_month_uses_same_month_of_latest_year():
@@ -104,29 +116,39 @@ def test_after_last_accepted_month_uses_same_month_of_latest_year():
         "2024-03", "2025-03", "2026-02", "2026-03"
     )  # 2026-02·03 은 인정 범위 밖
 
-    found = find_leadtime_reference(refs, date(2026, 3, 5), "2704", "vessel_container")
+    found = find_leadtime_reference(
+        refs, date(2026, 3, 5), "2704", HS10, "vessel_container"
+    )
 
-    assert found is refs[("2025-03", "2704", "vessel_container")]
+    assert found is refs[("2025-03", "2704", HS10, "vessel_container")]
 
 
 def test_without_same_month_uses_nearest_previous_month():
     refs = _refs("2025-01", "2025-11")
 
-    found = find_leadtime_reference(refs, date(2026, 3, 5), "2704", "vessel_container")
+    found = find_leadtime_reference(
+        refs, date(2026, 3, 5), "2704", HS10, "vessel_container"
+    )
 
-    assert found is refs[("2025-11", "2704", "vessel_container")]
+    assert found is refs[("2025-11", "2704", HS10, "vessel_container")]
 
 
 def test_reference_of_other_route_or_future_is_not_used():
-    refs = _refs("2026-01", port="1003") | _refs("2026-01", mode="air")
+    refs = (
+        _refs("2026-01", port="1003")
+        | _refs("2026-01", mode="air")
+        | _refs("2026-01", hs10="3304991000")
+    )
 
     assert (
-        find_leadtime_reference(refs, date(2026, 1, 9), "2704", "vessel_container")
+        find_leadtime_reference(
+            refs, date(2026, 1, 9), "2704", HS10, "vessel_container"
+        )
         is None
     )
     assert (
         find_leadtime_reference(
-            _refs("2025-12"), date(2025, 11, 9), "2704", "vessel_container"
+            _refs("2025-12"), date(2025, 11, 9), "2704", HS10, "vessel_container"
         )
         is None
     )
@@ -155,7 +177,7 @@ def test_new_shipment_gets_port_reference_and_planned_date():
 def test_route_table_decides_port(warehouse_code, mode, port, reference_mode):
     reference = LeadtimeReference(uuid.uuid7(), 5.0)
     book = replace(
-        BOOK, leadtime_references={("2026-01", port, reference_mode): reference}
+        BOOK, leadtime_references={("2026-01", port, HS10, reference_mode): reference}
     )
 
     record = resolve_shipment(
@@ -163,6 +185,72 @@ def test_route_table_decides_port(warehouse_code, mode, port, reference_mode):
     )
 
     assert record.market_leadtime_reference_id == reference.market_leadtime_reference_id
+
+
+def test_new_shipment_with_single_hs10_uses_reference_of_that_hs10():
+    """새 선적 + 단일 HS10: 같은 HS10 의 기준을 씀 (다른 HS10 기준이 같은 달·항구에 있어도)"""
+    other = LeadtimeReference(uuid.uuid7(), 40.0)
+    book = replace(
+        BOOK,
+        leadtime_references={
+            **BOOK.leadtime_references,
+            ("2026-01", "2704", "3304991000", "vessel_container"): other,
+        },
+    )
+    shipment = replace(
+        SHIPMENT,
+        lines=(*SHIPMENT.lines, SourceShipmentLine(2, "TMS-SKU-002", 10)),
+    )
+
+    record = resolve_shipment(shipment, book)
+
+    assert record.market_leadtime_reference_id == OCEAN_JAN.market_leadtime_reference_id
+
+
+@pytest.mark.parametrize(
+    ("lines", "error_code"),
+    [
+        # 새 선적 + 혼합 HS10: 첫 값을 고르지 않고 부모 1건 거부
+        (
+            (
+                SourceShipmentLine(1, "TMS-SKU-001", 300),
+                SourceShipmentLine(2, "TMS-SKU-901", 10),
+            ),
+            MIXED_HS10_IN_SHIPMENT,
+        ),
+        # 새 선적 + 빈 상세: HS10 을 정할 수 없어 거부
+        ((), MISSING_REQUIRED),
+    ],
+)
+def test_new_shipment_without_single_hs10_is_rejected(lines, error_code):
+    rejection = resolve_shipment(replace(SHIPMENT, lines=lines), BOOK)
+
+    assert isinstance(rejection, Rejection)
+    assert (
+        rejection.source_record_key,
+        rejection.field_name,
+        rejection.error_code,
+    ) == ("OCN-1", "lines", error_code)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        (),  # 머리(단계·예상일)만 갱신하는 응답
+        (
+            SourceShipmentLine(1, "TMS-SKU-001", 300),
+            SourceShipmentLine(2, "TMS-SKU-901", 10),
+        ),
+    ],
+)
+def test_existing_shipment_skips_hs10_checks(lines):
+    """기존 선적은 저장된 계획 기준을 쓰므로 빈 상세·혼합 HS10 도 거부하지 않음 (serviceflow v6.2 1절)"""
+    plan = ShipmentPlan(uuid.uuid7(), date(2026, 2, 1))
+
+    record = resolve_shipment(replace(SHIPMENT, lines=lines), BOOK, plan)
+
+    assert not isinstance(record, Rejection)
+    assert record.market_leadtime_reference_id == plan.market_leadtime_reference_id
 
 
 def test_existing_shipment_keeps_stored_plan():

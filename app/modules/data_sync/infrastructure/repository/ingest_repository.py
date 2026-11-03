@@ -95,6 +95,7 @@ class IngestRepository:
                     ExternalEntityMapping.external_code,
                     Sku.sku_id,
                     Sku.sku_code,
+                    Sku.hs10,
                     Warehouse.warehouse_id,
                     Warehouse.warehouse_code,
                     Warehouse.region_code,
@@ -118,16 +119,20 @@ class IngestRepository:
             skus, warehouses = {}, {}
             for row in rows:
                 if row.entity_type == "SKU" and row.sku_id:
-                    skus[row.external_code] = SkuCode(row.sku_id, row.sku_code)
+                    skus[row.external_code] = SkuCode(
+                        row.sku_id, row.sku_code, row.hs10
+                    )
                 elif row.entity_type == "WAREHOUSE" and row.warehouse_id:
                     warehouses[row.external_code] = WarehouseCode(
                         row.warehouse_id, row.warehouse_code, row.region_code
                     )
         else:
             skus = {
-                row.sku_code: SkuCode(row.sku_id, row.sku_code)
+                row.sku_code: SkuCode(row.sku_id, row.sku_code, row.hs10)
                 for row in await self.db.execute(
-                    select(Sku.sku_id, Sku.sku_code).where(Sku.company_id == company_id)
+                    select(Sku.sku_id, Sku.sku_code, Sku.hs10).where(
+                        Sku.company_id == company_id
+                    )
                 )
             }
             warehouses = {
@@ -150,14 +155,14 @@ class IngestRepository:
                     MarketLeadtimeReference.market_leadtime_reference_id,
                     MarketLeadtimeReference.month,
                     MarketLeadtimeReference.us_port_code,
+                    MarketLeadtimeReference.hs10,
                     MarketLeadtimeReference.transport_mode,
                     MarketLeadtimeReference.total_leadtime_p90,
                 ).where(MarketLeadtimeReference.transport_mode.in_(modes))
             ):
-                references[(row.month, row.us_port_code, row.transport_mode)] = (
-                    LeadtimeReference(
-                        row.market_leadtime_reference_id, float(row.total_leadtime_p90)
-                    )
+                key = (row.month, row.us_port_code, row.hs10, row.transport_mode)
+                references[key] = LeadtimeReference(
+                    row.market_leadtime_reference_id, float(row.total_leadtime_p90)
                 )
         return CodeBook(
             skus=skus, warehouses=warehouses, leadtime_references=references
