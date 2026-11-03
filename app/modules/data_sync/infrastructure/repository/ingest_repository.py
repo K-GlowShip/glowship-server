@@ -571,24 +571,45 @@ class IngestRepository:
         data_sync_run_id: uuid.UUID,
         source_domain: SourceDomain,
         loaded_keys: Sequence[str],
+        rejections: Sequence[Rejection],
         resolved_at: datetime,
     ) -> None:
         """
         이번 수집에 정상 적재된 레코드와 (고객사, 엔터티 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
-          - 이번 수집이 만든 이슈는 바꾸지 않습니다 (같은 키가 이번에 적재되고 중복으로도 거부된 경우 등).
+          - 이번 수집이 만든 이슈는 바꾸지 않습니다.
+          - 이번 수집에서 같은 (키, 오류 코드)로 다시 거부된 이슈도 바꾸지 않습니다. 같은 키가 첫 건은 적재되고 두 번째는
+            중복으로 거부되는 경우 등으로, 고쳐지지 않았는데 해소·재기록되면 OPEN 1건·처음 감지 시각 규칙(C21)이 깨집니다.
           - 응답에 없던 레코드의 이슈는 그대로 OPEN 입니다 (빠진 행은 삭제·정정으로 보지 않음).
           - resolved_at 은 해소한 수집의 완료 시각입니다 (detected_at 과 같은 규칙).
         """
+        still_rejected = {(r.source_record_key, r.error_code) for r in rejections}
+        resolved_ids: list[uuid.UUID] = []
         for chunk in _chunked(sorted(set(loaded_keys))):
-            await self.db.execute(
-                update(DataValidationIssue)
-                .where(
+            rows = await self.db.execute(
+                select(
+                    DataValidationIssue.data_validation_issue_id,
+                    DataValidationIssue.source_record_key,
+                    DataValidationIssue.error_code,
+                ).where(
                     DataValidationIssue.company_id == company_id,
                     DataValidationIssue.source_entity_type
                     == ISSUE_ENTITY_TYPE_OF[source_domain].value,
                     DataValidationIssue.status == ISSUE_OPEN,
                     DataValidationIssue.data_sync_run_id != data_sync_run_id,
                     DataValidationIssue.source_record_key.in_(chunk),
+                )
+            )
+            resolved_ids += [
+                row.data_validation_issue_id
+                for row in rows
+                if (row.source_record_key, row.error_code) not in still_rejected
+            ]
+        for chunk in _chunked(resolved_ids):
+            await self.db.execute(
+                update(DataValidationIssue)
+                .where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.data_validation_issue_id.in_(chunk),
                 )
                 .values(status=ISSUE_RESOLVED, resolved_at=resolved_at)
             )

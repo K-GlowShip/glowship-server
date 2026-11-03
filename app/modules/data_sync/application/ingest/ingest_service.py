@@ -152,7 +152,12 @@ class DataIngestService:
             # 검증 이슈의 감지·해소 시각과 수집 완료 시각은 같은 값입니다 (확정 기준선 이슈 9행 모두 detected_at = 수집 finished_at)
             finished_at = self.now()
             await self.repo.resolve_validation_issues(
-                company_id, run_id, source_domain, applied.loaded_keys, finished_at
+                company_id,
+                run_id,
+                source_domain,
+                applied.loaded_keys,
+                rejections,
+                finished_at,
             )
             await self.repo.insert_validation_issues(
                 company_id, run_id, source_domain, rejections, finished_at

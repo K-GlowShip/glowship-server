@@ -617,6 +617,26 @@ async def test_one_open_issue_per_key_and_error_code(db_write_session):
     ) == ["INVALID_DATE", "MISSING_REQUIRED"]
 
 
+async def test_repeated_duplicate_keeps_first_open_issue(db_write_session):
+    """같은 중복이 매 수집 반복돼도(첫 건 적재 + 두 번째 중복 거부) 이전 이슈는 OPEN 그대로·감지 시각 유지, 새 이슈 없음 (C21)"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+
+    first = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order, order]
+    )
+    second = await _service_at(db, LATER).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order, order]
+    )
+
+    assert second.counts.rejected == 1
+    assert [
+        (i.data_sync_run_id, i.error_code, i.status)
+        for i in await _issue_states(db, company_id, order.order_code)
+    ] == [(first.data_sync_run_id, DUPLICATE_SOURCE_RECORD, "OPEN")]
+
+
 async def test_resolution_matches_source_type(db_write_session):
     """키가 같아도 원천 유형이 다르면 해소하지 않음 (선적 이슈 키 = 주문 코드여도 주문 적재로는 그대로)"""
     db = db_write_session
