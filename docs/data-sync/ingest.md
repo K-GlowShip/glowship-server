@@ -13,6 +13,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     C->>S: ingest(고객사, 원천 유형, 연결 방식, 원천 레코드)
+    S->>DB: L1 → 같은 고객사·원천 RUNNING 있으면 거부(409 SYNC_IN_PROGRESS)
     S->>DB: data_sync_runs RUNNING 저장 → 커밋
     Note over S,DB: 여기부터 한 트랜잭션
     S->>DB: L1 고객사 잠금 (lock_company)
@@ -27,6 +28,10 @@ sequenceDiagram
 ```
 
 - 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 `FAILED`(적용 순번 없음)로 남긴 뒤 예외를 다시 올립니다.
+- **같은 고객사·원천의 수집은 한 번에 하나만 돕니다.** 시작할 때 L1 안에서 `RUNNING` 수집이 있으면 시작 시각과 관계없이 `SyncInProgressException`(409 `SYNC_IN_PROGRESS`, 명세 4.3)으로 거부합니다. 그래서 늦게 잠금을 얻은 수집이 먼저 적용된 최신 값을 과거 값으로 덮어쓰지 않습니다.
+- **오래 남은 `RUNNING`(작업이 죽은 경우)도 막습니다.** 시간이 지났다고 무시하지 않습니다. 살아 있는 긴 수집과 새 수집이 둘 다 적용되는 역전을 막기 위해서입니다. 정리 절차는 7절(후속 운영 작업)입니다.
+- 순서대로 따로 들어온 응답의 선후(관측 시각)는 호출 측 계약입니다. 가상 API 는 관측 시각 순서대로 응답합니다.
+- **입력 크기:** 업무 키 IN 조회와 수집 ID 교체는 키 5,000개씩 나눠 실행합니다(asyncpg 바인딩 한도 32,767, 재고 복합 키는 키당 값 3개). 나눠도 수집 1회 = 한 트랜잭션입니다.
 - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 `SUCCEEDED` 수집이 남습니다.
 - 코드: `app/modules/data_sync/application/ingest/`(서비스·규칙), `app/modules/data_sync/infrastructure/repository/ingest_repository.py`(SQL)
 
@@ -61,6 +66,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 - 업무 키로 현재 행을 찾아 업무 필드(`FIELDS`)를 비교합니다. 다른 필드만 `changed_fields`(DB 열 이름)에 넣고, 문자열 앞뒤 공백은 무시합니다.
 - 변경 기록은 **영향 SKU마다 1건**입니다. 상세의 SKU가 바뀌면 변경 전·후 SKU 모두 남깁니다. 창고 변경은 창고로 남깁니다.
 - 상세만 바뀌어도 상위 주문·선적의 `data_sync_run_id`를 그 수집으로 바꿉니다.
+- **창고가 바뀐 주문·선적:** 변경 기록에는 새 창고만 남습니다(`data_change_records_uk2`가 같은 SKU 에 창고별 두 기록을 허용하지 않음). 그래서 STALE 판정(`relevance.py`)이 `changed_fields`의 `warehouse_id`를 보고 보수적으로 판정합니다. 주문은 의존 범위의 SKU 면 창고 쌍과 관계없이, 선적은 지연 선적이 아니고 의존 SKU 면 입고 창고·예상 입고일 비교와 관계없이 관련 변경입니다(완료·진행 중 실행 모두).
 - **변경 요약은 STALE 판정과의 약속입니다.** 정상 출고는 정확히 아래 문장이어야 관련 변경에서 빠집니다(`delay_analysis/application/stale/relevance.py`). 테스트가 두 쪽 문장을 직접 비교합니다.
 
 | 변경 | 요약 |
@@ -90,8 +96,9 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `NO_ROUTE_PORT` | 경로표에 없는 (창고 지역, 운송 수단) |
 | `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 |
 | `DUPLICATE_IN_BATCH` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상 (모두 거부) |
+| `DUPLICATE_LINE_NO` | 주문·선적 안에 같은 상세 줄 번호가 2개 이상 (겹친 번호 개수와 관계없이 부모 레코드 1건 거부) |
 
-- 받은 건수 = 적재 건수 + 거부 건수. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
+- 받은 건수 = 적재 건수 + 거부 건수이고, 셋 다 **최상위 레코드**(상품·창고·주문·선적·재고 행) 기준입니다. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
 - 거부 사유는 `IngestResult.rejections`로 돌려줍니다. `data_validation_issues` 기록은 GLOW-15 가 붙입니다.
 
 ## 7. 아직 없는 것
@@ -99,6 +106,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 - 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
 - 검증 오류 기록·분석 보류(GLOW-15)
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
+- **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
 
 ## 8. 검증
 
@@ -106,8 +114,9 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | --- | --- |
 | `test_change_detection.py` | 변경 판정·요약 문장·스냅샷 조건 (DB 없음) |
 | `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서·거부 사유 (DB 없음) |
-| `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1) |
-| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결 |
+| `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
+| `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
+| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
