@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -148,15 +148,17 @@ async def test_list_maps_tab_and_date_range_to_filters():
     await _service(repo).list_delay_events(
         actor=ACTOR,
         tab=DelayEventTab.NEEDS_REANALYSIS,
-        detected_from=date(2026, 1, 1),
-        detected_to=date(2026, 1, 31),
+        detected_from=datetime(2025, 12, 31, 15, 0, tzinfo=UTC),
+        detected_to=datetime(2026, 2, 1, 0, 0, tzinfo=timezone(timedelta(hours=9))),
         q="  ",
     )
 
     [filters] = repo.filters
     assert filters.run_statuses == ("STALE", "FAILED")
-    assert filters.detected_from == datetime(2026, 1, 1, tzinfo=UTC)
-    assert filters.detected_to == datetime(2026, 2, 1, tzinfo=UTC)  # to 날짜 포함
+    # 받은 시각 그대로 [from, to) 로 넘기고, 다른 시간대 값은 UTC 로 맞춤 (날짜 +1 하지 않음)
+    assert filters.detected_from == datetime(2025, 12, 31, 15, 0, tzinfo=UTC)
+    assert filters.detected_to == datetime(2026, 1, 31, 15, 0, tzinfo=UTC)
+    assert filters.detected_to.tzinfo is UTC
     assert filters.q is None
 
 
