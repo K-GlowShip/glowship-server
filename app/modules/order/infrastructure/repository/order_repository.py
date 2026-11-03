@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 주문 한 건에 출고 창고 요약을 붙여 한 페이지를 돌려주고, 페이지에 나온 주문의 상세 줄은 별도 문장으로 읽는다
         (목록 1회 + 건수 1회 + 상세 1회, 페이지당 N+1 없음).
       - 필터: 상태·창고·채널·주문 기간(UTC 시각, [from, to) 로 to 미포함)·검색어. 값이 없으면(NULL) 그 조건은 통과한다.
-      - 검색어는 주문 번호 또는 주문 상품의 SKU 코드 부분 일치(대소문자 무시)다. LIKE 특수문자는 글자 그대로 찾는다.
+      - 검색어는 주문 번호 또는 주문 상품의 SKU 코드·상품명 부분 일치(대소문자 무시)다. LIKE 특수문자는 글자 그대로 찾는다.
       - 정렬은 ordered_at 최신순, 같으면 order_id (명세 4.3, 응답 본문 규칙 6.2).
       - 검증 오류로 거부된 주문은 orders 에 없다. 오류는 GET /validation-issues 몫이라 여기서 다루지 않는다.
       - D8 출고 파생값(securedDate 등)은 저장 열이 아니라 이 조회에 없다. 후속 티켓에서 서비스가 계산한다.
@@ -41,7 +41,8 @@ _FILTERED = """
                              FROM order_lines l
                              JOIN skus k ON k.company_id = l.company_id AND k.sku_id = l.sku_id
                             WHERE l.company_id = o.company_id AND l.order_id = o.order_id
-                              AND k.sku_code ILIKE :pattern ESCAPE '\\'))
+                              AND (k.sku_code ILIKE :pattern ESCAPE '\\'
+                                   OR k.product_name ILIKE :pattern ESCAPE '\\')))
     )
 """
 

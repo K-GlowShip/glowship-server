@@ -116,6 +116,7 @@ async def test_SQL_이_고객사_조건과_필터_통과_규칙과_SKU_검색을
     assert "o.ordered_at < %(ordered_to)s" in sql
     assert "o.order_code ILIKE %(pattern)s" in sql and "ESCAPE" in sql
     assert "k.sku_code ILIKE %(pattern)s" in sql
+    assert "k.product_name ILIKE %(pattern)s" in sql
     assert "EXISTS (SELECT 1" in sql and "FROM order_lines l" in sql
     assert list_params["pattern"] is None
 

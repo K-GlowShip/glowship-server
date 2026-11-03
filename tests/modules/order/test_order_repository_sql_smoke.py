@@ -91,7 +91,7 @@ async def test_목록은_주문일시_최신순이고_건수는_필터와_맞는
     )
 
 
-async def test_검색어는_주문_번호와_SKU_코드_양쪽을_찾는다(db_session):
+async def test_검색어는_주문_번호와_SKU_코드와_상품명을_찾는다(db_session):
     repo = OrderRepository(db_session)
     company_id = await _sample_company(db_session)
     page = await repo.find_page(company_id, OrderFilter(), offset=0, limit=5)
@@ -114,8 +114,20 @@ async def test_검색어는_주문_번호와_SKU_코드_양쪽을_찾는다(db_s
         limit=20,
     )
 
+    by_name = await repo.find_page(
+        company_id,
+        OrderFilter(
+            query=line.product_name[:8].lower(),
+            ordered_from=sample.ordered_at,
+            ordered_to=sample.ordered_at + timedelta(seconds=1),
+        ),
+        offset=0,
+        limit=20,
+    )
+
     assert sample.order_id in {row.order_id for row in by_code.rows}
     assert sample.order_id in {row.order_id for row in by_sku.rows}
+    assert sample.order_id in {row.order_id for row in by_name.rows}
 
 
 async def test_상세는_페이지의_주문에만_속하고_줄_번호_순이다(db_session):

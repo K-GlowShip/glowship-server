@@ -74,7 +74,7 @@ async def list_orders(
     q: str | None = Query(
         default=None,
         max_length=MAX_QUERY_LENGTH,
-        description="주문 번호 또는 주문 상품의 SKU 코드 일부 (대소문자 무시)",
+        description="주문 번호 또는 주문 상품의 SKU 코드·상품명 일부 (대소문자 무시)",
     ),
     page: PageParams = Depends(),
     tenant: TenantContext = Depends(get_tenant_context),

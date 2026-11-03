@@ -47,7 +47,7 @@ sequenceDiagram
 | `salesChannel` | `AMAZON`·`SEPHORA` | 없음 | 판매 채널 |
 | `from` | ISO 8601 UTC 시각 | 없음 | 주문 일시(`orderedAt`) 시작, **포함** |
 | `to` | ISO 8601 UTC 시각 | 없음 | 주문 일시 끝, **미포함**. `from > to`면 422. 같으면 0건 |
-| `q` | 문자열, 최대 100자 | 없음 | 주문 번호 또는 주문 상품의 SKU 코드 부분 일치. 대소문자 무시. `%`·`_`는 글자 그대로 찾음. 양끝 공백은 지우고, 비면 없는 것으로 봄 |
+| `q` | 문자열, 최대 100자 | 없음 | 주문 번호 또는 주문 상품의 SKU 코드·상품명 부분 일치. 대소문자 무시. `%`·`_`는 글자 그대로 찾음. 양끝 공백은 지우고, 비면 없는 것으로 봄 |
 | `page` | 정수 ≥ 1 | `1` | 페이지 번호 (`app/core/pagination.py` `PageParams`) |
 | `size` | 정수 1~100 | `20` | 페이지 크기 |
 
@@ -152,10 +152,10 @@ HTTP/1.1 200 OK
 
 - 목록·건수가 같은 `filtered` CTE를 씁니다. 필터 값이 `NULL`이면 그 조건은 통과합니다(`CAST(:x AS …) IS NULL OR …`).
 - 기간은 `ordered_at >= :ordered_from AND ordered_at < :ordered_to`입니다.
-- `q`는 `order_code ILIKE` 또는 `EXISTS(order_lines ⋈ skus WHERE sku_code ILIKE)`입니다. 패턴의 `\`·`%`·`_`는 이스케이프합니다.
+- `q`는 `order_code ILIKE` 또는 `EXISTS(order_lines ⋈ skus WHERE sku_code ILIKE OR product_name ILIKE)`입니다. 패턴의 `\`·`%`·`_`는 이스케이프합니다.
 - 상세는 `order_id = ANY(:order_ids)`로 한 번에 읽고 `order_id, line_no` 순입니다.
 
-로컬 DB(고객사 A 주문 106,983건) 실측: 필터 없음 1페이지 약 60ms, 기간 필터 약 15ms, 주문 번호 검색 약 200ms, SKU 코드 검색 약 480ms(일치 4,386건). `orders`에 `(company_id, ordered_at)` 색인, `order_lines`에 `(company_id, sku_id)` 색인이 없어 검색은 순차 스캔입니다. 느려지면 색인 추가를 별도 결정(스키마 변경은 데이터 팀 DDL과 조율)으로 다룹니다.
+로컬 DB(고객사 A 주문 106,983건) 실측: 필터 없음 1페이지 약 60ms, 기간 필터 약 15ms, 검색(`q`)은 주문 번호·SKU 코드·상품명 모두 약 440~520ms(상품명 'hydra cream' 18,692건 일치 기준). `orders`에 `(company_id, ordered_at)` 색인, `order_lines`에 `(company_id, sku_id)` 색인이 없어 검색은 순차 스캔입니다. 느려지면 색인 추가를 별도 결정(스키마 변경은 데이터 팀 DDL과 조율)으로 다룹니다.
 
 ## 5. 테스트
 
@@ -166,7 +166,7 @@ HTTP/1.1 200 OK
 | `test_order_api.py` | 401·403, 형식 오류 9종 422, camelCase 응답 모양, 기본값·파라미터 전달, RLS 컨텍스트 |
 | `test_order_list_service.py` | 시간대 정규화, `from > to` 422, 검색어 공백, 상세 묶기 |
 | `test_order_repository.py` | 가짜 세션으로 SQL 문장·파라미터·행 변환 |
-| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 주문 번호·SKU 코드 검색, 상세 소속 |
+| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 주문 번호·SKU 코드·상품명 검색, 상세 소속 |
 
 ## 6. 아직 없는 것
 
