@@ -198,3 +198,72 @@ def test_group_by_applied_seq_orders_by_seq():
     changes = [_change("ORDER", applied_seq=13), _change("ORDER", applied_seq=12)]
 
     assert list(group_by_applied_seq(changes)) == [12, 13]
+
+
+# --- 창고가 바뀐 주문·선적 (보수적 판정) ------------------------------------------------
+
+
+def test_order_moved_between_warehouses_is_relevant_for_scope_sku():
+    """변경 기록에는 새 창고(OTHER_WH)만 남아도, 의존 SKU 면 이전 창고 쌍과 관계없이 관련"""
+    moved = _change(
+        "ORDER",
+        warehouse_id=OTHER_WH,
+        changed_fields=("warehouse_id",),
+        change_summary="주문 ORD-1 변경: warehouse_id",
+    )
+    other_sku = _change(
+        "ORDER",
+        warehouse_id=OTHER_WH,
+        sku_id=SKU_OTHER,
+        changed_fields=("warehouse_id",),
+    )
+    not_moved = _change(
+        "ORDER", warehouse_id=OTHER_WH, changed_fields=("customer_region",)
+    )
+
+    assert relevant_reasons(SCOPE, [moved]) == [ORDER_CHANGED]
+    assert relevant_reasons(SCOPE, [other_sku]) == []
+    assert relevant_reasons(SCOPE, [not_moved]) == []
+
+
+def test_shipment_moved_away_is_relevant_even_with_same_expected_date():
+    """입고 창고 밖으로 옮겨지고 예상 입고일이 같아도, 지연 선적이 아닌 의존 SKU 선적이면 관련"""
+    moved = _inbound(
+        shipment_warehouse_id=OTHER_WH,
+        changed_fields=("warehouse_id",),
+    )
+    same_date_not_moved = _inbound(
+        shipment_warehouse_id=DEST, changed_fields=("current_stage",)
+    )
+
+    assert relevant_reasons(SCOPE, [moved]) == [INBOUND_CHANGED]
+    assert relevant_reasons(SCOPE, [same_date_not_moved]) == []
+
+
+def test_shipment_move_of_delayed_shipment_or_other_sku_is_not_relevant():
+    delayed = _inbound(shipment_id=DELAYED_SHIPMENT, changed_fields=("warehouse_id",))
+    other_sku = _inbound(sku_id=SKU_OTHER, changed_fields=("warehouse_id",))
+
+    assert relevant_reasons(SCOPE, [delayed, other_sku]) == []
+
+
+def test_in_progress_run_treats_shipment_move_as_relevant():
+    moved = _inbound(shipment_warehouse_id=OTHER_WH, changed_fields=("warehouse_id",))
+    delayed = _inbound(shipment_id=DELAYED_SHIPMENT, changed_fields=("warehouse_id",))
+    k_shipment = [SKU_IMPACTED, SKU_WATCH, SKU_OTHER]
+
+    assert relevant_reasons_in_progress(
+        k_shipment, DELAYED_SHIPMENT, BASE_DATE, [moved]
+    ) == [INBOUND_CHANGED]
+    assert (
+        relevant_reasons_in_progress(k_shipment, DELAYED_SHIPMENT, BASE_DATE, [delayed])
+        == []
+    )
+
+
+def test_in_progress_run_treats_order_move_as_relevant():
+    moved = _change("ORDER", warehouse_id=OTHER_WH, changed_fields=("warehouse_id",))
+
+    assert relevant_reasons_in_progress(
+        [SKU_IMPACTED], DELAYED_SHIPMENT, BASE_DATE, [moved]
+    ) == [ORDER_CHANGED]
