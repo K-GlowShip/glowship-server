@@ -498,6 +498,37 @@ def test_on_hold_run_has_failure_summary_and_empty_results():
     assert got["inputBasis"]["baseDate"] is None
 
 
+def test_in_progress_stale_run_has_no_results():
+    """진행 중(DETECTED~VALIDATING_OUTPUT)에 STALE 이 된 실행: 완료 상태·결과·설명·기준일이 없고 STALE 사유만 있다
+    (develop stale_service.py STALE_TARGET_STATUSES 에 진행 중 상태 포함, 이때 dependency_scope 는 NULL)"""
+    body = copy.deepcopy(_ready_run())
+    body.update(
+        status="STALE",
+        completed_status=None,
+        result_class=None,
+        finished_at=None,
+        stale_detected_at=NOW,
+        stale_primary_reason="RELEVANT_ORDER_CHANGED",
+        stale_reason_codes=["RELEVANT_ORDER_CHANGED"],
+        inventory_impacts=[],
+        at_risk_orders=[],
+        response_options=[],
+        explanation=None,
+        explanation_validation_status=None,
+        explanation_generated_at=None,
+        model_name=None,
+        prompt_version=None,
+    )
+    body["input_basis"]["base_date"] = None
+
+    got = _dump(body)
+
+    assert got["status"] == "STALE" and got["completedStatus"] is None
+    assert got["inventoryImpacts"] == [] and got["explanation"] is None
+    assert got["inputBasis"]["baseDate"] is None
+    assert got["stalePrimaryReason"] == "RELEVANT_ORDER_CHANGED"
+
+
 def test_average_daily_sales_is_json_number():
     """평균 판매량은 서버 안에서는 Decimal, JSON 응답에서는 숫자(number)다. 프론트가 정렬·비교에 쓴다"""
     impact = AnalysisRunDetailResponse.model_validate(_ready_run()).inventory_impacts[0]
