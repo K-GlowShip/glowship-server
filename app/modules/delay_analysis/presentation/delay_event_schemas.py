@@ -186,7 +186,9 @@ class AnalysisRunHistoryResponse(CamelModel):
     completed_status: str | None = Field(
         description="완료 판정 당시 상태. 완료 전(진행 중에 STALE 이 된 실행 포함)이면 null"
     )
-    result_class: str | None = Field(description="결과 분류. 완료 전이면 null")
+    result_class: str | None = Field(
+        description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
+    )
     stale_detected_at: datetime | None = Field(
         description="STALE 기록 시각. STALE 이 아니면 null"
     )
