@@ -26,6 +26,13 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     resolve_order,
     resolve_shipment,
 )
+from app.modules.data_sync.application.ingest.record_validation import (
+    validate_inventory,
+    validate_order,
+    validate_shipment,
+    validate_sku,
+    validate_warehouse,
+)
 from app.modules.data_sync.application.ingest.run_counts import RunCounts
 from app.modules.data_sync.application.ingest.source_payload import (
     SourceInventory,
@@ -53,7 +60,8 @@ from app.modules.delay_analysis.application.stale.stale_service import (
          없으면 수집 실행을 RUNNING 으로 남기고 커밋합니다 (진행 중 상태가 보이도록).
          같은 원천의 수집은 한 번에 하나만 돌아, 늦게 끝난 수집이 먼저 끝난 수집의 값을 덮어쓰지 않습니다.
          오래 남은 RUNNING(작업이 죽은 경우)도 시간과 관계없이 막습니다. 정리(FAILED 전환·fencing)는 후속 운영 작업입니다.
-      2. 한 트랜잭션에서: 고객사 잠금(L1) → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용
+      2. 한 트랜잭션에서: 고객사 잠금(L1) → 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부, record_validation)
+         → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → STALE 판정(judge_after_sync) → 커밋.
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
@@ -181,6 +189,7 @@ class DataIngestService:
         self, company_id: uuid.UUID, records: Sequence[SourceSku]
     ) -> _Applied:
         unique, rejections = _unique(records, lambda r: r.sku_code)
+        unique = _validated(unique, validate_sku, rejections)
         existing = await self.repo.load_skus(company_id, list(unique))
         diffs = [
             d for code, r in unique.items() if (d := diff_sku(existing.get(code), r))
@@ -192,6 +201,7 @@ class DataIngestService:
         self, company_id: uuid.UUID, records: Sequence[SourceWarehouse]
     ) -> _Applied:
         unique, rejections = _unique(records, lambda r: r.warehouse_code)
+        unique = _validated(unique, validate_warehouse, rejections)
         existing = await self.repo.load_warehouses(company_id, list(unique))
         diffs = [
             d
@@ -205,6 +215,7 @@ class DataIngestService:
         self, company_id: uuid.UUID, run_id: uuid.UUID, records: Sequence[SourceOrder]
     ) -> _Applied:
         unique, rejections = _unique(records, lambda r: r.order_code)
+        unique = _validated(unique, validate_order, rejections)
         book = await self.repo.load_code_book(company_id, SourceDomain.ORDER)
         resolved = []
         for source in unique.values():
@@ -230,6 +241,7 @@ class DataIngestService:
         observed_at: datetime,
     ) -> _Applied:
         unique, rejections = _unique(records, lambda r: r.shipment_code)
+        unique = _validated(unique, validate_shipment, rejections)
         book = await self.repo.load_code_book(company_id, SourceDomain.SHIPMENT)
         existing = await self.repo.load_shipments(company_id, list(unique))
         resolved = []
@@ -268,6 +280,11 @@ class DataIngestService:
             lambda r: (r.inventory_date, r.warehouse_code, r.sku_code),
             lambda r: inventory_record_key(r, book),
         )
+        unique = _validated(
+            unique,
+            lambda r: validate_inventory(r, inventory_record_key(r, book)),
+            rejections,
+        )
         # 외부 코드 매핑은 N → 1 을 막지 않습니다. 서로 다른 외부 코드가 같은 내부 (날짜, 창고, SKU)로 바뀌면
         # 첫 레코드만 적재하고 나머지는 거부합니다 (그대로 두면 inventory_daily_uk2 위반으로 수집 전체가 실패).
         resolved, keys, seen = [], [], set()
@@ -299,6 +316,21 @@ class DataIngestService:
         ]
         await self.repo.apply_inventory(company_id, run_id, [d.row for d in diffs])
         return _Applied([x for d in diffs for x in d.records], rejections)
+
+
+def _validated[R](
+    unique: dict[object, R],
+    validate: Callable[[R], Rejection | None],
+    rejections: list[Rejection],
+) -> dict[object, R]:
+    """값 검증을 통과한 레코드만 남기고, 어긴 레코드의 거부 사유는 rejections 에 더합니다."""
+    valid = {}
+    for k, record in unique.items():
+        if (rejection := validate(record)) is None:
+            valid[k] = record
+        else:
+            rejections.append(rejection)
+    return valid
 
 
 def _unique[R](

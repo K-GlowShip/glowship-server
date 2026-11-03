@@ -17,6 +17,9 @@ from app.modules.data_sync.application.ingest.ingest_service import (
     DUPLICATE_SOURCE_RECORD,
     DataIngestService,
 )
+from app.modules.data_sync.application.ingest.record_validation import (
+    NEGATIVE_QUANTITY,
+)
 from app.modules.data_sync.application.ingest.source_payload import (
     SourceInventory,
     SourceOrder,
@@ -263,6 +266,32 @@ async def test_duplicate_records_load_the_first_one(db_write_session):
         {"o": order.order_code, "c": company_id},
     )
     assert status == "SHIPPED"
+
+
+async def test_check_violation_rejects_one_record_without_failing_the_sync(
+    db_write_session,
+):
+    """DB CHECK 를 어기는 레코드(order_lines_ck1 음수 수량)는 적용 전에 거부되고 나머지는 적재 (FAILED 아님)"""
+    db = db_write_session
+    company_id = await _company(db)
+    good, other = await _source_orders(db, company_id, limit=2)
+    line = other.lines[0]
+    bad = replace(other, lines=(replace(line, ordered_quantity=-1), *other.lines[1:]))
+
+    result = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [good, bad]
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        2,
+        1,
+        1,
+    )
+    assert [
+        (r.source_record_key, r.field_name, r.error_code) for r in result.rejections
+    ] == [(other.order_code, "lines[0].ordered_quantity", NEGATIVE_QUANTITY)]
+    assert (await _run_row(db, result.data_sync_run_id)).status == "PARTIAL_SUCCESS"
 
 
 PARSE_REJECTION = Rejection(

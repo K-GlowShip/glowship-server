@@ -17,6 +17,7 @@ sequenceDiagram
     S->>DB: data_sync_runs RUNNING 저장 → 커밋
     Note over S,DB: 여기부터 한 트랜잭션
     S->>DB: L1 고객사 잠금 (lock_company)
+    S->>S: 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부)
     S->>S: 외부 코드 → 내부 ID (못 바꾸면 그 레코드 거부)
     S->>DB: 업무 키로 현재 행 조회
     S->>S: 업무 필드 비교 → 바뀐 행만 INSERT·UPDATE, 변경 기록 초안
@@ -52,7 +53,7 @@ sequenceDiagram
   2. `| None`이 아닌 필드는 None이 아닙니다. 값이 없으면 그 레코드를 `MISSING_REQUIRED`로 거부합니다. 상품의 `hs10`·`subcategory`도 필수입니다(DDL NOT NULL).
   3. 일시는 시간대가 있는 UTC입니다. 시간대가 없거나 읽을 수 없는 날짜·일시는 `INVALID_DATE`로 거부합니다.
   4. 거부는 레코드 단위이고, 키·`field_name`·오류 코드 형식은 6절과 같습니다.
-- 값의 의미(음수·수량 관계·상태 값 등 DB 제약)는 파서가 아니라 적재 서비스가 적용 전에 검사합니다.
+- 값의 의미(음수·수량 관계·상태 값 등 DB 제약)는 파서가 아니라 적재 서비스가 적용 전에 검사합니다(`record_validation.py`, 6절).
 
 ## 3. 선적의 항구·리드타임 기준·계획 입고일 (`code_resolver.py`)
 
@@ -103,6 +104,12 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `NO_LEADTIME_REFERENCE` | 새 선적의 시장 리드타임 기준을 찾지 못함 |
 | `DUPLICATE_SOURCE_RECORD` | 같은 수집 안에 업무 키가 같은 레코드가 2건 이상. 첫 레코드만 적재하고 두 번째부터 1건씩 거부 (기준선과 같음). 재고는 외부 코드가 달라도 변환 뒤 내부 (날짜, 창고, SKU)가 같으면 같은 규칙으로 거부 (매핑이 외부 코드 N → 내부 1 을 막지 않음, `inventory_daily_uk2`) |
 | `DUPLICATE_LINE_NO` | 주문·선적 안에 같은 상세 줄 번호가 2개 이상 (겹친 번호 개수와 관계없이 부모 레코드 1건 거부) |
+| `NEGATIVE_QUANTITY` | 음수 수량. 재고 4개 수량(`inventory_daily_ck1~4`), 주문 상세 주문·출고 수량, 선적 상세 수량, 상품 `units_per_case` (기준선과 같은 이름) |
+| `INVALID_QUANTITY` | 0 보다 커야 하는 수량이 0. 주문 상세 주문 수량(`order_lines_ck1`), 선적 상세 수량(`shipment_lines_ck1`), `units_per_case`(`skus_ck2`) |
+| `INVALID_VALUE` | 허용 목록에 없는 값. 상품 인기 등급·상태(`skus_ck1·3`), 창고 유형·지역(`warehouses_ck1~2`), 주문 고객 지역·판매 채널·상태(`orders_ck1~3`), 주문 상세 상태(`order_lines_ck3`), 선적 단계(`shipments_ck2`) |
+| `INCONSISTENT_VALUE` | 필드 사이 관계가 어긋남. 출고 > 주문 수량(`order_lines_ck2`), 입고 완료(`RECEIVED`) ⇔ 실제 3PL 입고일(`shipments_ck3`), 보유 ≠ 예약 + 가용(`inventory_daily_ck5`, 음수가 아니면 `ck6`·`ck7`도 보장) |
+
+- **처리 순서:** 같은 수집 안 중복 → 값 검증 → 코드 변환. 값 검증은 레코드에서 처음 어긴 값 하나를 사유로 돌려주고(레코드당 1건), DB CHECK 위반 1건이 수집 전체를 `FAILED`로 만들지 않게 합니다. 허용 값 목록은 ORM CHECK 와 같은지 테스트로 묶었습니다.
 
 - 오류 코드 이름은 확정 기준선 `data_validation_issues.csv`와 같습니다.
 - **거부 키(`source_record_key`):** 주문·선적은 부모 코드입니다. 상세 줄이 원인이면 위치를 `field_name`(`lines[i].sku_code`, i는 0부터)에 둡니다. 재고는 `창고|SKU|일자`입니다.
@@ -126,9 +133,10 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | --- | --- |
 | `test_change_detection.py` | 변경 판정·요약 문장·스냅샷 조건 (DB 없음) |
 | `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서·거부 사유 (DB 없음) |
+| `test_record_validation.py` | 값 검증: CHECK 제약별 거부 코드·위치, 허용 값 목록 = ORM CHECK (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
-| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
+| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 새 선적 스냅샷, 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
