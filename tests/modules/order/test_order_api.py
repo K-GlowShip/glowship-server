@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -78,6 +78,10 @@ def _item(**overrides) -> OrderListItem:
         "ordered_at": datetime(2026, 6, 30, 23, 31, 48, tzinfo=UTC),
         "promised_delivery_at": datetime(2026, 7, 3, 23, 59, 59, tzinfo=UTC),
         "status": "OPEN",
+        "secured_date": date(2026, 6, 29),
+        "planned_dispatch_date": date(2026, 6, 30),
+        "actual_dispatch_date": None,
+        "expected_delivery_date": date(2026, 7, 2),
         "lines": (_line(), _line(line_no=2, shipped_quantity=0)),
     }
     values.update(overrides)
@@ -200,6 +204,10 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         "orderedAt": "2026-06-30T23:31:48Z",
         "promisedDeliveryAt": "2026-07-03T23:59:59Z",
         "status": "OPEN",
+        "securedDate": "2026-06-29",
+        "plannedDispatchDate": "2026-06-30",
+        "actualDispatchDate": None,
+        "expectedDeliveryDate": "2026-07-02",
         "lines": [
             {
                 "lineNo": 1,
@@ -219,6 +227,8 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
     }
     # 상세가 없는 주문도 lines 를 빼지 않고 빈 배열로 준다 (응답 규칙 4절)
     assert body["items"][1]["lines"] == []
+    # 출고 날짜는 값이 없어도 키를 빼지 않고 null 로 준다
+    assert body["items"][0]["actualDispatchDate"] is None
 
 
 async def test_기본값과_쿼리_파라미터를_서비스에_넘긴다(fake_service, fake_session):

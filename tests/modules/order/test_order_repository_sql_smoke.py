@@ -66,6 +66,12 @@ async def test_목록은_주문일시_최신순이고_건수는_필터와_맞는
     assert keys == sorted(keys, key=lambda key: (-key[0].timestamp(), key[1]))
     assert page.total_count >= len(page.rows)
     assert beyond.rows == [] and beyond.total_count == page.total_count
+    for row in page.rows:
+        assert (
+            row.actual_dispatch_date is None
+            or row.secured_date is None
+            or (row.secured_date <= row.actual_dispatch_date)
+        )
 
     if not page.rows:
         return

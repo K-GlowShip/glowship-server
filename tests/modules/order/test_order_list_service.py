@@ -48,6 +48,10 @@ def _row(**overrides) -> OrderListRow:
         "ordered_at": datetime(2026, 6, 30, 23, 31, 48, tzinfo=UTC),
         "promised_delivery_at": datetime(2026, 7, 3, 23, 59, 59, tzinfo=UTC),
         "status": "OPEN",
+        "secured_date": None,
+        "planned_dispatch_date": None,
+        "actual_dispatch_date": None,
+        "expected_delivery_date": None,
         "warehouse_id": uuid.uuid7(),
         "warehouse_code": "WH-EAST",
         "region_code": "EAST",
@@ -193,4 +197,5 @@ async def test_상세_줄을_페이지의_주문별로_묶고_없는_주문은_�
         3,
     )
     assert item_b.lines == ()
+    assert item_a.secured_date is None and item_a.expected_delivery_date is None
     assert result.total_count == 2

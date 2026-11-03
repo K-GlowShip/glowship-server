@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import Field
 
@@ -51,7 +51,7 @@ class OrderLineResponse(CamelModel):
 
 class OrderListItemResponse(CamelModel):
     """주문 탭의 한 행 (명세 4.3 GET /orders).
-    D8 출고 파생값(securedDate·plannedDispatchDate·actualDispatchDate·expectedDeliveryDate)은 아직 정해지지 않아 없다."""
+    출고 관련 날짜 4개(securedDate 등)는 ERP 원천에서 받는 열이다 (D8). 수집이 채우기 전에는 null."""
 
     order_id: uuid.UUID
     order_code: str = Field(
@@ -78,6 +78,22 @@ class OrderListItemResponse(CamelModel):
         ),
         examples=["OPEN"],
     )
+    secured_date: date | None = Field(
+        description=(
+            "재고 확보일 (ERP 원천). OPEN 주문에서 값이 있으면 재고를 확보하고 출고를 기다리는 주문, "
+            "null 이면 재고 미확보 또는 원천 미제공"
+        ),
+        examples=["2026-06-29"],
+    )
+    planned_dispatch_date: date | None = Field(
+        description="출고 예정일 (ERP 원천). 없으면 null", examples=["2026-06-30"]
+    )
+    actual_dispatch_date: date | None = Field(
+        description="실제 출고일 (ERP 원천). 출고 전이면 null", examples=[None]
+    )
+    expected_delivery_date: date | None = Field(
+        description="배송 예정일 (ERP 원천). 없으면 null", examples=["2026-07-02"]
+    )
     lines: list[OrderLineResponse] = Field(description="주문 상세. lineNo 순")
 
     @classmethod
@@ -95,6 +111,10 @@ class OrderListItemResponse(CamelModel):
             ordered_at=item.ordered_at,
             promised_delivery_at=item.promised_delivery_at,
             status=item.status,
+            secured_date=item.secured_date,
+            planned_dispatch_date=item.planned_dispatch_date,
+            actual_dispatch_date=item.actual_dispatch_date,
+            expected_delivery_date=item.expected_delivery_date,
             lines=[OrderLineResponse.of(line) for line in item.lines],
         )
 

@@ -77,6 +77,10 @@ HTTP/1.1 200 OK
       "orderedAt": "2026-06-30T23:31:48Z",
       "promisedDeliveryAt": "2026-07-03T23:59:59Z",
       "status": "OPEN",
+      "securedDate": null,
+      "plannedDispatchDate": null,
+      "actualDispatchDate": null,
+      "expectedDeliveryDate": null,
       "lines": [
         {
           "lineNo": 1,
@@ -107,6 +111,7 @@ HTTP/1.1 200 OK
 | `warehouse` | 출고 창고 요약 객체(응답 규칙 5.2) |
 | `orderedAt`, `promisedDeliveryAt` | 주문 일시, 약속 배송 완료 시각(UTC, `Z`) |
 | `status` | 주문 상태 6종. **`OPEN`에는 재고 미확보 주문과 확보 후 출고 대기 주문이 함께 있습니다**(명세 4.3 주의) |
+| `securedDate`, `plannedDispatchDate`, `actualDispatchDate`, `expectedDeliveryDate` | 재고 확보일·출고 예정일·실제 출고일·배송 예정일(ERP 원천, `YYYY-MM-DD`). 수집이 채우기 전에는 모두 `null`(3절) |
 | `lines[]` | 주문 상세. `lineNo` 오름차순, 안쪽 배열이라 페이지 없이 그대로. 상세가 없으면 `[]` |
 | `lines[].sku` | 상품 요약 객체 |
 | `lines[].orderedQuantity`, `shippedQuantity` | 주문 수량, 출고 수량(0 ~ 주문 수량) |
@@ -136,16 +141,16 @@ HTTP/1.1 200 OK
 
 응답 규칙 6.1은 범위 오류를 400으로 적지만 "현재 구현은 422"라 다른 목록 API와 같이 422입니다.
 
-## 3. 범위에서 뺀 것 (D8)
+## 3. 출고 관련 날짜 4개 (D8)
 
-명세 4.3의 `securedDate`·`plannedDispatchDate`·`actualDispatchDate`·`expectedDeliveryDate`는 **응답에 없습니다**(키 자체를 넣지 않음).
+`securedDate`·`plannedDispatchDate`·`actualDispatchDate`·`expectedDeliveryDate`는 **ERP 원천에서 받는 값**으로 정했습니다(백엔드 결정 2026-11-03). 서버는 저장된 열을 그대로 내립니다.
 
-- 이 4개는 DB에 저장된 열이 아닙니다. ERP 주문 원천이 주는 항목은 `orders`·`order_lines`의 열(주문 번호·채널·권역·창고·주문 일시·약속 배송일·상태, 상품별 주문·출고 수량·상태)뿐이고, 출고가 일어난 사실은 출고 수량 변경(`data_change_records` ORDER_LINE UPDATE)으로만 들어옵니다.
-- 명세 D8(1절 61행, 0절 "아직 정할 것")은 변경 기록과 `inventory_daily.reserved`로 서버가 **역산**하는 방식을 제안했지만, 그 규칙의 참조 구현(엔진 `store.py`·`snapshot.py`·`common.py`)이 공유 묶음에 없습니다.
-- **백엔드 결정(2026-11-03): 역산하지 않고 원천(ERP)에서 받습니다.** ERP 연동 항목과 `orders` 열에 이 4개 날짜를 추가하는 ERD·수집 계약 변경을 설계 담당·데이터 팀에 요청합니다. 열이 생기면 이 API 는 저장 값을 그대로 읽어 필드를 추가합니다(응답 규칙 7절, 필드 추가는 합의 불필요).
-- 그때까지 `null`로 내리지 않는 이유: 명세 4.3 주의 문구가 "`securedDate` 유무로 재고 확보 여부를 구분한다"고 정해, `null`이 "재고 미확보"로 읽히기 때문입니다. 화면은 당분간 `status`만 표시하고, 같은 `OPEN`이라도 재고 확보 여부는 구분하지 못합니다.
+- v6.2 DDL 의 `orders`에는 이 열이 없어서 서버 마이그레이션 `0005_orders`(`migrations/versions/0005_orders_add_dispatch_date_columns.py`)가 `date` NULL 허용 열 4개를 더합니다. 열이 없을 때만 추가하므로 v6.2 DDL 로 적재한 DB 에서도 `make db-migrate`로 적용합니다.
+- 리비전 ID 가 `0005`가 아니라 `0005_orders`인 이유: ERD 설명 5절에서 `0005`(분석 열)·`0006`(`run_code`)은 개발자 3 몫으로 예약되어 있습니다. 둘 다 `0004`를 잇는 가지가 되므로 뒤에 병합되는 쪽이 `alembic merge`로 head 를 하나로 합칩니다.
+- 명세 1절 D8 은 `data_change_records`와 `inventory_daily.reserved`로 **역산**하는 방식을 제안했지만(0절 "아직 정할 것"), 그 참조 구현(엔진 `store.py`·`snapshot.py`·`common.py`)이 공유 묶음에 없고, 이 날짜들은 ERP 가 가진 사실 값이라 역산하지 않기로 했습니다. ERP 연동 항목 추가와 수집 적재(GLOW-13)는 별도 작업입니다.
+- **수집이 채우기 전에는 네 값이 모두 `null`**입니다. 명세 4.3 주의 문구("`securedDate` 유무로 재고 확보 여부를 구분")에 따라 화면이 `null`을 "재고 미확보"로 읽으면 지금은 모든 `OPEN` 주문이 미확보로 보이므로, 프론트는 수집 반영 전까지 이 4개 열을 숨기거나 "미제공"으로 표시해야 합니다.
 
-행별 검증 상태·"오류만 보기"도 없습니다. 검증 오류로 거부된 주문은 `orders`에 적재되지 않아 행에 붙일 수 없습니다(상품 탭과 다른 점). 오류는 탭 배지와 `GET /validation-issues?domain=ORDER`가 담당합니다.
+행별 검증 상태·"오류만 보기"는 없습니다. 검증 오류로 거부된 주문은 `orders`에 적재되지 않아 행에 붙일 수 없습니다(상품 탭과 다른 점). 오류는 탭 배지와 `GET /validation-issues?domain=ORDER`가 담당합니다.
 
 ## 4. SQL
 
@@ -171,7 +176,7 @@ HTTP/1.1 200 OK
 
 ## 6. 아직 없는 것
 
-- D8 출고 날짜 4개(3절): ERD·수집 계약에 원천 열이 추가된 뒤 별도 티켓
+- 출고 날짜 4개의 값(3절): ERP 연동 항목 추가와 수집 적재(GLOW-13) 뒤에 채워짐. 그때까지 `null`
 - `GET /validation-issues`(하단 오류 배너)
 - 명세 2절의 주문 관련 표시명 확정
 - 색인 추가 여부(4절)
@@ -186,5 +191,6 @@ HTTP/1.1 200 OK
 | 예외 | `app/modules/order/application/exception/order_exceptions.py` |
 | 리포지토리 | `app/modules/order/infrastructure/repository/order_repository.py` |
 | 코드값 | `app/modules/order/infrastructure/order_enums.py` |
+| ORM·마이그레이션 | `app/modules/order/infrastructure/order.py`, `migrations/versions/0005_orders_add_dispatch_date_columns.py` |
 | 의존성 | `app/modules/order/dependencies.py` |
 | 공통 | `app/core/pagination.py`, `app/core/summary_schemas.py`, `app/core/security/tenant.py` |

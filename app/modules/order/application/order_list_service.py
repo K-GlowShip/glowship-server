@@ -1,7 +1,7 @@
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.core.pagination import PageParams
 from app.core.security.tenant import TenantContext
@@ -21,8 +21,8 @@ from app.modules.order.infrastructure.repository.order_repository import (
       - 주문 기간(from·to)은 ISO 8601 UTC 시각이고 범위는 [from, to) 다 (to 미포함, 명세 변경 2026-11-03).
         KST → UTC 변환은 프론트가 한다. 시간대 표시가 없는 값은 UTC 로 보고, 다른 시간대 값은 UTC 로 맞춘다.
       - 상세 줄은 페이지의 주문 ID 로 한 번에 읽어 주문별로 묶는다.
-      - D8 출고 파생값(securedDate·plannedDispatchDate·actualDispatchDate·expectedDeliveryDate)은 아직 정해지지
-        않아(명세 0절 "아직 정할 것") 넣지 않는다. 정해지면 _build_item 에서 행마다 계산해 붙인다.
+      - 출고 관련 날짜 4개(securedDate 등)는 orders 열(마이그레이션 0005_orders)을 그대로 내린다 (D8, ERP 원천에서 받음).
+        수집이 채우기 전에는 null 이다.
 """
 
 
@@ -53,6 +53,10 @@ class OrderListItem:
     ordered_at: datetime
     promised_delivery_at: datetime
     status: str
+    secured_date: date | None
+    planned_dispatch_date: date | None
+    actual_dispatch_date: date | None
+    expected_delivery_date: date | None
     lines: tuple[OrderLineItem, ...]
 
 
@@ -124,6 +128,10 @@ class OrderListService:
             ordered_at=row.ordered_at,
             promised_delivery_at=row.promised_delivery_at,
             status=row.status,
+            secured_date=row.secured_date,
+            planned_dispatch_date=row.planned_dispatch_date,
+            actual_dispatch_date=row.actual_dispatch_date,
+            expected_delivery_date=row.expected_delivery_date,
             lines=tuple(
                 OrderLineItem(
                     line_no=line.line_no,

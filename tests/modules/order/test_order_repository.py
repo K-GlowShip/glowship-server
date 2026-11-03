@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 from sqlalchemy.dialects import postgresql
@@ -48,6 +48,10 @@ def _order_row(**overrides):
         "ordered_at": datetime(2026, 6, 30, 23, 31, 48, tzinfo=UTC),
         "promised_delivery_at": datetime(2026, 7, 3, 23, 59, 59, tzinfo=UTC),
         "status": "OPEN",
+        "secured_date": date(2026, 6, 29),
+        "planned_dispatch_date": None,
+        "actual_dispatch_date": None,
+        "expected_delivery_date": None,
         "warehouse_id": uuid.uuid7(),
         "warehouse_code": "WH-EAST",
         "region_code": "EAST",
@@ -101,6 +105,10 @@ async def test_SQL_이_고객사_조건과_필터_통과_규칙과_SKU_검색을
     [(list_stmt, list_params), _] = session.executed
     sql = _sql(list_stmt)
     assert "o.company_id = %(company_id)s" in sql
+    assert (
+        "o.secured_date, o.planned_dispatch_date, o.actual_dispatch_date, o.expected_delivery_date"
+        in sql
+    )
     assert "JOIN warehouses w ON w.company_id = o.company_id" in sql
     for name in (
         "status",
@@ -137,6 +145,7 @@ async def test_행을_OrderListRow_로_바꾸고_건수를_함께_돌려준다()
         "OPEN",
     )
     assert (row.warehouse_code, row.region_code) == ("WH-EAST", "EAST")
+    assert row.secured_date == date(2026, 6, 29) and row.actual_dispatch_date is None
 
 
 async def test_건수가_None_이면_0으로_본다():
