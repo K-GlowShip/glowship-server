@@ -264,14 +264,29 @@ class DataIngestService:
             lambda r: (r.inventory_date, r.warehouse_code, r.sku_code),
             lambda r: inventory_record_key(r, book),
         )
-        resolved = []
+        # 외부 코드 매핑은 N → 1 을 막지 않습니다. 서로 다른 외부 코드가 같은 내부 (날짜, 창고, SKU)로 바뀌면
+        # 첫 레코드만 적재하고 나머지는 거부합니다 (그대로 두면 inventory_daily_uk2 위반으로 수집 전체가 실패).
+        resolved, keys, seen = [], [], set()
         for source in unique.values():
             result = resolve_inventory(source, book)
             if isinstance(result, Rejection):
                 rejections.append(result)
-            else:
-                resolved.append(result)
-        keys = [(r.inventory_date, r.warehouse_id, r.sku_id) for r in resolved]
+                continue
+            key = (result.inventory_date, result.warehouse_id, result.sku_id)
+            if key in seen:
+                rejections.append(
+                    Rejection(
+                        source_record_key=inventory_record_key(source, book),
+                        field_name="source_record_key",
+                        error_code=DUPLICATE_SOURCE_RECORD,
+                        error_message="다른 외부 코드가 같은 내부 재고 행(날짜·창고·SKU)으로 바뀜"
+                        " (첫 레코드만 적재)",
+                    )
+                )
+                continue
+            resolved.append(result)
+            keys.append(key)
+            seen.add(key)
         existing = await self.repo.load_inventory(company_id, keys)
         diffs = [
             d

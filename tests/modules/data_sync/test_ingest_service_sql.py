@@ -264,9 +264,8 @@ async def test_duplicate_records_load_the_first_one(db_write_session):
     assert status == "SHIPPED"
 
 
-async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):
-    """재고 중복 거부 키도 `창고 외부 코드|내부 SKU 코드|일자` (매핑된 창고도 외부 코드, 기준선 WMS-EWR01|SKU-215|2026-01-01)"""
-    db = db_write_session
+async def _mapped_inventory(db):
+    """실제 재고 매핑(창고·SKU)으로 원천 재고 1건을 만듭니다."""
     row = (
         await db.execute(
             text(
@@ -293,6 +292,13 @@ async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):
         available_quantity=10,
         outbound_quantity=0,
     )
+    return row, record
+
+
+async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):
+    """재고 중복 거부 키도 `창고 외부 코드|내부 SKU 코드|일자` (매핑된 창고도 외부 코드, 기준선 WMS-EWR01|SKU-215|2026-01-01)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
 
     result = await _service(db).ingest(
         row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [record, record]
@@ -302,6 +308,52 @@ async def test_duplicate_inventory_key_uses_baseline_format(db_write_session):
     assert {(r.source_record_key, r.error_code) for r in result.rejections} == {
         (f"{row.wh}|{row.sku_code}|2026-07-01", DUPLICATE_SOURCE_RECORD)
     }
+
+
+class AliasSkuRepository(IngestRepository):
+    """코드표에 같은 내부 SKU 를 가리키는 외부 코드 ALIAS-SKU 를 하나 더 둡니다 (매핑 N → 1)."""
+
+    def __init__(self, db, alias_of: str):
+        super().__init__(db)
+        self.alias_of = alias_of
+
+    async def load_code_book(self, company_id, source_domain):
+        book = await super().load_code_book(company_id, source_domain)
+        return replace(book, skus={**book.skus, "ALIAS-SKU": book.skus[self.alias_of]})
+
+
+async def test_external_codes_resolving_to_same_inventory_row_load_the_first(
+    db_write_session,
+):
+    """외부 코드 2개가 같은 내부 (날짜, 창고, SKU)로 바뀌면 첫 레코드만 적재 (inventory_daily_uk2 위반으로 실패하지 않음)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    alias = replace(
+        record, sku_code="ALIAS-SKU", on_hand_quantity=99, available_quantity=99
+    )
+
+    result = await _service(db, repo=AliasSkuRepository(db, row.sku)).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [record, alias]
+    )
+
+    assert result.status == DataSyncRunStatus.PARTIAL_SUCCESS
+    assert (result.counts.received, result.counts.loaded, result.counts.rejected) == (
+        2,
+        1,
+        1,
+    )
+    assert [(r.source_record_key, r.error_code) for r in result.rejections] == [
+        (f"{row.wh}|{row.sku_code}|2026-07-01", DUPLICATE_SOURCE_RECORD)
+    ]
+    on_hand = await db.scalar(
+        text(
+            "SELECT i.on_hand_quantity FROM inventory_daily i JOIN skus k USING (sku_id)"
+            " WHERE i.company_id = :c AND k.sku_code = :s AND i.inventory_date = '2026-07-01'"
+            " AND i.data_sync_run_id = :r"
+        ),
+        {"c": row.company_id, "s": row.sku_code, "r": result.data_sync_run_id},
+    )
+    assert on_hand == 10
 
 
 # --- 실패 ------------------------------------------------------------------------------
