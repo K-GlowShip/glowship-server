@@ -28,17 +28,18 @@ from app.modules.data_sync.application.ingest.source_records import (
           HS10: 선적 상세 SKU 의 HS10. 정확히 하나여야 합니다 (기준 고유 키 market_leadtime_references_uk1 이
                 (월, 항구, HS10, 운송 수단)이고 선적은 기준 하나만 가리킴). 둘 이상이면 MIXED_HS10_IN_SHIPMENT,
                 상세가 없어 정할 수 없으면 MISSING_REQUIRED 로 거부합니다.
-          기준: 같은 (항구, HS10, 운송 수단)의 시장 기준을 아래 순서로 찾고, 끝내 없으면 거부합니다 (생성기 tools/synth2026/ledger2026.py market_row,
-                후보 2 보고서 H-4 승인). 마지막으로 인정한 기준 월(LAST_ACCEPTED_REFERENCE_MONTH) 뒤의 행은 쓰지 않습니다.
+          기준: 같은 (항구, HS10, 운송 수단)의 시장 기준을 아래 순서로 찾고, 끝내 없으면 거부합니다.
+                마지막으로 인정한 기준 월(LAST_ACCEPTED_REFERENCE_MONTH) 뒤의 행은 쓰지 않습니다 (합성데이터 결정 H-4).
                 1) 출고 월 기준  2) 인정 범위 안 가장 최근 연도의 같은 달  3) 같은 경로의 가장 가까운 이전 달
-          계획 3PL 입고일 = 한국 계획 출고일 + 올림(p90) (data_schema_storage_glowship.md 4.3)
+          계획 3PL 입고일 = 한국 계획 출고일 + 올림(p90)
         기준과 계획일은 선적이 처음 들어올 때만 정하고, 이미 있는 선적은 저장된 값을 그대로 씁니다.
+        근거: serviceflow v6.2 1절 "계획 입고일"·7절 결정표 "선적 계획 기준"(결정). 결정 원문은 docs/data-sync/ingest.md 9절.
         그래서 HS10 검사·상세 필수도 새 선적에만 합니다. 이미 있는 선적은 상세 없이 머리(단계·예상일)만 와도 되고,
         응답에서 빠진 기존 상세는 그대로 남습니다 (change_detection.diff_shipment).
       - DB 를 읽지 않는 순수 함수입니다. 코드표는 Repository 가 만들어 넘깁니다.
 """
 
-# 시장 마스터의 이 달 뒤 행은 저신뢰 추정(imputed) 행이라 쓰지 않습니다 (후보 2 보고서 H-4)
+# 시장 마스터의 이 달 뒤 행은 저신뢰 추정(imputed) 행이라 쓰지 않습니다 (합성데이터 결정 H-4, ingest.md 9절)
 LAST_ACCEPTED_REFERENCE_MONTH = "2026-01"
 
 # 선적 운송 수단 → 시장 리드타임 기준의 운송 수단. 이 밖의 값(예: SEA)은 거부합니다.

@@ -293,7 +293,7 @@ def diff_shipment(
     if header is None and not lines:
         return None
     # 기준 스냅샷은 지켜볼 일정이 있는 새 선적만 남깁니다. 이미 입고 완료(RECEIVED)로 처음 들어온 선적은 남기지 않습니다
-    # (결정 1-10 "초기 선적 스냅샷", 2026 생성기 gen2026.py 의 관측 비교와 같음).
+    # (합성데이터 결정 1-10 "초기 선적 스냅샷", 원문은 docs/data-sync/ingest.md 9절).
     schedule_changed = header is not None and (
         (header.change_type == "INSERT" and incoming.current_stage != RECEIVED)
         or any(name in SCHEDULE_FIELDS for name in header.changed_fields)
