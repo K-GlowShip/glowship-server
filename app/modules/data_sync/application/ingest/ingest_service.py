@@ -64,6 +64,7 @@ from app.modules.delay_analysis.application.stale.stale_service import (
          → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → STALE 판정(judge_after_sync) → 커밋.
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
+         FAILED 기록이 또 실패해도 원래 예외를 올리고, 기록 실패는 그 예외의 note 로 붙입니다.
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다 (1′).
       - 거부 사유는 결과에 담아 돌려줍니다. 검증 오류 기록(data_validation_issues)은 GLOW-15 가 붙입니다.
@@ -144,11 +145,17 @@ class DataIngestService:
                 company_id, applied_seq, self.now()
             )
             await self.db.commit()
-        except Exception:
-            await self.db.rollback()
-            await set_rls_context(self.db, user_id=None, company_id=company_id)
-            await self.repo.fail_run(company_id, run_id, self.now())
-            await self.db.commit()
+        except Exception as error:
+            try:
+                await self.db.rollback()
+                await set_rls_context(self.db, user_id=None, company_id=company_id)
+                await self.repo.fail_run(company_id, run_id, self.now())
+                await self.db.commit()
+            except Exception as record_error:  # noqa: BLE001 어떤 기록 실패든 원래 예외를 지킴
+                # 실패 기록이 또 실패해도(연결 끊김, 이미 RUNNING 아님 등) 원인인 원래 예외를 올립니다
+                error.add_note(
+                    f"수집 {run_id} 의 FAILED 기록도 실패했습니다: {record_error!r}"
+                )
             raise
 
         return IngestResult(

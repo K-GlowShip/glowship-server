@@ -493,6 +493,31 @@ async def test_failure_rolls_back_rows_and_marks_run_failed(db_write_session):
     assert tuple(run) == ("FAILED", None)
 
 
+class FailingTwiceRepository(FailingRepository):
+    """적용도 실패하고 FAILED 기록도 실패합니다 (예: 연결 끊김)."""
+
+    async def fail_run(self, company_id, data_sync_run_id, finished_at):
+        raise LookupError("실패 기록 중 실패")
+
+
+async def test_original_error_is_raised_when_recording_failure_fails(db_write_session):
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    service = _service(db, repo=FailingTwiceRepository(db))
+
+    with pytest.raises(RuntimeError, match="적용 중 실패") as raised:
+        await service.ingest(
+            company_id,
+            SourceDomain.ORDER,
+            ConnectionMethod.API,
+            [replace(order, status="SHIPPED")],
+        )
+
+    [note] = raised.value.__notes__
+    assert "FAILED 기록도 실패" in note and "LookupError" in note
+
+
 # --- 선적: 새 선적의 계획 기준과 기준 스냅샷 ------------------------------------------------
 
 
