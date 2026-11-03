@@ -2,7 +2,7 @@
 
 원천 시스템(ERP·WMS·TMS)에서 받은 레코드를 업무 테이블에 반영하는 **수집 적재 서비스가 현재 어떻게 동작하는지** 설명합니다.
 기준은 serviceflow v6.2 1절 "계획 입고일"·5.2절 "수집 적재"·7절 결정표 "선적 계획 기준"과, 합성데이터 결정 1-10(초기 선적 스냅샷)·H-4(시장 리드타임 대체)입니다. 두 합성데이터 결정은 공유 문서에 없어 원문을 9절에 옮겨 두었습니다.
-수집을 부르는 쪽(가상 API GLOW-49, 수동 수집 API 25)과 검증 오류 기록(GLOW-15)은 아직 없습니다(7절).
+수집을 부르는 쪽(가상 API GLOW-49, 수동 수집 API 25)과 검증 오류 해소·분석 보류(GLOW-15)는 아직 없습니다(7절).
 
 ## 1. 전체 흐름
 
@@ -128,12 +128,16 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
   - 형식은 `code_resolver.inventory_record_key` 한 곳에서 만들고, 같은 수집 안 중복 거부도 이 함수를 씁니다.
 - 받은 건수 = 적재 건수 + 거부 건수이고, 셋 다 **최상위 레코드**(상품·창고·주문·선적·재고 행) 기준입니다. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
 - 파서가 거부한 레코드(`MISSING_REQUIRED`·`INVALID_DATE`, 2절 파서 계약)는 `ingest(..., parse_rejections=...)`로 넘깁니다. 받은 건수와 거부 건수에 들어가고 `rejections` 앞쪽에 담깁니다. 기준선 B사 주문 수집(2025-12-31)처럼 형식 오류가 섞여도 나머지는 적재되고 `PARTIAL_SUCCESS`가 됩니다.
-- 거부 사유는 `IngestResult.rejections`로 돌려줍니다. `data_validation_issues` 기록은 GLOW-15 가 붙입니다.
+- 거부 사유는 `IngestResult.rejections`로 돌려주고, **같은 트랜잭션에서 검증 이슈(`data_validation_issues`)로 남깁니다**(GLOW-15).
+  - 거부 1건 = 이슈 1행. 수집 ID, 원천 유형(`source_entity_type` = `ORDER`·`SHIPMENT`·`INVENTORY`·`PRODUCT`·`WAREHOUSE`), 키·`field_name`·오류 코드·메시지는 위 거부 사유 그대로입니다.
+  - 모두 `ERROR`·분석 차단(`blocks_analysis = true`)·`OPEN`입니다. 확정 기준선의 이슈 9행이 모두 이렇고, `data_validation_issues_ck2`는 `ERROR`면 분석 차단을 강제합니다.
+  - `detected_at`은 수집 시작 시각입니다(5절 일정 스냅샷 `observed_at`과 같은 규칙).
+  - 수집이 `FAILED`가 되면 이슈도 함께 되돌아가 남지 않습니다.
 
 ## 7. 아직 없는 것
 
 - 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
-- 검증 오류 기록·해소·분석 보류(GLOW-15). 거부를 `data_validation_issues`에 `OPEN`으로 남기는 것과, 같은 원천 레코드가 뒤 수집에서 정상 적재되면 `RESOLVED`·`resolved_at`으로 바꾸는 **해소**도 GLOW-15 몫입니다(명세 v6.2 4.3 `GET /validation-issues` "해소는 수집 적재가 기록한다").
+- 검증 오류 해소·분석 보류(GLOW-15). `OPEN` 기록(6절)은 했고, 같은 원천 레코드가 뒤 수집에서 정상 적재되면 `RESOLVED`·`resolved_at`으로 바꾸는 **해소**가 남았습니다(명세 v6.2 4.3 `GET /validation-issues` "해소는 수집 적재가 기록한다").
 - **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
 - **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
@@ -159,7 +163,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_record_validation.py` | 값 검증: CHECK 제약별 거부 코드·위치, 허용 값 목록 = ORM CHECK (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
-| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 실패 기록도 실패하면 원래 예외 유지, 새 선적 스냅샷, 새 선적 혼합 HS10·빈 상세 거부(`PARTIAL_SUCCESS`), 기존 선적 빈 상세 + 일정 변경(상세 유지), 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부 |
+| `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 실패 기록도 실패하면 원래 예외 유지, 새 선적 스냅샷, 새 선적 혼합 HS10·빈 상세 거부(`PARTIAL_SUCCESS`), 기존 선적 빈 상세 + 일정 변경(상세 유지), 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부, 거부 → 검증 이슈 `OPEN`(값·재고 키·실패 시 되돌림·4,500건) |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.

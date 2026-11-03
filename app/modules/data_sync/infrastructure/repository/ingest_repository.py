@@ -19,6 +19,7 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     TRANSPORT_MODE_TO_REFERENCE,
     CodeBook,
     LeadtimeReference,
+    Rejection,
     SkuCode,
     WarehouseCode,
 )
@@ -39,6 +40,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
     SourceDomain,
 )
 from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
+from app.modules.data_sync.infrastructure.data_validation_issue import (
+    DataValidationIssue,
+)
 from app.modules.inventory.infrastructure.inventory_daily import InventoryDaily
 from app.modules.master_data.infrastructure.external_entity_mapping import (
     ExternalEntityMapping,
@@ -71,6 +75,8 @@ MAPPED_SOURCE_DOMAINS = frozenset({SourceDomain.INVENTORY, SourceDomain.SHIPMENT
 # 초기 적재(주문 17만 건·재고 6만 행) 같은 큰 수집도 한 트랜잭션 안에서 나눠 읽습니다.
 # 재고 키는 (날짜, 창고, SKU)라 키 하나에 값 3개이므로 5,000키 = 15,000값입니다.
 KEYS_PER_QUERY = 5_000
+ISSUE_SEVERITY = "ERROR"
+ISSUE_OPEN = "OPEN"
 
 _SKU_COLUMNS = ("sku_code", *SkuRecord.FIELDS)
 _WAREHOUSE_COLUMNS = ("warehouse_code", *WarehouseRecord.FIELDS)
@@ -491,6 +497,39 @@ class IngestRepository:
                 for d in drafts
             ],
         )
+
+    async def insert_validation_issues(
+        self,
+        company_id: uuid.UUID,
+        data_sync_run_id: uuid.UUID,
+        source_domain: SourceDomain,
+        rejections: Sequence[Rejection],
+        detected_at: datetime,
+    ) -> None:
+        """
+        거부 사유를 검증 이슈 OPEN 으로 남깁니다 (GLOW-15). 수집과 같은 트랜잭션이라 수집이 FAILED 면 함께 되돌아갑니다.
+          - 확정 기준선의 검증 이슈는 모두 ERROR·분석 차단(blocks_analysis)입니다. ck2 는 ERROR 면 분석 차단을 강제합니다.
+          - detected_at 은 수집 시작 시각입니다 (일정 스냅샷 observed_at 과 같은 규칙).
+        """
+        rows = [
+            {
+                "data_validation_issue_id": uuid.uuid7(),
+                "company_id": company_id,
+                "data_sync_run_id": data_sync_run_id,
+                "source_entity_type": source_domain.value,
+                "source_record_key": r.source_record_key,
+                "field_name": r.field_name,
+                "error_code": r.error_code,
+                "error_message": r.error_message,
+                "severity": ISSUE_SEVERITY,
+                "blocks_analysis": True,
+                "detected_at": detected_at,
+                "status": ISSUE_OPEN,
+            }
+            for r in rejections
+        ]
+        if rows:
+            await self.db.execute(insert(DataValidationIssue), rows)
 
     async def next_applied_seq(self, company_id: uuid.UUID) -> int:
         """고객사의 다음 적용 순번. L1 안에서 불러야 순번이 겹치지 않습니다 (data_sync_runs_uk2 가 최종 방어선)."""

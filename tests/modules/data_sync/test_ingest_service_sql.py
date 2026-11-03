@@ -359,6 +359,128 @@ async def test_parse_rejections_come_before_apply_rejections(db_write_session):
     assert [r.error_code for r in result.rejections] == ["INVALID_DATE", UNKNOWN_SKU]
 
 
+# --- 검증 이슈 기록 (GLOW-15) ------------------------------------------------------------
+
+
+async def _issues(db, run_id):
+    return (
+        await db.execute(
+            text(
+                "SELECT source_entity_type, source_record_key, field_name, error_code, severity,"
+                " blocks_analysis, detected_at, status, resolved_at FROM data_validation_issues"
+                " WHERE data_sync_run_id = :r ORDER BY source_record_key"
+            ),
+            {"r": run_id},
+        )
+    ).all()
+
+
+async def test_rejections_are_recorded_as_open_issues(db_write_session):
+    """파서 거부·적재 단계 거부가 같은 수집 ID 의 검증 이슈 OPEN 으로 남음 (ERROR·분석 차단, 감지 시각 = 수집 시작)"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    bad = replace(
+        order,
+        order_code="TEST-BAD",
+        lines=(SourceOrderLine(1, "NO-SUCH-SKU", 1, 0, "ACTIVE"),),
+    )
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [order, bad],
+        parse_rejections=[PARSE_REJECTION],
+    )
+
+    issues = await _issues(db, result.data_sync_run_id)
+    assert [
+        (i.source_entity_type, i.source_record_key, i.field_name, i.error_code)
+        for i in issues
+    ] == [
+        ("ORDER", "B-ORD-ERR-0003", "orderedAt", "INVALID_DATE"),
+        ("ORDER", "TEST-BAD", "lines[0].sku_code", UNKNOWN_SKU),
+    ]
+    assert {
+        (i.severity, i.blocks_analysis, i.status, i.resolved_at) for i in issues
+    } == {("ERROR", True, "OPEN", None)}
+    assert {i.detected_at for i in issues} == {NOW}
+    assert len(issues) == result.counts.rejected
+
+
+async def test_inventory_issue_keeps_baseline_key(db_write_session):
+    """재고 이슈의 원천 유형은 INVENTORY, 키는 창고(외부)|SKU(내부)|일자 (기준선 행과 같은 모양)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    negative = replace(record, on_hand_quantity=-1, available_quantity=-1)
+
+    result = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [negative]
+    )
+
+    [issue] = await _issues(db, result.data_sync_run_id)
+    assert (issue.source_entity_type, issue.source_record_key, issue.error_code) == (
+        "INVENTORY",
+        f"{row.wh}|{row.sku_code}|2026-07-01",
+        NEGATIVE_QUANTITY,
+    )
+
+
+class FailingStale(RecordingStale):
+    async def judge_after_sync(self, company_id, applied_seq, detected_at):
+        raise RuntimeError("STALE 판정 실패")
+
+
+async def test_issues_roll_back_with_failed_sync(db_write_session):
+    """검증 이슈는 수집과 같은 트랜잭션이라, 뒤 단계가 실패해 FAILED 가 되면 이슈도 남지 않음"""
+    db = db_write_session
+    company_id = await _company(db)
+
+    with pytest.raises(RuntimeError):
+        await _service(db, stale=FailingStale()).ingest(
+            company_id,
+            SourceDomain.ORDER,
+            ConnectionMethod.FILE,
+            [],
+            parse_rejections=[PARSE_REJECTION],
+        )
+
+    run_id = await db.scalar(
+        text(
+            "SELECT data_sync_run_id FROM data_sync_runs WHERE company_id = :c"
+            " AND started_at = :t AND status = 'FAILED'"
+        ),
+        {"c": company_id, "t": NOW},
+    )
+    assert run_id is not None
+    assert await _issues(db, run_id) == []
+
+
+async def test_many_issues_are_all_recorded(db_write_session):
+    """거부가 많아도 모두 기록됨 (4,500건 × 열 12개 = 54,000 값. 행 목록 INSERT 는 SQLAlchemy 가 나눠 실행해 바인딩 한도에 걸리지 않음)"""
+    db = db_write_session
+    company_id = await _company(db)
+    rejections = [
+        Rejection(f"TEST-PARSE-{n:05d}", "orderedAt", "INVALID_DATE", "읽을 수 없음")
+        for n in range(4_500)
+    ]
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=rejections,
+    )
+
+    count = await db.scalar(
+        text("SELECT count(*) FROM data_validation_issues WHERE data_sync_run_id = :r"),
+        {"r": result.data_sync_run_id},
+    )
+    assert count == 4_500
+
+
 async def _mapped_inventory(db):
     """실제 재고 매핑(창고·SKU)으로 원천 재고 1건을 만듭니다."""
     row = (

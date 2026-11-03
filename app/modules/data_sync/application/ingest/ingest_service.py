@@ -61,14 +61,14 @@ from app.modules.delay_analysis.application.stale.stale_service import (
          같은 원천의 수집은 한 번에 하나만 돌아, 늦게 끝난 수집이 먼저 끝난 수집의 값을 덮어쓰지 않습니다.
          오래 남은 RUNNING(작업이 죽은 경우)도 시간과 관계없이 막습니다. 정리(FAILED 전환·fencing)는 후속 운영 작업입니다.
       2. 한 트랜잭션에서: 고객사 잠금(L1) → 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부, record_validation)
-         → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용
+         → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용 → 거부 사유를 검증 이슈로 기록
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → STALE 판정(judge_after_sync) → 커밋.
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
          FAILED 기록이 또 실패해도 원래 예외를 올리고, 기록 실패는 그 예외의 note 로 붙입니다.
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다
         (serviceflow v6.2 1절 "계획 입고일"·7절 결정표 "선적 계획 기준").
-      - 거부 사유는 결과에 담아 돌려줍니다. 검증 오류 기록(data_validation_issues)은 GLOW-15 가 붙입니다.
+      - 거부 사유는 결과에 담아 돌려주고, 같은 트랜잭션에서 검증 이슈(data_validation_issues) OPEN 으로 남깁니다 (GLOW-15).
 
     실행 전제 (호출 측 계약)
       - DB 역할: 워커 역할(glowship_v4_worker) 연결에서 실행합니다. 이 서비스는 RLS 컨텍스트에 고객사만 넣고
@@ -145,6 +145,9 @@ class DataIngestService:
                 company_id, run_id, source_domain, records, started_at
             )
             rejections = (*parse_rejections, *applied.rejections)
+            await self.repo.insert_validation_issues(
+                company_id, run_id, source_domain, rejections, started_at
+            )
             counts = RunCounts(
                 received=len(records) + len(parse_rejections),
                 loaded=len(records) - len(applied.rejections),
