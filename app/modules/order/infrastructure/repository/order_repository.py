@@ -1,15 +1,14 @@
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import ARRAY, UUID, DateTime, Integer, Text, bindparam, text
+from sqlalchemy import UUID, DateTime, Integer, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 """
     주문 목록 조회 (API 명세 v6.2 4.3 GET /orders, 연동 데이터 조회 화면 SCR-005 의 주문 탭)
-      - 주문 한 건에 출고 창고 요약을 붙여 한 페이지를 돌려주고, 페이지에 나온 주문의 상세 줄은 별도 문장으로 읽는다
-        (목록 1회 + 건수 1회 + 상세 1회, 페이지당 N+1 없음).
+      - 주문 한 건에 출고 창고 요약을 붙여 한 페이지를 돌려준다 (목록 1회 + 건수 1회).
+      - 주문 상세 줄(lines[])은 보류했다(2026-11-03). 검색어의 SKU 코드·상품명 일치는 EXISTS 로만 쓴다.
       - 필터: 상태·창고·채널·주문 기간(UTC 시각, [from, to) 로 to 미포함)·검색어. 값이 없으면(NULL) 그 조건은 통과한다.
       - 검색어는 주문 번호 또는 주문 상품의 SKU 코드·상품명 부분 일치(대소문자 무시)다. LIKE 특수문자는 글자 그대로 찾는다.
       - 정렬은 ordered_at 최신순, 같으면 order_id (명세 4.3, 응답 본문 규칙 6.2).
@@ -80,20 +79,6 @@ _COUNT_PAGE = text(
     _FILTERED + "SELECT COUNT(*) AS total_count FROM filtered"
 ).bindparams(*_FILTER_PARAMS)
 
-_LINES = text(
-    """
-    SELECT l.order_id, l.line_no, l.sku_id, k.sku_code, k.product_name,
-           l.ordered_quantity, l.shipped_quantity, l.line_status
-      FROM order_lines l
-      JOIN skus k ON k.company_id = l.company_id AND k.sku_id = l.sku_id
-     WHERE l.company_id = :company_id AND l.order_id = ANY(:order_ids)
-     ORDER BY l.order_id, l.line_no
-    """
-).bindparams(
-    bindparam("company_id", type_=_UUID),
-    bindparam("order_ids", type_=ARRAY(_UUID)),
-)
-
 
 @dataclass(frozen=True)
 class OrderFilter:
@@ -125,20 +110,6 @@ class OrderListRow:
     warehouse_id: uuid.UUID
     warehouse_code: str
     region_code: str
-
-
-@dataclass(frozen=True)
-class OrderLineRow:
-    """주문 상세 한 줄과 SKU 요약"""
-
-    order_id: uuid.UUID
-    line_no: int
-    sku_id: uuid.UUID
-    sku_code: str
-    product_name: str
-    ordered_quantity: int
-    shipped_quantity: int
-    line_status: str
 
 
 @dataclass(frozen=True)
@@ -194,14 +165,3 @@ class OrderRepository:
             rows=[OrderListRow(**row._mapping) for row in rows],
             total_count=total_count or 0,
         )
-
-    async def find_lines(
-        self, company_id: uuid.UUID, order_ids: Sequence[uuid.UUID]
-    ) -> list[OrderLineRow]:
-        """여러 주문의 상세 줄과 SKU 코드·상품명 (주문·줄 번호 순). 주문이 없으면 조회하지 않는다."""
-        if not order_ids:
-            return []
-        result = await self.db.execute(
-            _LINES, {"company_id": company_id, "order_ids": list(order_ids)}
-        )
-        return [OrderLineRow(**row._mapping) for row in result]

@@ -5,15 +5,13 @@ from pydantic import Field
 
 from app.core.pagination import Page
 from app.core.schemas import CamelModel
-from app.core.summary_schemas import SkuSummary, WarehouseSummary
+from app.core.summary_schemas import WarehouseSummary
 from app.modules.order.application.order_list_service import (
-    OrderLineItem,
     OrderListItem,
     OrderListResult,
 )
 from app.modules.order.infrastructure.order_enums import (
     CustomerRegion,
-    OrderLineStatus,
     OrderStatus,
     SalesChannel,
 )
@@ -21,37 +19,10 @@ from app.modules.order.infrastructure.order_enums import (
 MAX_QUERY_LENGTH = 100
 
 
-class OrderLineResponse(CamelModel):
-    """주문 상세 한 줄 (명세 4.3 lines[]). lineNo 오름차순, 안쪽 배열이라 페이지 없이 그대로 (응답 규칙 6.2)."""
-
-    line_no: int = Field(examples=[1])
-    sku: SkuSummary
-    ordered_quantity: int = Field(examples=[3])
-    shipped_quantity: int = Field(
-        description="출고된 수량. 0 ~ orderedQuantity", examples=[3]
-    )
-    line_status: OrderLineStatus = Field(
-        description="ACTIVE(정상)·REMOVED_AT_SOURCE(원천 삭제)", examples=["ACTIVE"]
-    )
-
-    @classmethod
-    def of(cls, line: OrderLineItem) -> OrderLineResponse:
-        return cls(
-            line_no=line.line_no,
-            sku=SkuSummary(
-                sku_id=line.sku_id,
-                sku_code=line.sku_code,
-                product_name=line.product_name,
-            ),
-            ordered_quantity=line.ordered_quantity,
-            shipped_quantity=line.shipped_quantity,
-            line_status=line.line_status,
-        )
-
-
 class OrderListItemResponse(CamelModel):
     """주문 탭의 한 행 (명세 4.3 GET /orders).
-    출고 관련 날짜 4개(securedDate 등)는 ERP 원천에서 받는 열이다 (D8). 수집이 채우기 전에는 null."""
+    출고 관련 날짜 4개(securedDate 등)는 ERP 원천에서 받는 열이다 (D8). 수집이 채우기 전에는 null.
+    주문 상세 lines[] 는 보류했다(2026-11-03)."""
 
     order_id: uuid.UUID
     order_code: str = Field(
@@ -94,7 +65,6 @@ class OrderListItemResponse(CamelModel):
     expected_delivery_date: date | None = Field(
         description="배송 예정일 (ERP 원천). 없으면 null", examples=["2026-07-02"]
     )
-    lines: list[OrderLineResponse] = Field(description="주문 상세. lineNo 순")
 
     @classmethod
     def of(cls, item: OrderListItem) -> OrderListItemResponse:
@@ -115,7 +85,6 @@ class OrderListItemResponse(CamelModel):
             planned_dispatch_date=item.planned_dispatch_date,
             actual_dispatch_date=item.actual_dispatch_date,
             expected_delivery_date=item.expected_delivery_date,
-            lines=[OrderLineResponse.of(line) for line in item.lines],
         )
 
 

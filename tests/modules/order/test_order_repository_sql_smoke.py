@@ -30,10 +30,8 @@ async def test_빈_고객사는_빈_페이지와_0건이다(db_session):
     repo = OrderRepository(db_session)
 
     page = await repo.find_page(UNKNOWN_ID, OrderFilter(), offset=0, limit=20)
-    lines = await repo.find_lines(UNKNOWN_ID, [UNKNOWN_ID])
 
     assert page.rows == [] and page.total_count == 0
-    assert lines == []
 
 
 async def test_모든_필터를_걸어도_SQL_이_실행된다(db_session):
@@ -104,7 +102,21 @@ async def test_검색어는_주문_번호와_SKU_코드와_상품명을_찾는�
     if not page.rows:
         return
     sample = page.rows[0]
-    [line, *_] = await repo.find_lines(company_id, [sample.order_id])
+    sku_code, product_name = (
+        await db_session.execute(
+            text(
+                "SELECT k.sku_code, k.product_name FROM order_lines l"
+                " JOIN skus k ON k.company_id = l.company_id AND k.sku_id = l.sku_id"
+                " WHERE l.company_id = :company_id AND l.order_id = :order_id"
+                " ORDER BY l.line_no LIMIT 1"
+            ),
+            {"company_id": company_id, "order_id": sample.order_id},
+        )
+    ).one()
+    window = OrderFilter(
+        ordered_from=sample.ordered_at,
+        ordered_to=sample.ordered_at + timedelta(seconds=1),
+    )
 
     by_code = await repo.find_page(
         company_id, OrderFilter(query=sample.order_code.lower()), offset=0, limit=20
@@ -112,20 +124,19 @@ async def test_검색어는_주문_번호와_SKU_코드와_상품명을_찾는�
     by_sku = await repo.find_page(
         company_id,
         OrderFilter(
-            query=line.sku_code.lower(),
-            ordered_from=sample.ordered_at,
-            ordered_to=sample.ordered_at + timedelta(seconds=1),
+            query=sku_code.lower(),
+            ordered_from=window.ordered_from,
+            ordered_to=window.ordered_to,
         ),
         offset=0,
         limit=20,
     )
-
     by_name = await repo.find_page(
         company_id,
         OrderFilter(
-            query=line.product_name[:8].lower(),
-            ordered_from=sample.ordered_at,
-            ordered_to=sample.ordered_at + timedelta(seconds=1),
+            query=product_name[:8].lower(),
+            ordered_from=window.ordered_from,
+            ordered_to=window.ordered_to,
         ),
         offset=0,
         limit=20,
@@ -134,20 +145,3 @@ async def test_검색어는_주문_번호와_SKU_코드와_상품명을_찾는�
     assert sample.order_id in {row.order_id for row in by_code.rows}
     assert sample.order_id in {row.order_id for row in by_sku.rows}
     assert sample.order_id in {row.order_id for row in by_name.rows}
-
-
-async def test_상세는_페이지의_주문에만_속하고_줄_번호_순이다(db_session):
-    repo = OrderRepository(db_session)
-    company_id = await _sample_company(db_session)
-    page = await repo.find_page(company_id, OrderFilter(), offset=0, limit=20)
-    order_ids = [row.order_id for row in page.rows]
-
-    lines = await repo.find_lines(company_id, order_ids)
-
-    assert {line.order_id for line in lines} == set(order_ids)
-    for order_id in order_ids:
-        numbers = [line.line_no for line in lines if line.order_id == order_id]
-        assert numbers == sorted(numbers) and numbers[0] >= 1
-    for line in lines:
-        assert line.sku_code and line.product_name
-        assert 0 <= line.shipped_quantity <= line.ordered_quantity

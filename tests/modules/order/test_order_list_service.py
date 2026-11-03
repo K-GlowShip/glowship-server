@@ -12,7 +12,6 @@ from app.modules.order.application.exception.order_exceptions import (
 from app.modules.order.application.order_list_service import OrderListService
 from app.modules.order.infrastructure.repository.order_repository import (
     OrderFilter,
-    OrderLineRow,
     OrderListPage,
     OrderListRow,
 )
@@ -27,16 +26,11 @@ class FakeOrderRepository:
     page: OrderListPage = field(
         default_factory=lambda: OrderListPage(rows=[], total_count=0)
     )
-    lines: list[OrderLineRow] = field(default_factory=list)
     calls: list = field(default_factory=list)
 
     async def find_page(self, company_id, filters, **kwargs):
         self.calls.append(("find_page", company_id, filters, kwargs))
         return self.page
-
-    async def find_lines(self, company_id, order_ids):
-        self.calls.append(("find_lines", company_id, list(order_ids)))
-        return self.lines
 
 
 def _row(**overrides) -> OrderListRow:
@@ -60,38 +54,20 @@ def _row(**overrides) -> OrderListRow:
     return OrderListRow(**values)
 
 
-def _line(order_id: uuid.UUID, line_no: int, **overrides) -> OrderLineRow:
-    values = {
-        "order_id": order_id,
-        "line_no": line_no,
-        "sku_id": uuid.uuid7(),
-        "sku_code": f"SKU-00{line_no}",
-        "product_name": "A Glow Hydra Toner Pad 60ea",
-        "ordered_quantity": 3,
-        "shipped_quantity": 0,
-        "line_status": "ACTIVE",
-    }
-    values.update(overrides)
-    return OrderLineRow(**values)
-
-
-def _service(rows: list[OrderListRow], lines=(), total_count: int = 0):
-    repo = FakeOrderRepository(
-        page=OrderListPage(rows=rows, total_count=total_count), lines=list(lines)
-    )
+def _service(rows: list[OrderListRow], total_count: int = 0):
+    repo = FakeOrderRepository(page=OrderListPage(rows=rows, total_count=total_count))
     return OrderListService(repo=repo), repo
 
 
-async def test_필터가_없으면_빈_필터와_첫_페이지로_조회하고_상세는_조회하지_않는다():
+async def test_필터가_없으면_빈_필터와_첫_페이지로_조회한다():
     service, repo = _service(rows=[])
 
     result = await service.get_page(TENANT)
 
-    [(_, company_id, filters, kwargs), (_, _, order_ids)] = repo.calls
+    [(_, company_id, filters, kwargs)] = repo.calls
     assert company_id == TENANT.company_id
     assert filters == OrderFilter()
     assert kwargs == {"offset": 0, "limit": 20}
-    assert order_ids == []
     assert result.items == [] and result.total_count == 0
     assert (result.page.page, result.page.size) == (1, 20)
 
@@ -170,32 +146,25 @@ async def test_같은_시각_또는_한쪽만_있는_기간은_허용한다():
     await service.get_page(TENANT, ordered_from=moment)
     await service.get_page(TENANT, ordered_to=moment)
 
-    same, from_only, to_only = repo.calls[0][2], repo.calls[2][2], repo.calls[4][2]
+    same, from_only, to_only = repo.calls[0][2], repo.calls[1][2], repo.calls[2][2]
     assert (same.ordered_from, same.ordered_to) == (moment, moment)
     assert from_only.ordered_to is None
     assert to_only.ordered_from is None
 
 
-async def test_상세_줄을_페이지의_주문별로_묶고_없는_주문은_빈_튜플이다():
+async def test_행을_OrderListItem_으로_바꾸고_창고_요약과_출고_날짜를_그대로_옮긴다():
     rows = [_row(order_id=ORDER_A), _row(order_id=ORDER_B, order_code="B")]
-    lines = [_line(ORDER_A, 1), _line(ORDER_A, 2), _line(uuid.uuid7(), 1)]
-    service, repo = _service(rows=rows, lines=lines, total_count=2)
+    service, _ = _service(rows=rows, total_count=2)
 
     result = await service.get_page(TENANT)
 
-    assert repo.calls[1] == ("find_lines", TENANT.company_id, [ORDER_A, ORDER_B])
     [item_a, item_b] = result.items
-    assert item_a.order_code == "A-ORD-20260630-0177"
+    assert (item_a.order_id, item_a.order_code) == (ORDER_A, "A-ORD-20260630-0177")
     assert (item_a.warehouse_id, item_a.warehouse_code, item_a.region_code) == (
         rows[0].warehouse_id,
         "WH-EAST",
         "EAST",
     )
-    assert [line.line_no for line in item_a.lines] == [1, 2]
-    assert (item_a.lines[0].sku_code, item_a.lines[0].ordered_quantity) == (
-        "SKU-001",
-        3,
-    )
-    assert item_b.lines == ()
     assert item_a.secured_date is None and item_a.expected_delivery_date is None
+    assert item_b.order_code == "B"
     assert result.total_count == 2

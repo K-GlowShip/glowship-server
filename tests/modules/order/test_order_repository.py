@@ -7,7 +7,6 @@ from sqlalchemy.dialects import postgresql
 
 from app.modules.order.infrastructure.repository.order_repository import (
     OrderFilter,
-    OrderLineRow,
     OrderListRow,
     OrderRepository,
     _like_pattern,
@@ -156,59 +155,6 @@ async def test_건수가_None_이면_0으로_본다():
     )
 
     assert page.total_count == 0
-
-
-async def test_주문_ID_가_없으면_상세를_조회하지_않는다():
-    session = FakeSession()
-
-    lines = await OrderRepository(session).find_lines(COMPANY_ID, [])
-
-    assert lines == []
-    assert session.executed == []
-
-
-async def test_상세는_주문_ID_배열로_한_번에_읽고_OrderLineRow_로_바꾼다():
-    sku_id = uuid.uuid7()
-    session = FakeSession(
-        rows=[
-            _mapped(
-                order_id=ORDER_ID,
-                line_no=1,
-                sku_id=sku_id,
-                sku_code="SKU-001",
-                product_name="A Glow Hydra Toner Pad 60ea",
-                ordered_quantity=3,
-                shipped_quantity=1,
-                line_status="ACTIVE",
-            )
-        ]
-    )
-
-    lines = await OrderRepository(session).find_lines(
-        COMPANY_ID, (ORDER_ID, uuid.UUID(int=2))
-    )
-
-    [(stmt, params)] = session.executed
-    assert params == {
-        "company_id": COMPANY_ID,
-        "order_ids": [ORDER_ID, uuid.UUID(int=2)],
-    }
-    sql = _sql(stmt)
-    assert "l.order_id = ANY(%(order_ids)s::UUID[])" in sql
-    assert "JOIN skus k ON k.company_id = l.company_id" in sql
-    assert "ORDER BY l.order_id, l.line_no" in sql
-    assert lines == [
-        OrderLineRow(
-            order_id=ORDER_ID,
-            line_no=1,
-            sku_id=sku_id,
-            sku_code="SKU-001",
-            product_name="A Glow Hydra Toner Pad 60ea",
-            ordered_quantity=3,
-            shipped_quantity=1,
-            line_status="ACTIVE",
-        )
-    ]
 
 
 def test_LIKE_특수문자는_글자_그대로_찾도록_이스케이프한다():
