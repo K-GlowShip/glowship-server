@@ -21,7 +21,8 @@ MAX_QUERY_LENGTH = 100
 
 class OrderListItemResponse(CamelModel):
     """주문 탭의 한 행 (명세 4.3 GET /orders).
-    출고 관련 날짜 4개(securedDate 등)는 ERP 원천에서 받는 열이다 (D8). 수집이 채우기 전에는 null.
+    출고 관련 날짜 4개(D8)는 서비스가 계산한다. actualDispatchDate 는 수집 변경 기록으로 역산한 값이고,
+    securedDate·plannedDispatchDate·expectedDeliveryDate 는 아직 계산하지 않아 null 이다.
     주문 상세 lines[] 는 보류했다(2026-11-03)."""
 
     order_id: uuid.UUID
@@ -51,19 +52,25 @@ class OrderListItemResponse(CamelModel):
     )
     secured_date: date | None = Field(
         description=(
-            "재고 확보일 (ERP 원천). OPEN 주문에서 값이 있으면 재고를 확보하고 출고를 기다리는 주문, "
-            "null 이면 재고 미확보 또는 원천 미제공"
+            "재고 확보일 (UTC 날짜). 명세 4.3 은 OPEN 주문에서 값이 있으면 확보 후 출고 대기, null 이면 미확보로 구분하지만 "
+            "아직 계산하지 않아 항상 null 이다. 화면은 이 값으로 확보 여부를 구분하지 말 것"
         ),
-        examples=["2026-06-29"],
+        examples=[None],
     )
     planned_dispatch_date: date | None = Field(
-        description="출고 예정일 (ERP 원천). 없으면 null", examples=["2026-06-30"]
+        description="출고 예정일 (UTC 날짜). 아직 계산하지 않아 항상 null",
+        examples=[None],
     )
     actual_dispatch_date: date | None = Field(
-        description="실제 출고일 (ERP 원천). 출고 전이면 null", examples=[None]
+        description=(
+            "실제 출고일 (UTC 날짜). 주문 상품 줄의 첫 변경(ORDER_LINE UPDATE)이 수집된 날짜 − 1일로 역산. "
+            "출고 전이거나 변경 기록이 없으면 null"
+        ),
+        examples=["2026-06-28"],
     )
     expected_delivery_date: date | None = Field(
-        description="배송 예정일 (ERP 원천). 없으면 null", examples=["2026-07-02"]
+        description="배송 예정일 (UTC 날짜). 아직 계산하지 않아 항상 null",
+        examples=[None],
     )
 
     @classmethod

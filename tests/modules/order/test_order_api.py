@@ -61,11 +61,11 @@ def _item(**overrides) -> OrderListItem:
         "region_code": "EAST",
         "ordered_at": datetime(2026, 6, 30, 23, 31, 48, tzinfo=UTC),
         "promised_delivery_at": datetime(2026, 7, 3, 23, 59, 59, tzinfo=UTC),
-        "status": "OPEN",
-        "secured_date": date(2026, 6, 29),
-        "planned_dispatch_date": date(2026, 6, 30),
-        "actual_dispatch_date": None,
-        "expected_delivery_date": date(2026, 7, 2),
+        "status": "SHIPPED",
+        "secured_date": None,
+        "planned_dispatch_date": None,
+        "actual_dispatch_date": date(2026, 6, 28),
+        "expected_delivery_date": None,
     }
     values.update(overrides)
     return OrderListItem(**values)
@@ -183,14 +183,14 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         },
         "orderedAt": "2026-06-30T23:31:48Z",
         "promisedDeliveryAt": "2026-07-03T23:59:59Z",
-        "status": "OPEN",
-        "securedDate": "2026-06-29",
-        "plannedDispatchDate": "2026-06-30",
-        "actualDispatchDate": None,
-        "expectedDeliveryDate": "2026-07-02",
+        "status": "SHIPPED",
+        "securedDate": None,
+        "plannedDispatchDate": None,
+        "actualDispatchDate": "2026-06-28",
+        "expectedDeliveryDate": None,
     }
     # 출고 날짜는 값이 없어도 키를 빼지 않고 null 로 준다 (응답 규칙 4절). 주문 상세 lines 는 보류라 없다
-    assert body["items"][0]["actualDispatchDate"] is None
+    assert body["items"][0]["securedDate"] is None
     assert "lines" not in body["items"][0]
     assert body["items"][1]["status"] == "DELIVERED"
 

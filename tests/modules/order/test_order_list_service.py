@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -42,10 +42,7 @@ def _row(**overrides) -> OrderListRow:
         "ordered_at": datetime(2026, 6, 30, 23, 31, 48, tzinfo=UTC),
         "promised_delivery_at": datetime(2026, 7, 3, 23, 59, 59, tzinfo=UTC),
         "status": "OPEN",
-        "secured_date": None,
-        "planned_dispatch_date": None,
         "actual_dispatch_date": None,
-        "expected_delivery_date": None,
         "warehouse_id": uuid.uuid7(),
         "warehouse_code": "WH-EAST",
         "region_code": "EAST",
@@ -143,8 +140,25 @@ async def test_같은_시각_또는_한쪽만_있는_기간은_허용한다():
     assert to_only.ordered_from is None
 
 
-async def test_행을_OrderListItem_으로_바꾸고_창고_요약과_출고_날짜를_그대로_옮긴다():
-    rows = [_row(order_id=ORDER_A), _row(order_id=ORDER_B, order_code="B")]
+@pytest.mark.parametrize("query", [None, "", "   "])
+async def test_검색어가_비어_있으면_없는_것으로_본다(query):
+    service, repo = _service(rows=[])
+
+    await service.get_page(TENANT, query=query)
+
+    assert repo.calls[0][2].query is None
+
+
+async def test_행을_OrderListItem_으로_바꾸고_창고_요약과_출고_날짜를_옮긴다():
+    rows = [
+        _row(order_id=ORDER_A),
+        _row(
+            order_id=ORDER_B,
+            order_code="B",
+            status="SHIPPED",
+            actual_dispatch_date=date(2026, 6, 28),
+        ),
+    ]
     service, _ = _service(rows=rows, total_count=2)
 
     result = await service.get_page(TENANT)
@@ -156,6 +170,11 @@ async def test_행을_OrderListItem_으로_바꾸고_창고_요약과_출고_날
         "WH-EAST",
         "EAST",
     )
-    assert item_a.secured_date is None and item_a.expected_delivery_date is None
-    assert item_b.order_code == "B"
+    assert item_a.actual_dispatch_date is None
+    assert (item_b.order_code, item_b.actual_dispatch_date) == ("B", date(2026, 6, 28))
+    # 배정 재생이 필요한 세 값은 아직 계산하지 않아 항상 null 이다 (D8, 3절)
+    for item in (item_a, item_b):
+        assert item.secured_date is None
+        assert item.planned_dispatch_date is None
+        assert item.expected_delivery_date is None
     assert result.total_count == 2

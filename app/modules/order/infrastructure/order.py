@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped
@@ -8,7 +8,7 @@ from app.core.orm import Base, uuid_pk
 
 
 class Order(Base):
-    """판매 채널 주문. 출고 관련 날짜 4개는 서버 마이그레이션 0005_orders 가 더한 열이다 (D8, ERP 원천에서 받음)."""
+    """판매 채널 주문"""
 
     __tablename__ = "orders"
     __table_args__ = (
@@ -43,7 +43,3 @@ class Order(Base):
     promised_delivery_at: Mapped[datetime]
     status: Mapped[str]
     data_sync_run_id: Mapped[uuid.UUID]
-    secured_date: Mapped[date | None]
-    planned_dispatch_date: Mapped[date | None]
-    actual_dispatch_date: Mapped[date | None]
-    expected_delivery_date: Mapped[date | None]

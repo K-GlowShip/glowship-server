@@ -21,14 +21,14 @@ sequenceDiagram
     S->>S: get_tenant_context: 쿠키 검증, 토큰의 company_id 확인 (없으면 403)
     S->>DB: set_config('app.user_id', 사용자) · set_config('app.company_id', 고객사)
     S->>S: from > to 확인 (422)
-    S->>DB: orders ⋈ warehouses 한 페이지 (SQL 1회)
+    S->>DB: orders ⋈ warehouses 한 페이지 + 그 페이지의 실제 출고일 역산 (SQL 1회)
     S->>DB: 같은 필터의 건수 (SQL 1회)
     S-->>W: 200 {items, page, size, totalCount, totalPages}
 ```
 
 - 고객사 범위는 **토큰의 `company_id`** 입니다. OWNER·ADMIN은 소속 고객사가 없어 403입니다.
 - `orders`·`order_lines`·`warehouses`·`skus`는 고객사 범위 테이블이라 RLS 컨텍스트를 먼저 설정합니다. 로컬 개발 DB는 슈퍼유저라 RLS를 우회하므로 SQL마다 `company_id` 조건을 직접 겁니다(ERD 설명 4.6).
-- 한 페이지에 SQL은 2회(목록·건수)입니다.
+- 한 페이지에 SQL은 2회(목록·건수)입니다. 실제 출고일 역산(3절)은 목록 문장 안에서 잘라낸 페이지에 대해서만 합니다.
 
 ## 2. 조회 API
 
@@ -98,7 +98,10 @@ HTTP/1.1 200 OK
 | `warehouse` | 출고 창고 요약 객체(응답 규칙 5.2) |
 | `orderedAt`, `promisedDeliveryAt` | 주문 일시, 약속 배송 완료 시각(UTC, `Z`) |
 | `status` | 주문 상태 6종. **`OPEN`에는 재고 미확보 주문과 확보 후 출고 대기 주문이 함께 있습니다**(명세 4.3 주의) |
-| `securedDate`, `plannedDispatchDate`, `actualDispatchDate`, `expectedDeliveryDate` | 재고 확보일·출고 예정일·실제 출고일·배송 예정일(ERP 원천, `YYYY-MM-DD`). 수집이 채우기 전에는 모두 `null`(3절) |
+| `actualDispatchDate` | 실제 출고일(UTC 날짜, `YYYY-MM-DD`). 수집 변경 기록으로 역산한 값이며 출고 전이면 `null`(3절) |
+| `securedDate`, `plannedDispatchDate`, `expectedDeliveryDate` | 재고 확보일·출고 예정일·배송 예정일. **아직 계산하지 않아 항상 `null`**(3절) |
+
+출고한 주문의 예: 로컬 DB `A-ORD-20260627-0213`(`DELIVERED`, 주문 6/27 23:35Z)은 상품 줄의 첫 변경이 6/29 00:02Z 수집에 기록되어 `actualDispatchDate`가 `"2026-06-28"`입니다.
 
 ### 프론트의 해석
 
@@ -126,12 +129,20 @@ HTTP/1.1 200 OK
 
 ## 3. 출고 관련 날짜 4개 (D8)
 
-`securedDate`·`plannedDispatchDate`·`actualDispatchDate`·`expectedDeliveryDate`는 **ERP 원천에서 받는 값**으로 정했습니다(백엔드 결정 2026-11-03). 서버는 저장된 열을 그대로 내립니다.
+명세 1절 D8은 아직 "정할 것"이고, 정해지기 전까지는 **1절 제안이 기준**입니다: 값은 저장된 열이 아니라 `data_change_records`와 `inventory_daily.reserved`로 **서비스가 계산**합니다(명세 4.3 저장 위치). 규칙의 출처는 공유 묶음의 참조 엔진 `00_필수_최신DB_전체재적재/04_적재검증도구/glowship_engine/`입니다.
 
-- v6.2 DDL 의 `orders`에는 이 열이 없어서 서버 마이그레이션 `0005_orders`(`migrations/versions/0005_orders_add_dispatch_date_columns.py`)가 `date` NULL 허용 열 4개를 더합니다. 열이 없을 때만 추가하므로 v6.2 DDL 로 적재한 DB 에서도 `make db-migrate`로 적용합니다.
-- 리비전 ID 가 `0005`가 아니라 `0005_orders`인 이유: ERD 설명 5절에서 `0005`(분석 열)·`0006`(`run_code`)은 개발자 3 몫으로 예약되어 있습니다. 둘 다 `0004`를 잇는 가지가 되므로 뒤에 병합되는 쪽이 `alembic merge`로 head 를 하나로 합칩니다.
-- 명세 1절 D8 은 `data_change_records`와 `inventory_daily.reserved`로 **역산**하는 방식을 제안했지만(0절 "아직 정할 것"), 그 참조 구현(엔진 `store.py`·`snapshot.py`·`common.py`)이 공유 묶음에 없고, 이 날짜들은 ERP 가 가진 사실 값이라 역산하지 않기로 했습니다. ERP 연동 항목 추가와 수집 적재(GLOW-13)는 별도 작업입니다.
-- **수집이 채우기 전에는 네 값이 모두 `null`**입니다. 명세 4.3 주의 문구("`securedDate` 유무로 재고 확보 여부를 구분")에 따라 화면이 `null`을 "재고 미확보"로 읽으면 지금은 모든 `OPEN` 주문이 미확보로 보이므로, 프론트는 수집 반영 전까지 이 4개 열을 숨기거나 "미제공"으로 표시해야 합니다.
+| 필드 | 지금 | 규칙 |
+| --- | --- | --- |
+| `actualDispatchDate` | **계산함** | 참조 엔진 `store.py` 113~122행: 주문의 상품 줄(`ORDER_LINE`)에 `UPDATE`가 처음 기록된 수집(`data_sync_runs.started_at`)의 UTC 날짜 − 1일. `UPDATE`가 없으면(출고 전) `null` |
+| `securedDate` | `null` | 참조 엔진 `snapshot.py` `ReplayReservationSource`: 전날 마감 재고(`inventory_daily`)와 그날 `OPEN` 주문으로 배정 하루를 다시 돌려 확보 주문을 구함. 배정 알고리즘(`AC.allocate_day`) 포팅이 필요 |
+| `plannedDispatchDate` | `null` | 확보일 다음 날(엔진 `s1_check.py`: `secured_date = D−1`인 주문의 출고일 = `D`). `securedDate`에 의존 |
+| `expectedDeliveryDate` | `null` | 참조 엔진 `core.py` `delivery_date`: 확보일 + 리드타임(`oh_dest` + `cd_same`). `securedDate`에 의존 |
+
+- `actualDispatchDate` 역산은 목록 SQL 안에서 잘라낸 **한 페이지의 주문에 대해서만** 합니다. `data_change_records`에 `entity_ref` 색인이 없어 전체 주문에 조인하면 매번 전체 스캔이 되기 때문입니다. 로컬 DB(변경 기록 약 83만 건, 그중 `ORDER_LINE UPDATE` 약 8만 건) 실측으로 한 페이지 약 30ms입니다.
+- 로컬 DB에서는 `SHIPPED` 전부와 2026년에 수집된 `DELIVERED`(약 5.3만 건)에 값이 있고, `OPEN`·`CANCELLED`와 2025년 이전 적재분은 `null`입니다.
+- 나머지 세 값은 SQL 한 번으로 나오지 않고 배정 시뮬레이션 포팅이 필요해 **이 API 범위를 넘습니다**. 별도 작업으로 다루며, 그때까지 세 키는 명세 모양대로 두되 항상 `null`입니다(6절).
+- 명세 4.3 주의 문구("`securedDate` 유무로 재고 확보 여부를 구분")는 지금 적용할 수 없습니다. `null`을 "재고 미확보"로 읽으면 모든 `OPEN` 주문(로컬 277건)이 미확보로 보이므로, 프론트는 `securedDate`가 채워지기 전까지 확보 여부 구분을 표시하지 않아야 합니다.
+- 서버 DB 스키마는 바꾸지 않습니다(`orders`에 열을 더하지 않음). 처음 올렸던 마이그레이션 `0005_orders`(열 4개 추가, ERP 원천 수신 전제)는 명세 기준선과 달라 PR 리뷰에서 뺐습니다.
 
 행별 검증 상태·"오류만 보기"는 없습니다. 검증 오류로 거부된 주문은 `orders`에 적재되지 않아 행에 붙일 수 없습니다(상품 탭과 다른 점). 오류는 탭 배지와 `GET /validation-issues?domain=ORDER`가 담당합니다.
 
@@ -152,14 +163,15 @@ HTTP/1.1 200 OK
 | 파일 | 내용 |
 | --- | --- |
 | `test_order_api.py` | 401·403, 형식 오류 9종 422, camelCase 응답 모양, 기본값·파라미터 전달, RLS 컨텍스트 |
-| `test_order_list_service.py` | 다른 시간대 → UTC, `from > to` 422, 검색어 공백, 행 변환 |
-| `test_order_repository.py` | 가짜 세션으로 SQL 문장·파라미터·행 변환 |
-| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 주문 번호·SKU 코드·상품명 검색 |
+| `test_order_list_service.py` | 다른 시간대 → UTC, `from > to` 422, 검색어 공백, 행 변환(역산한 출고일 전달, 나머지 세 값 `null`) |
+| `test_order_repository.py` | 가짜 세션으로 SQL 문장·파라미터·행 변환, 출고일 역산 CTE 가 페이지에만 조인하는지 |
+| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 출고일 역산 값을 독립 SQL 과 대조, 주문 번호·SKU 코드·상품명 검색 |
 
 ## 6. 아직 없는 것
 
 - 주문 상세 `lines[]`(명세 4.3: `lineNo`, SKU 요약, `orderedQuantity`, `shippedQuantity`, `lineStatus`). 화면에서 주문을 펼쳐 상품을 보는 기능을 보류해(2026-11-03) 응답에서 뺐습니다. 다시 넣을 때는 페이지의 주문 ID 배열로 `order_lines ⋈ skus`를 한 번에 읽어 주문별로 묶습니다(이전 구현 커밋 `1f8c9fc` 참고)
-- 출고 날짜 4개의 값(3절): ERP 연동 항목 추가와 수집 적재(GLOW-13) 뒤에 채워짐. 그때까지 `null`
+- `securedDate`·`plannedDispatchDate`·`expectedDeliveryDate`(3절): 참조 엔진의 배정 재생·리드타임 계산을 포팅해야 함. 그때까지 `null`
+- `data_change_records(entity_ref)` 색인 여부: 출고일 역산을 페이지 밖(예: 필터)으로 넓히려면 필요
 - `GET /validation-issues`(하단 오류 배너)
 - 명세 2절의 주문 관련 표시명 확정
 - 색인 추가 여부(4절)
@@ -174,6 +186,6 @@ HTTP/1.1 200 OK
 | 예외 | `app/modules/order/application/exception/order_exceptions.py` |
 | 리포지토리 | `app/modules/order/infrastructure/repository/order_repository.py` |
 | 코드값 | `app/modules/order/infrastructure/order_enums.py` |
-| ORM·마이그레이션 | `app/modules/order/infrastructure/order.py`, `migrations/versions/0005_orders_add_dispatch_date_columns.py` |
+| ORM | `app/modules/order/infrastructure/order.py` |
 | 의존성 | `app/modules/order/dependencies.py` |
 | 공통 | `app/core/pagination.py`, `app/core/summary_schemas.py`, `app/core/security/tenant.py` |

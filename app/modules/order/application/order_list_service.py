@@ -19,8 +19,10 @@ from app.modules.order.infrastructure.repository.order_repository import (
       - 주문 기간(from·to)은 ISO 8601 UTC 시각이고 범위는 [from, to) 다 (to 미포함, 명세 v6.2 C18·C20).
         시간대가 있는 값만 들어온다(시간대 없는 값·날짜만은 라우터가 422 로 거부). 다른 시간대 값은 UTC 로 맞춘다.
       - 주문 상세 줄(lines[])은 보류했다(2026-11-03). 명세 4.3 에는 있으나 화면 확정 뒤 다시 넣는다.
-      - 출고 관련 날짜 4개(securedDate 등)는 orders 열(마이그레이션 0005_orders)을 그대로 내린다 (D8, ERP 원천에서 받음).
-        수집이 채우기 전에는 null 이다.
+      - 출고 관련 날짜 4개(명세 D8)는 저장된 열이 아니라 서비스가 계산한다 (명세 4.3 저장 위치).
+        actualDispatchDate 는 리포지토리가 data_change_records 로 역산한다 (첫 ORDER_LINE UPDATE 수집일 − 1, 참조 엔진 규칙).
+        securedDate·plannedDispatchDate·expectedDeliveryDate 는 참조 엔진의 배정 재생(snapshot.py)과 리드타임 계산이 필요해
+        아직 계산하지 않고 null 로 내린다 (별도 작업). 응답 모양(키 4개)은 명세대로 유지한다.
 """
 
 
@@ -105,10 +107,11 @@ class OrderListService:
             ordered_at=row.ordered_at,
             promised_delivery_at=row.promised_delivery_at,
             status=row.status,
-            secured_date=row.secured_date,
-            planned_dispatch_date=row.planned_dispatch_date,
+            # 배정 재생이 필요한 세 값은 아직 계산하지 않는다 (null). actualDispatchDate 만 역산 값이다.
+            secured_date=None,
+            planned_dispatch_date=None,
             actual_dispatch_date=row.actual_dispatch_date,
-            expected_delivery_date=row.expected_delivery_date,
+            expected_delivery_date=None,
         )
 
 

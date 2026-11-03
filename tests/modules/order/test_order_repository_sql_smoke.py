@@ -64,12 +64,6 @@ async def test_목록은_주문일시_최신순이고_건수는_필터와_맞는
     assert keys == sorted(keys, key=lambda key: (-key[0].timestamp(), key[1]))
     assert page.total_count >= len(page.rows)
     assert beyond.rows == [] and beyond.total_count == page.total_count
-    for row in page.rows:
-        assert (
-            row.actual_dispatch_date is None
-            or row.secured_date is None
-            or (row.secured_date <= row.actual_dispatch_date)
-        )
 
     if not page.rows:
         return
@@ -93,6 +87,42 @@ async def test_목록은_주문일시_최신순이고_건수는_필터와_맞는
         == (sample.status, sample.warehouse_id, sample.sales_channel)
         for row in narrowed.rows
     )
+
+
+async def test_실제_출고일은_첫_ORDER_LINE_UPDATE_수집일_빼기_1과_같다(db_session):
+    """D8 역산 결과를 독립된 SQL(주문별 전체 집계)과 대조한다. 출고 전(변경 기록 없음) 주문은 null 이어야 한다."""
+    repo = OrderRepository(db_session)
+    company_id = await _sample_company(db_session)
+    page = await repo.find_page(company_id, OrderFilter(), offset=0, limit=100)
+    if not page.rows:
+        return
+
+    expected = {
+        row.order_id: row.actual_dispatch_date
+        for row in (
+            await db_session.execute(
+                text(
+                    "SELECT l.order_id,"
+                    " MIN((r.started_at AT TIME ZONE 'UTC')::date) - 1 AS actual_dispatch_date"
+                    " FROM order_lines l"
+                    " JOIN data_change_records d ON d.entity_type = 'ORDER_LINE'"
+                    " AND d.change_type = 'UPDATE' AND d.entity_ref = l.order_line_id"
+                    " JOIN data_sync_runs r ON r.data_sync_run_id = d.data_sync_run_id"
+                    " WHERE l.company_id = :company_id AND l.order_id = ANY(:order_ids)"
+                    " GROUP BY l.order_id"
+                ),
+                {
+                    "company_id": company_id,
+                    "order_ids": [row.order_id for row in page.rows],
+                },
+            )
+        ).all()
+    }
+
+    for row in page.rows:
+        assert row.actual_dispatch_date == expected.get(row.order_id)
+        if row.actual_dispatch_date is not None:
+            assert row.actual_dispatch_date >= row.ordered_at.date() - timedelta(days=1)
 
 
 async def test_검색어는_주문_번호와_SKU_코드와_상품명을_찾는다(db_session):

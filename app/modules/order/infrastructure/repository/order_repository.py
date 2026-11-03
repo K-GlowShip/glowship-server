@@ -13,8 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 검색어는 주문 번호 또는 주문 상품의 SKU 코드·상품명 부분 일치(대소문자 무시)다. LIKE 특수문자는 글자 그대로 찾는다.
       - 정렬은 ordered_at 최신순, 같으면 order_id (명세 4.3, 응답 본문 규칙 6.2).
       - 검증 오류로 거부된 주문은 orders 에 없다. 오류는 GET /validation-issues 몫이라 여기서 다루지 않는다.
-      - 출고 관련 날짜 4개(secured_date 등)는 마이그레이션 0005_orders 가 더한 열을 그대로 읽는다 (D8, ERP 원천에서 받음).
-        수집이 채우기 전에는 NULL 이다.
+      - 실제 출고일(actual_dispatch_date)은 저장된 열이 아니라 data_change_records 로 역산한다 (명세 D8 제안, 4.3 저장 위치).
+        규칙은 참조 엔진 glowship_engine/store.py 113~122행과 같다: 주문의 상품 줄(ORDER_LINE)에 UPDATE 가 처음
+        기록된 수집(data_sync_runs.started_at)의 UTC 날짜 − 1일. UPDATE 가 없으면(출고 전) NULL 이다.
+        data_change_records 에 entity_ref 색인이 없어 한 페이지의 주문에만 조인한다 (한 페이지 약 30ms, 로컬 실측).
+      - 재고 확보일·출고 예정일·배송 예정일은 엔진의 배정 재생(snapshot.py)이 필요해 여기서 계산하지 않는다 (서비스가 null).
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
@@ -26,7 +29,6 @@ _FILTERED = """
     WITH filtered AS (
         SELECT o.order_id, o.order_code, o.sales_channel, o.customer_region,
                o.ordered_at, o.promised_delivery_at, o.status,
-               o.secured_date, o.planned_dispatch_date, o.actual_dispatch_date, o.expected_delivery_date,
                w.warehouse_id, w.warehouse_code, w.region_code
           FROM orders o
           JOIN warehouses w ON w.company_id = o.company_id AND w.warehouse_id = o.warehouse_id
@@ -57,16 +59,35 @@ _FILTER_PARAMS = (
     bindparam("pattern", type_=Text()),
 )
 
+# 한 페이지를 먼저 자른 뒤 그 주문들에 대해서만 실제 출고일을 역산한다 (D8: 첫 ORDER_LINE UPDATE 수집일 − 1).
 _LIST_PAGE = text(
     _FILTERED
     + """
-    SELECT order_id, order_code, sales_channel, customer_region,
-           ordered_at, promised_delivery_at, status,
-           secured_date, planned_dispatch_date, actual_dispatch_date, expected_delivery_date,
-           warehouse_id, warehouse_code, region_code
-      FROM filtered
-     ORDER BY ordered_at DESC, order_id
-    OFFSET :offset LIMIT :limit
+    , page AS (
+        SELECT order_id, order_code, sales_channel, customer_region,
+               ordered_at, promised_delivery_at, status,
+               warehouse_id, warehouse_code, region_code
+          FROM filtered
+         ORDER BY ordered_at DESC, order_id
+        OFFSET :offset LIMIT :limit
+    ), dispatch AS (
+        SELECT l.order_id,
+               MIN((r.started_at AT TIME ZONE 'UTC')::date) - 1 AS actual_dispatch_date
+          FROM page p
+          JOIN order_lines l ON l.company_id = :company_id AND l.order_id = p.order_id
+          JOIN data_change_records d
+            ON d.company_id = :company_id AND d.entity_type = 'ORDER_LINE'
+           AND d.change_type = 'UPDATE' AND d.entity_ref = l.order_line_id
+          JOIN data_sync_runs r ON r.data_sync_run_id = d.data_sync_run_id
+         GROUP BY l.order_id
+    )
+    SELECT p.order_id, p.order_code, p.sales_channel, p.customer_region,
+           p.ordered_at, p.promised_delivery_at, p.status,
+           dp.actual_dispatch_date,
+           p.warehouse_id, p.warehouse_code, p.region_code
+      FROM page p
+      LEFT JOIN dispatch dp ON dp.order_id = p.order_id
+     ORDER BY p.ordered_at DESC, p.order_id
     """
 ).bindparams(
     *_FILTER_PARAMS,
@@ -94,7 +115,7 @@ class OrderFilter:
 
 @dataclass(frozen=True)
 class OrderListRow:
-    """주문 한 건과 출고 창고 요약"""
+    """주문 한 건과 출고 창고 요약, 역산한 실제 출고일"""
 
     order_id: uuid.UUID
     order_code: str
@@ -103,10 +124,7 @@ class OrderListRow:
     ordered_at: datetime
     promised_delivery_at: datetime
     status: str
-    secured_date: date | None
-    planned_dispatch_date: date | None
     actual_dispatch_date: date | None
-    expected_delivery_date: date | None
     warehouse_id: uuid.UUID
     warehouse_code: str
     region_code: str
