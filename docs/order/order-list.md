@@ -140,9 +140,10 @@ HTTP/1.1 200 OK
 
 명세 4.3의 `securedDate`·`plannedDispatchDate`·`actualDispatchDate`·`expectedDeliveryDate`는 **응답에 없습니다**(키 자체를 넣지 않음).
 
-- 명세 0절 기준 D8은 "아직 정할 것"입니다. v6.2 DDL에 저장 열이 없고, 데이터 묶음의 보조 CSV(`_h1_auxiliary/derived_order_dispatch_dates_2026.csv`)는 최종 기준선 등록부 1.1에서 "적재 대상 아님"입니다. 서버 모델 `derived_order_dispatch_dates`는 v5 잔재라 읽지 않습니다(ERD 설명 5절).
-- 명세 제안대로 `data_change_records`(ORDER_LINE UPDATE 첫 수집일 − 1)와 `inventory_daily.reserved`로 계산하려면 변경 기록 82만 건을 주문마다 대조해야 해, 결정 뒤 별도 티켓으로 만듭니다. 그때 `OrderListService._build_item`에서 행마다 붙입니다.
-- `null`로 내리면 화면이 "재고 미확보"로 오해하므로 키를 넣지 않았습니다. 화면은 당분간 `status`만 표시합니다.
+- 이 4개는 DB에 저장된 열이 아닙니다. ERP 주문 원천이 주는 항목은 `orders`·`order_lines`의 열(주문 번호·채널·권역·창고·주문 일시·약속 배송일·상태, 상품별 주문·출고 수량·상태)뿐이고, 출고가 일어난 사실은 출고 수량 변경(`data_change_records` ORDER_LINE UPDATE)으로만 들어옵니다.
+- 명세 D8(1절 61행, 0절 "아직 정할 것")은 변경 기록과 `inventory_daily.reserved`로 서버가 **역산**하는 방식을 제안했지만, 그 규칙의 참조 구현(엔진 `store.py`·`snapshot.py`·`common.py`)이 공유 묶음에 없습니다.
+- **백엔드 결정(2026-11-03): 역산하지 않고 원천(ERP)에서 받습니다.** ERP 연동 항목과 `orders` 열에 이 4개 날짜를 추가하는 ERD·수집 계약 변경을 설계 담당·데이터 팀에 요청합니다. 열이 생기면 이 API 는 저장 값을 그대로 읽어 필드를 추가합니다(응답 규칙 7절, 필드 추가는 합의 불필요).
+- 그때까지 `null`로 내리지 않는 이유: 명세 4.3 주의 문구가 "`securedDate` 유무로 재고 확보 여부를 구분한다"고 정해, `null`이 "재고 미확보"로 읽히기 때문입니다. 화면은 당분간 `status`만 표시하고, 같은 `OPEN`이라도 재고 확보 여부는 구분하지 못합니다.
 
 행별 검증 상태·"오류만 보기"도 없습니다. 검증 오류로 거부된 주문은 `orders`에 적재되지 않아 행에 붙일 수 없습니다(상품 탭과 다른 점). 오류는 탭 배지와 `GET /validation-issues?domain=ORDER`가 담당합니다.
 
@@ -170,7 +171,7 @@ HTTP/1.1 200 OK
 
 ## 6. 아직 없는 것
 
-- D8 출고 파생 필드(3절)
+- D8 출고 날짜 4개(3절): ERD·수집 계약에 원천 열이 추가된 뒤 별도 티켓
 - `GET /validation-issues`(하단 오류 배너)
 - 명세 2절의 주문 관련 표시명 확정
 - 색인 추가 여부(4절)
