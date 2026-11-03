@@ -8,6 +8,7 @@
 | GET | `/delay-events` | 지연 목록·탭별 건수. 필터 `status`(`ALL`·`READY_FOR_REVIEW`·`ANALYZING`·`ON_HOLD`·`NEEDS_REANALYSIS`), `warehouseId`, `from`·`to`(UTC 날짜, `to` 포함), `q`, `hasFinalDecision`, `page`·`size`. 응답 `items`·`page`·`size`·`totalCount`·`totalPages`와 `counts`(키 `all`·`readyForReview`·`analyzing`·`onHold`·`needsReanalysis`, 탭·`hasFinalDecision` 필터 제외). 정렬은 `detectedAt` 최신순, 같으면 `delayEventId` | GLOW-16 | 11/02 |
 | GET | `/delay-events/{delayEventId}` | 지연 상세·분석 실행 버전 이력(`runs[]`, 최신 버전 먼저). 다른 고객사 건은 404 | GLOW-16 | 11/02 |
 | GET | `/skus` | 상품(SKU) 목록. 필터 `q`(상품명·ERP 코드), `onlyErrors`, `page`·`size`. 행마다 `hs10`, 원천별 외부 코드 `externalCodes[]`(INVENTORY·SHIPMENT 항목 고정, 매핑 없으면 `externalCode: null`·`UNMAPPED`)와 `validationStatus`(`OK`·`CODE_MISSING`·`ISSUE_OPEN`). 정렬은 `skuCode`, 같으면 `skuId`. 고객사 사용자 전용. [문서](master-data/sku-list.md) | GLOW-104 | 2026-11-03 |
+| GET | `/inventory` | 재고 목록(한 일자의 창고·SKU별 재고). 필터 `date`(`YYYY-MM-DD`, 생략 시 고객사의 최신 적재 일자), `warehouseId`, `skuId`, `q`(SKU 코드·상품명), `page`·`size`. 응답 최상위에 기준 일자 `inventoryDate`(재고 없으면 `null`). 행마다 `warehouse`·`sku` 요약과 `onHandQuantity`(= `reservedQuantity` + `availableQuantity`), `outboundQuantity`, `dataSyncRunId`. 정렬은 창고 코드 → SKU 코드, 같으면 `skuId`. 고객사 사용자 전용. [문서](inventory/inventory-list.md) | GLOW-111 | 2026-11-03 |
 
 **목록 API 공통:** 요청 `page`(1부터, 기본 1)·`size`(기본 20, 최대 100). 응답 `items`·`page`·`size`·`totalCount`·`totalPages` (`app/core/pagination.py`)
 
