@@ -1,6 +1,6 @@
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import date, datetime
 
 from sqlalchemy import bindparam, func, insert, select, tuple_, update
@@ -66,6 +66,11 @@ from app.modules.shipment.infrastructure.shipment_schedule_snapshot import (
 
 # 원천 코드를 external_entity_mappings 로 바꾸는 원천 유형. 나머지(ERP 상품·주문)는 내부 코드를 그대로 씁니다.
 MAPPED_SOURCE_DOMAINS = frozenset({SourceDomain.INVENTORY, SourceDomain.SHIPMENT})
+
+# 업무 키 IN 조회는 키를 나눠 여러 번 실행합니다. asyncpg 는 쿼리 하나에 바인딩 값이 32,767개까지라,
+# 초기 적재(주문 17만 건·재고 6만 행) 같은 큰 수집도 한 트랜잭션 안에서 나눠 읽습니다.
+# 재고 키는 (날짜, 창고, SKU)라 키 하나에 값 3개이므로 5,000키 = 15,000값입니다.
+KEYS_PER_QUERY = 5_000
 
 _SKU_COLUMNS = ("sku_code", *SkuRecord.FIELDS)
 _WAREHOUSE_COLUMNS = ("warehouse_code", *WarehouseRecord.FIELDS)
@@ -163,10 +168,11 @@ class IngestRepository:
     async def load_skus(
         self, company_id: uuid.UUID, sku_codes: Sequence[str]
     ) -> dict[str, Existing[SkuRecord]]:
-        rows = await self.db.execute(
-            select(Sku.sku_id, *_columns(Sku, _SKU_COLUMNS)).where(
-                Sku.company_id == company_id, Sku.sku_code.in_(sku_codes)
-            )
+        rows = await self._rows_in_chunks(
+            sku_codes,
+            lambda chunk: select(Sku.sku_id, *_columns(Sku, _SKU_COLUMNS)).where(
+                Sku.company_id == company_id, Sku.sku_code.in_(chunk)
+            ),
         )
         return {
             row.sku_code: Existing(row.sku_id, _record(SkuRecord, row)) for row in rows
@@ -175,13 +181,14 @@ class IngestRepository:
     async def load_warehouses(
         self, company_id: uuid.UUID, warehouse_codes: Sequence[str]
     ) -> dict[str, Existing[WarehouseRecord]]:
-        rows = await self.db.execute(
-            select(
+        rows = await self._rows_in_chunks(
+            warehouse_codes,
+            lambda chunk: select(
                 Warehouse.warehouse_id, *_columns(Warehouse, _WAREHOUSE_COLUMNS)
             ).where(
                 Warehouse.company_id == company_id,
-                Warehouse.warehouse_code.in_(warehouse_codes),
-            )
+                Warehouse.warehouse_code.in_(chunk),
+            ),
         )
         return {
             row.warehouse_code: Existing(
@@ -193,27 +200,29 @@ class IngestRepository:
     async def load_orders(
         self, company_id: uuid.UUID, order_codes: Sequence[str]
     ) -> dict[str, ExistingOrder]:
-        headers = (
-            await self.db.execute(
-                select(Order.order_id, *_columns(Order, _ORDER_COLUMNS)).where(
-                    Order.company_id == company_id, Order.order_code.in_(order_codes)
-                )
-            )
-        ).all()
+        headers = await self._rows_in_chunks(
+            order_codes,
+            lambda chunk: select(
+                Order.order_id, *_columns(Order, _ORDER_COLUMNS)
+            ).where(Order.company_id == company_id, Order.order_code.in_(chunk)),
+        )
         if not headers:
             return {}
-        lines = await self.db.execute(
-            select(
-                OrderLine.order_id,
-                OrderLine.order_line_id,
-                OrderLine.line_no,
-                *_columns(OrderLine, OrderLineRecord.FIELDS),
-            )
-            .where(
-                OrderLine.company_id == company_id,
-                OrderLine.order_id.in_([h.order_id for h in headers]),
-            )
-            .order_by(OrderLine.order_id, OrderLine.line_no)
+        lines = await self._rows_in_chunks(
+            [h.order_id for h in headers],
+            lambda chunk: (
+                select(
+                    OrderLine.order_id,
+                    OrderLine.order_line_id,
+                    OrderLine.line_no,
+                    *_columns(OrderLine, OrderLineRecord.FIELDS),
+                )
+                .where(
+                    OrderLine.company_id == company_id,
+                    OrderLine.order_id.in_(chunk),
+                )
+                .order_by(OrderLine.order_id, OrderLine.line_no)
+            ),
         )
         by_order: defaultdict[uuid.UUID, list] = defaultdict(list)
         for line in lines:
@@ -238,30 +247,32 @@ class IngestRepository:
     async def load_shipments(
         self, company_id: uuid.UUID, shipment_codes: Sequence[str]
     ) -> dict[str, ExistingShipment]:
-        headers = (
-            await self.db.execute(
-                select(
-                    Shipment.shipment_id, *_columns(Shipment, _SHIPMENT_COLUMNS)
-                ).where(
-                    Shipment.company_id == company_id,
-                    Shipment.shipment_code.in_(shipment_codes),
-                )
-            )
-        ).all()
+        headers = await self._rows_in_chunks(
+            shipment_codes,
+            lambda chunk: select(
+                Shipment.shipment_id, *_columns(Shipment, _SHIPMENT_COLUMNS)
+            ).where(
+                Shipment.company_id == company_id,
+                Shipment.shipment_code.in_(chunk),
+            ),
+        )
         if not headers:
             return {}
-        lines = await self.db.execute(
-            select(
-                ShipmentLine.shipment_id,
-                ShipmentLine.shipment_line_id,
-                ShipmentLine.line_no,
-                *_columns(ShipmentLine, ShipmentLineRecord.FIELDS),
-            )
-            .where(
-                ShipmentLine.company_id == company_id,
-                ShipmentLine.shipment_id.in_([h.shipment_id for h in headers]),
-            )
-            .order_by(ShipmentLine.shipment_id, ShipmentLine.line_no)
+        lines = await self._rows_in_chunks(
+            [h.shipment_id for h in headers],
+            lambda chunk: (
+                select(
+                    ShipmentLine.shipment_id,
+                    ShipmentLine.shipment_line_id,
+                    ShipmentLine.line_no,
+                    *_columns(ShipmentLine, ShipmentLineRecord.FIELDS),
+                )
+                .where(
+                    ShipmentLine.company_id == company_id,
+                    ShipmentLine.shipment_id.in_(chunk),
+                )
+                .order_by(ShipmentLine.shipment_id, ShipmentLine.line_no)
+            ),
         )
         by_shipment: defaultdict[uuid.UUID, list] = defaultdict(list)
         for line in lines:
@@ -291,36 +302,37 @@ class IngestRepository:
         keys: Sequence[tuple[date, uuid.UUID, uuid.UUID]],
     ) -> dict[tuple[date, uuid.UUID, uuid.UUID], Existing[InventoryRecord]]:
         """키는 (inventory_date, warehouse_id, sku_id). 표시 코드(창고·SKU 코드)도 함께 읽습니다."""
-        if not keys:
-            return {}
-        rows = await self.db.execute(
-            select(
-                InventoryDaily.inventory_daily_id,
-                InventoryDaily.inventory_date,
-                InventoryDaily.warehouse_id,
-                InventoryDaily.sku_id,
-                *_columns(InventoryDaily, InventoryRecord.FIELDS),
-                Warehouse.warehouse_code,
-                Sku.sku_code,
-            )
-            .join(
-                Warehouse,
-                (Warehouse.company_id == InventoryDaily.company_id)
-                & (Warehouse.warehouse_id == InventoryDaily.warehouse_id),
-            )
-            .join(
-                Sku,
-                (Sku.company_id == InventoryDaily.company_id)
-                & (Sku.sku_id == InventoryDaily.sku_id),
-            )
-            .where(
-                InventoryDaily.company_id == company_id,
-                tuple_(
+        rows = await self._rows_in_chunks(
+            keys,
+            lambda chunk: (
+                select(
+                    InventoryDaily.inventory_daily_id,
                     InventoryDaily.inventory_date,
                     InventoryDaily.warehouse_id,
                     InventoryDaily.sku_id,
-                ).in_(list(keys)),
-            )
+                    *_columns(InventoryDaily, InventoryRecord.FIELDS),
+                    Warehouse.warehouse_code,
+                    Sku.sku_code,
+                )
+                .join(
+                    Warehouse,
+                    (Warehouse.company_id == InventoryDaily.company_id)
+                    & (Warehouse.warehouse_id == InventoryDaily.warehouse_id),
+                )
+                .join(
+                    Sku,
+                    (Sku.company_id == InventoryDaily.company_id)
+                    & (Sku.sku_id == InventoryDaily.sku_id),
+                )
+                .where(
+                    InventoryDaily.company_id == company_id,
+                    tuple_(
+                        InventoryDaily.inventory_date,
+                        InventoryDaily.warehouse_id,
+                        InventoryDaily.sku_id,
+                    ).in_(chunk),
+                )
+            ),
         )
         return {
             (row.inventory_date, row.warehouse_id, row.sku_id): Existing(
@@ -619,6 +631,13 @@ class IngestRepository:
                 statement, [{"b_company_id": company_id, **row} for row in updates]
             )
 
+    async def _rows_in_chunks(self, values: Sequence, build: Callable) -> list:
+        """IN 조건 값을 KEYS_PER_QUERY 개씩 나눠 같은 조회를 여러 번 실행하고 행을 합칩니다."""
+        rows = []
+        for chunk in _chunked(values):
+            rows.extend((await self.db.execute(build(chunk))).all())
+        return rows
+
     async def _touch(
         self,
         model,
@@ -627,15 +646,20 @@ class IngestRepository:
         row_ids: Sequence[uuid.UUID],
         values: dict,
     ) -> None:
-        if not row_ids:
-            return
-        await self.db.execute(
-            update(model)
-            .where(
-                model.company_id == company_id, getattr(model, id_column).in_(row_ids)
+        for chunk in _chunked(row_ids):
+            await self.db.execute(
+                update(model)
+                .where(
+                    model.company_id == company_id, getattr(model, id_column).in_(chunk)
+                )
+                .values(values)
             )
-            .values(values)
-        )
+
+
+def _chunked[T](values: Sequence[T], size: int = KEYS_PER_QUERY) -> Iterator[list[T]]:
+    values = list(values)
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 def _columns(model, names: Sequence[str]) -> list:

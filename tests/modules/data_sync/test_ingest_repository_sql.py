@@ -29,6 +29,7 @@ from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
+from app.modules.order.infrastructure.order import Order
 from app.modules.shipment.infrastructure.shipment_schedule_snapshot import (
     ShipmentScheduleSnapshot,
 )
@@ -527,3 +528,51 @@ async def test_order_code_book_uses_internal_codes(db_write_session):
     assert all(code.sku_code == external for external, code in book.skus.items())
     assert book.leadtime_references == {}
     assert (await repo.load_code_book(uuid.uuid7(), SourceDomain.INVENTORY)).skus == {}
+
+
+# --- 대량 키 (IN 조회 나누기) ---------------------------------------------------------
+
+
+async def test_large_key_lists_are_split_and_still_find_real_rows(db_write_session):
+    """키가 바인딩 한도(약 32,767)를 넘어도 나눠 조회해 실패하지 않고, 경계 뒤의 실제 행도 찾는다"""
+    db = db_write_session
+    repo = IngestRepository(db)
+    company_id = await _company(db)
+    real_orders = list(
+        await db.scalars(
+            text("SELECT order_code FROM orders WHERE company_id = :c LIMIT 3"),
+            {"c": company_id},
+        )
+    )
+    real_key = tuple(
+        (
+            await db.execute(
+                text(
+                    "SELECT inventory_date, warehouse_id, sku_id FROM inventory_daily"
+                    " WHERE company_id = :c LIMIT 1"
+                ),
+                {"c": company_id},
+            )
+        ).one()
+    )
+    fake_codes = [f"NO-SUCH-{i}" for i in range(40_000)]
+    fake_keys = [(real_key[0], uuid.uuid7(), uuid.uuid7()) for _ in range(12_000)]
+
+    orders = await repo.load_orders(company_id, fake_codes + real_orders)
+    inventory = await repo.load_inventory(company_id, fake_keys + [real_key])
+    run_id = await _new_run(db, company_id, "ORDER")
+    real_order_id = orders[real_orders[0]].row_id
+    touched = [uuid.uuid7() for _ in range(40_000)] + [real_order_id]
+    await repo._touch(
+        Order, "order_id", company_id, touched, {"data_sync_run_id": run_id}
+    )
+
+    assert set(orders) == set(real_orders)
+    assert set(inventory) == {real_key}
+    assert (
+        await db.scalar(
+            text("SELECT data_sync_run_id FROM orders WHERE order_id = :o"),
+            {"o": real_order_id},
+        )
+        == run_id
+    )
