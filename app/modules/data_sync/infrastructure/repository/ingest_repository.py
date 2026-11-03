@@ -77,6 +77,7 @@ MAPPED_SOURCE_DOMAINS = frozenset({SourceDomain.INVENTORY, SourceDomain.SHIPMENT
 KEYS_PER_QUERY = 5_000
 ISSUE_SEVERITY = "ERROR"
 ISSUE_OPEN = "OPEN"
+ISSUE_RESOLVED = "RESOLVED"
 
 _SKU_COLUMNS = ("sku_code", *SkuRecord.FIELDS)
 _WAREHOUSE_COLUMNS = ("warehouse_code", *WarehouseRecord.FIELDS)
@@ -530,6 +531,33 @@ class IngestRepository:
         ]
         if rows:
             await self.db.execute(insert(DataValidationIssue), rows)
+
+    async def resolve_validation_issues(
+        self,
+        company_id: uuid.UUID,
+        data_sync_run_id: uuid.UUID,
+        source_domain: SourceDomain,
+        loaded_keys: Sequence[str],
+        resolved_at: datetime,
+    ) -> None:
+        """
+        이번 수집에 정상 적재된 레코드와 (고객사, 원천 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
+          - 이번 수집이 만든 이슈는 바꾸지 않습니다 (같은 키가 이번에 적재되고 중복으로도 거부된 경우 등).
+          - 응답에 없던 레코드의 이슈는 그대로 OPEN 입니다 (빠진 행은 삭제·정정으로 보지 않음).
+          - resolved_at 은 수집 시작 시각입니다 (detected_at 과 같은 규칙).
+        """
+        for chunk in _chunked(sorted(set(loaded_keys))):
+            await self.db.execute(
+                update(DataValidationIssue)
+                .where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.source_entity_type == source_domain.value,
+                    DataValidationIssue.status == ISSUE_OPEN,
+                    DataValidationIssue.data_sync_run_id != data_sync_run_id,
+                    DataValidationIssue.source_record_key.in_(chunk),
+                )
+                .values(status=ISSUE_RESOLVED, resolved_at=resolved_at)
+            )
 
     async def next_applied_seq(self, company_id: uuid.UUID) -> int:
         """고객사의 다음 적용 순번. L1 안에서 불러야 순번이 겹치지 않습니다 (data_sync_runs_uk2 가 최종 방어선)."""

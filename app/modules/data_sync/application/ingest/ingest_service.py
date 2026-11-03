@@ -69,6 +69,7 @@ from app.modules.delay_analysis.application.stale.stale_service import (
       - 선적의 시장 리드타임 기준·계획 3PL 입고일은 새 선적일 때만 정하고, 이미 있는 선적은 저장된 값을 씁니다
         (serviceflow v6.2 1절 "계획 입고일"·7절 결정표 "선적 계획 기준").
       - 거부 사유는 결과에 담아 돌려주고, 같은 트랜잭션에서 검증 이슈(data_validation_issues) OPEN 으로 남깁니다 (GLOW-15).
+        이번 수집에 정상 적재된 레코드와 (원천 유형, 키)가 같은 이전 수집의 OPEN 이슈는 RESOLVED 로 바꿉니다 (해소).
 
     실행 전제 (호출 측 계약)
       - DB 역할: 워커 역할(glowship_v4_worker) 연결에서 실행합니다. 이 서비스는 RLS 컨텍스트에 고객사만 넣고
@@ -104,6 +105,8 @@ class IngestResult:
 class _Applied:
     records: list[ChangeRecordDraft]
     rejections: list[Rejection]
+    # 이번 수집에서 거부되지 않고 적재된 레코드의 키 (거부 키와 같은 형식). 이전 검증 이슈 해소에 씁니다.
+    loaded_keys: list[str]
 
 
 class DataIngestService:
@@ -145,6 +148,9 @@ class DataIngestService:
                 company_id, run_id, source_domain, records, started_at
             )
             rejections = (*parse_rejections, *applied.rejections)
+            await self.repo.resolve_validation_issues(
+                company_id, run_id, source_domain, applied.loaded_keys, started_at
+            )
             await self.repo.insert_validation_issues(
                 company_id, run_id, source_domain, rejections, started_at
             )
@@ -218,7 +224,7 @@ class DataIngestService:
             d for code, r in unique.items() if (d := diff_sku(existing.get(code), r))
         ]
         await self.repo.apply_skus(company_id, [d.row for d in diffs])
-        return _Applied([x for d in diffs for x in d.records], rejections)
+        return _Applied([x for d in diffs for x in d.records], rejections, list(unique))
 
     async def _apply_warehouses(
         self, company_id: uuid.UUID, records: Sequence[SourceWarehouse]
@@ -232,7 +238,7 @@ class DataIngestService:
             if (d := diff_warehouse(existing.get(code), r))
         ]
         await self.repo.apply_warehouses(company_id, [d.row for d in diffs])
-        return _Applied([x for d in diffs for x in d.records], rejections)
+        return _Applied([x for d in diffs for x in d.records], rejections, list(unique))
 
     async def _apply_orders(
         self, company_id: uuid.UUID, run_id: uuid.UUID, records: Sequence[SourceOrder]
@@ -254,7 +260,11 @@ class DataIngestService:
             d for r in resolved if (d := diff_order(existing.get(r.order_code), r))
         ]
         await self.repo.apply_orders(company_id, run_id, diffs)
-        return _Applied([x for d in diffs for x in d.records], rejections)
+        return _Applied(
+            [x for d in diffs for x in d.records],
+            rejections,
+            [r.order_code for r in resolved],
+        )
 
     async def _apply_shipments(
         self,
@@ -289,7 +299,11 @@ class DataIngestService:
             if (d := diff_shipment(existing.get(r.shipment_code), r))
         ]
         await self.repo.apply_shipments(company_id, run_id, observed_at, diffs)
-        return _Applied([x for d in diffs for x in d.records], rejections)
+        return _Applied(
+            [x for d in diffs for x in d.records],
+            rejections,
+            [r.shipment_code for r in resolved],
+        )
 
     async def _apply_inventory(
         self,
@@ -310,7 +324,7 @@ class DataIngestService:
         )
         # 외부 코드 매핑은 N → 1 을 막지 않습니다. 서로 다른 외부 코드가 같은 내부 (날짜, 창고, SKU)로 바뀌면
         # 첫 레코드만 적재하고 나머지는 거부합니다 (그대로 두면 inventory_daily_uk2 위반으로 수집 전체가 실패).
-        resolved, keys, seen = [], [], set()
+        resolved, keys, seen, loaded_keys = [], [], set(), []
         for source in unique.values():
             result = resolve_inventory(source, book)
             if isinstance(result, Rejection):
@@ -331,6 +345,7 @@ class DataIngestService:
             resolved.append(result)
             keys.append(key)
             seen.add(key)
+            loaded_keys.append(inventory_record_key(source, book))
         existing = await self.repo.load_inventory(company_id, keys)
         diffs = [
             d
@@ -338,7 +353,7 @@ class DataIngestService:
             if (d := diff_inventory(existing.get(key), r))
         ]
         await self.repo.apply_inventory(company_id, run_id, [d.row for d in diffs])
-        return _Applied([x for d in diffs for x in d.records], rejections)
+        return _Applied([x for d in diffs for x in d.records], rejections, loaded_keys)
 
 
 def _validated[R](
