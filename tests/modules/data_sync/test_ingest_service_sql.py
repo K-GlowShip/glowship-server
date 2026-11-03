@@ -514,6 +514,44 @@ async def test_later_successful_load_resolves_open_issue(db_write_session):
     ]
 
 
+@pytest.mark.parametrize(
+    ("before_mapping", "error_code"),
+    [
+        ({}, UNKNOWN_SKU),
+        ({"on_hand_quantity": -1, "available_quantity": -1}, NEGATIVE_QUANTITY),
+    ],
+)
+async def test_issue_recorded_before_sku_mapping_resolves_after_mapping(
+    db_write_session, before_mapping, error_code
+):
+    """매핑 전 이슈 키는 SKU 자리가 외부 코드(ALIAS-SKU)라, 매핑 뒤 적재 키(내부 sku_code)와 달라도 해소 (리뷰 #17 크리티컬 1)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    unmapped = replace(record, sku_code="ALIAS-SKU", **before_mapping)
+    external_key = f"{row.wh}|ALIAS-SKU|2026-07-01"
+
+    first = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [unmapped]
+    )
+    [issue] = await _issues(db, first.data_sync_run_id)
+    assert (issue.source_record_key, issue.error_code) == (external_key, error_code)
+
+    mapped = DataIngestService(
+        db, AliasSkuRepository(db, row.sku), RecordingStale(), now=_ticking(LATER)
+    )
+    second = await mapped.ingest(
+        row.company_id,
+        SourceDomain.INVENTORY,
+        ConnectionMethod.FILE,
+        [replace(record, sku_code="ALIAS-SKU")],
+    )
+
+    assert second.status == DataSyncRunStatus.SUCCEEDED
+    assert [
+        i.status for i in await _issue_states(db, row.company_id, external_key)
+    ] == ["RESOLVED"]
+
+
 async def test_issue_stays_open_when_rejected_again_or_absent(db_write_session):
     """다시 거부된 키는 이전 이슈도 OPEN 이고 새 이슈가 하나 더 생김. 응답에 없던 키의 이슈도 OPEN (빠진 행은 정정이 아님)"""
     db = db_write_session

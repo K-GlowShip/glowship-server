@@ -21,6 +21,7 @@ from app.modules.data_sync.application.ingest.change_detection import (
 from app.modules.data_sync.application.ingest.code_resolver import (
     Rejection,
     ShipmentPlan,
+    inventory_issue_keys,
     inventory_record_key,
     resolve_inventory,
     resolve_order,
@@ -347,7 +348,7 @@ class DataIngestService:
             resolved.append(result)
             keys.append(key)
             seen.add(key)
-            loaded_keys.append(inventory_record_key(source, book))
+            loaded_keys.extend(inventory_issue_keys(source, book))
         existing = await self.repo.load_inventory(company_id, keys)
         diffs = [
             d

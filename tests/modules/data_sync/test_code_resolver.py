@@ -20,6 +20,7 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     SkuCode,
     WarehouseCode,
     find_leadtime_reference,
+    inventory_issue_keys,
     inventory_record_key,
     planned_3pl_inbound_date,
     resolve_inventory,
@@ -375,6 +376,17 @@ def test_inventory_rejection_key_matches_baseline(change, key, field_name, error
         rejection.field_name,
         rejection.error_code,
     ) == (key, field_name, error_code)
+
+
+def test_inventory_issue_keys_include_key_before_sku_mapping():
+    """매핑된 SKU 는 지금 키(내부 코드)와 매핑 전 키(외부 코드) 둘 다, 매핑 없는 SKU 는 하나"""
+    assert inventory_issue_keys(INVENTORY, BOOK) == (
+        "TMS-LAX|SKU-001|2026-01-05",
+        "TMS-LAX|TMS-SKU-001|2026-01-05",
+    )
+    assert inventory_issue_keys(replace(INVENTORY, sku_code="X"), BOOK) == (
+        "TMS-LAX|X|2026-01-05",
+    )
 
 
 def test_inventory_key_keeps_external_code_for_mapped_warehouse():

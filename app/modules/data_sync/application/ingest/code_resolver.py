@@ -278,6 +278,19 @@ def inventory_record_key(source: SourceInventory, book: CodeBook) -> str:
     return f"{source.warehouse_code}|{sku_part}|{source.inventory_date.isoformat()}"
 
 
+def inventory_issue_keys(source: SourceInventory, book: CodeBook) -> tuple[str, ...]:
+    """
+    이 재고 레코드가 정상 적재될 때 해소할 수 있는 이전 이슈의 키들.
+    SKU 매핑 전에 기록된 이슈는 SKU 자리가 원천 외부 코드라, 지금 키(내부 sku_code)와 함께 그 형식도 돌려줍니다.
+    예: 매핑 전 `WMS-EWR01|WMS-SKU-001|2026-01-01` → 매핑 뒤 적재 키 `WMS-EWR01|SKU-001|2026-01-01`.
+    """
+    current = inventory_record_key(source, book)
+    before_mapping = (
+        f"{source.warehouse_code}|{source.sku_code}|{source.inventory_date.isoformat()}"
+    )
+    return (current,) if before_mapping == current else (current, before_mapping)
+
+
 def find_leadtime_reference(
     references: Mapping[tuple[str, str, str, str], LeadtimeReference],
     planned_kr_release_date: date,
