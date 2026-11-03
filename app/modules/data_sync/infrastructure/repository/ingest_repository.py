@@ -510,7 +510,7 @@ class IngestRepository:
         """
         거부 사유를 검증 이슈 OPEN 으로 남깁니다 (GLOW-15). 수집과 같은 트랜잭션이라 수집이 FAILED 면 함께 되돌아갑니다.
           - 확정 기준선의 검증 이슈는 모두 ERROR·분석 차단(blocks_analysis)입니다. ck2 는 ERROR 면 분석 차단을 강제합니다.
-          - detected_at 은 수집 시작 시각입니다 (일정 스냅샷 observed_at 과 같은 규칙).
+          - detected_at 은 수집 완료 시각(data_sync_runs.finished_at)입니다. 확정 기준선 이슈 9행이 모두 이렇습니다.
         """
         rows = [
             {
@@ -544,7 +544,7 @@ class IngestRepository:
         이번 수집에 정상 적재된 레코드와 (고객사, 원천 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
           - 이번 수집이 만든 이슈는 바꾸지 않습니다 (같은 키가 이번에 적재되고 중복으로도 거부된 경우 등).
           - 응답에 없던 레코드의 이슈는 그대로 OPEN 입니다 (빠진 행은 삭제·정정으로 보지 않음).
-          - resolved_at 은 수집 시작 시각입니다 (detected_at 과 같은 규칙).
+          - resolved_at 은 해소한 수집의 완료 시각입니다 (detected_at 과 같은 규칙).
         """
         for chunk in _chunked(sorted(set(loaded_keys))):
             await self.db.execute(

@@ -148,11 +148,13 @@ class DataIngestService:
                 company_id, run_id, source_domain, records, started_at
             )
             rejections = (*parse_rejections, *applied.rejections)
+            # 검증 이슈의 감지·해소 시각과 수집 완료 시각은 같은 값입니다 (확정 기준선 이슈 9행 모두 detected_at = 수집 finished_at)
+            finished_at = self.now()
             await self.repo.resolve_validation_issues(
-                company_id, run_id, source_domain, applied.loaded_keys, started_at
+                company_id, run_id, source_domain, applied.loaded_keys, finished_at
             )
             await self.repo.insert_validation_issues(
-                company_id, run_id, source_domain, rejections, started_at
+                company_id, run_id, source_domain, rejections, finished_at
             )
             counts = RunCounts(
                 received=len(records) + len(parse_rejections),
@@ -161,7 +163,7 @@ class DataIngestService:
             )
             applied_seq = await self.repo.next_applied_seq(company_id)
             await self.repo.complete_run(
-                company_id, run_id, counts, applied_seq, self.now()
+                company_id, run_id, counts, applied_seq, finished_at
             )
             staled = await self.stale_service.judge_after_sync(
                 company_id, applied_seq, self.now()

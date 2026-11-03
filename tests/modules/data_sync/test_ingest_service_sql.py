@@ -376,7 +376,7 @@ async def _issues(db, run_id):
 
 
 async def test_rejections_are_recorded_as_open_issues(db_write_session):
-    """파서 거부·적재 단계 거부가 같은 수집 ID 의 검증 이슈 OPEN 으로 남음 (ERROR·분석 차단, 감지 시각 = 수집 시작)"""
+    """파서 거부·적재 단계 거부가 같은 수집 ID 의 검증 이슈 OPEN 으로 남음 (ERROR·분석 차단, 감지 시각 = 수집 완료)"""
     db = db_write_session
     company_id = await _company(db)
     [order] = await _source_orders(db, company_id, limit=1)
@@ -386,7 +386,7 @@ async def test_rejections_are_recorded_as_open_issues(db_write_session):
         lines=(SourceOrderLine(1, "NO-SUCH-SKU", 1, 0, "ACTIVE"),),
     )
 
-    result = await _service(db).ingest(
+    result = await _service_at(db, NOW).ingest(
         company_id,
         SourceDomain.ORDER,
         ConnectionMethod.FILE,
@@ -405,8 +405,27 @@ async def test_rejections_are_recorded_as_open_issues(db_write_session):
     assert {
         (i.severity, i.blocks_analysis, i.status, i.resolved_at) for i in issues
     } == {("ERROR", True, "OPEN", None)}
-    assert {i.detected_at for i in issues} == {NOW}
+    # 감지 시각 = 수집 완료 시각 (기준선과 같음). 시작 시각이 아님
+    started_at, finished_at = await _run_times(db, result.data_sync_run_id)
+    assert started_at != finished_at
+    assert {i.detected_at for i in issues} == {finished_at}
     assert len(issues) == result.counts.rejected
+
+
+async def test_baseline_issues_are_detected_at_sync_finish(db_write_session):
+    """확정 기준선의 검증 이슈는 모두 detected_at = 그 수집의 finished_at (서버가 따르는 규칙의 근거)"""
+    db = db_write_session
+    rows = (
+        await db.execute(
+            text(
+                "SELECT i.detected_at = r.finished_at AS at_finish"
+                " FROM data_validation_issues i JOIN data_sync_runs r USING (data_sync_run_id)"
+            )
+        )
+    ).all()
+    if not rows:
+        pytest.skip("검증 이슈가 없는 DB")
+    assert all(r.at_finish for r in rows), rows
 
 
 async def test_inventory_issue_keeps_baseline_key(db_write_session):
@@ -432,10 +451,27 @@ async def test_inventory_issue_keeps_baseline_key(db_write_session):
 LATER = NOW + timedelta(days=1)
 
 
+def _ticking(start):
+    """부를 때마다 1초씩 가는 시계 (수집 시작·완료 시각을 구별하려고)"""
+    ticks = iter(range(10_000))
+    return lambda: start + timedelta(seconds=next(ticks))
+
+
 def _service_at(db, moment) -> DataIngestService:
     return DataIngestService(
-        db, IngestRepository(db), RecordingStale(), now=lambda: moment
+        db, IngestRepository(db), RecordingStale(), now=_ticking(moment)
     )
+
+
+async def _run_times(db, run_id):
+    return (
+        await db.execute(
+            text(
+                "SELECT started_at, finished_at FROM data_sync_runs WHERE data_sync_run_id = :r"
+            ),
+            {"r": run_id},
+        )
+    ).one()
 
 
 async def _issue_states(db, company_id, key):
@@ -452,7 +488,7 @@ async def _issue_states(db, company_id, key):
 
 
 async def test_later_successful_load_resolves_open_issue(db_write_session):
-    """기준선 E9: 재고 거부(OPEN) → 뒤 수집에서 정정 적재 → RESOLVED, resolved_at = 뒤 수집 시작"""
+    """기준선 E9: 재고 거부(OPEN) → 뒤 수집에서 정정 적재 → RESOLVED, resolved_at = 뒤 수집의 완료 시각"""
     db = db_write_session
     row, record = await _mapped_inventory(db)
     key = f"{row.wh}|{row.sku_code}|2026-07-01"
@@ -469,7 +505,13 @@ async def test_later_successful_load_resolves_open_issue(db_write_session):
     assert [
         (i.data_sync_run_id, i.status, i.resolved_at)
         for i in await _issue_states(db, row.company_id, key)
-    ] == [(first.data_sync_run_id, "RESOLVED", LATER)]
+    ] == [
+        (
+            first.data_sync_run_id,
+            "RESOLVED",
+            (await _run_times(db, second.data_sync_run_id)).finished_at,
+        )
+    ]
 
 
 async def test_issue_stays_open_when_rejected_again_or_absent(db_write_session):
