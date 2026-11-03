@@ -18,6 +18,7 @@ from app.modules.delay_analysis.application.delay_display import (
 )
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
+    InvalidDetectedPeriodException,
 )
 from app.modules.delay_analysis.application.stale.stale_service import (
     IN_PROGRESS_STATUSES,
@@ -116,9 +117,12 @@ class DelayEventQueryService:
         """
         감지 기간은 UTC 시각 [detected_from, detected_to) 입니다 (to 미포함, 명세 v6.2 C18).
         시간대가 있는 값만 받습니다(라우터가 거부). 다른 시간대 값은 UTC 로 맞춥니다.
+        from > to 면 InvalidDetectedPeriodException(422), from = to 는 0건입니다 (명세 v6.2 C20).
         page 를 생략하면 첫 페이지(기본 크기)입니다. total_count 는 모든 필터를 적용한 전체 개수이고,
         counts(탭별 건수)는 탭·최종 선택 여부 필터를 뺀 값이라 서로 다를 수 있습니다.
         """
+        if detected_from and detected_to and detected_from > detected_to:
+            raise InvalidDetectedPeriodException()
         page = page or PageParams()
         company_id = await self._enter_company_scope(actor)
         filters = DelayEventFilter(

@@ -37,7 +37,7 @@ _COMMON_ERRORS = {
     summary="지연 목록 (API 15)",
     description=(
         "고객사의 지연 건을 감지 시각 최신순(같으면 지연 ID 순)으로 반환합니다. 각 행에 현재 분석 실행(currentRun)과 최종 선택 여부를 붙이고, "
-        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함, 명세 v6.2 C18). 시간대가 없는 값이나 날짜만 보내면 422 VALIDATION_ERROR 입니다. KST → UTC 변환은 프론트가 합니다. "
+        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함, 명세 v6.2 C18). 시간대가 없는 값이나 날짜만 보내거나 from > to 이면 422 VALIDATION_ERROR 이고, from = to 는 0건입니다(C20). KST → UTC 변환은 프론트가 합니다. "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다."
     ),
     response_model=DelayEventListResponse,
@@ -45,7 +45,7 @@ _COMMON_ERRORS = {
     | {
         422: {
             "model": ErrorResponse,
-            "description": "필터 형식 오류 (시간대 없는 from·to 포함)",
+            "description": "필터 형식 오류 (시간대 없는 from·to, from > to 포함)",
         }
     },
 )

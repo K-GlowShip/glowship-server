@@ -13,6 +13,7 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
 )
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
+    InvalidDetectedPeriodException,
 )
 from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repository import (
     DelayEventCounts,
@@ -140,6 +141,24 @@ async def test_list_computes_route_representative_sku_and_delay_days(rls_calls):
     assert item.delay_days == 3
     assert result.counts == COUNTS
     assert rls_calls == [COMPANY_ID]
+
+
+async def test_list_rejects_from_after_to_and_allows_equal():
+    """명세 v6.2 C20: from > to 는 VALIDATION_ERROR, from = to 는 오류 없이 0건 조회"""
+    repo = FakeRepository()
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with pytest.raises(InvalidDetectedPeriodException):
+        await _service(repo).list_delay_events(
+            actor=ACTOR, detected_from=moment + timedelta(seconds=1), detected_to=moment
+        )
+    assert repo.filters == []  # 조회 전에 거부
+
+    await _service(repo).list_delay_events(
+        actor=ACTOR, detected_from=moment, detected_to=moment
+    )
+    [filters] = repo.filters
+    assert (filters.detected_from, filters.detected_to) == (moment, moment)
 
 
 async def test_list_maps_tab_and_date_range_to_filters():

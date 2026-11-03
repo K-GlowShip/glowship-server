@@ -13,6 +13,7 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventDetail,
     DelayEventList,
     DelayEventListItem,
+    DelayEventQueryService,
     DelayEventTab,
     ShipmentDisplay,
 )
@@ -215,6 +216,22 @@ async def test_list_rejects_period_without_time_zone(fake_service, value):
     assert response.status_code == 422
     assert response.json()["code"] == "VALIDATION_ERROR"
     assert fake_service.calls == []
+
+
+async def test_list_rejects_from_after_to():
+    """명세 v6.2 C20: from > to 는 422 VALIDATION_ERROR (실제 서비스의 검사가 응답까지 이어지는지)"""
+    service = DelayEventQueryService.__new__(DelayEventQueryService)
+    app.dependency_overrides[get_delay_event_query_service] = lambda: service
+    try:
+        response = await _get(
+            "/api/v1/delay-events",
+            params={"from": "2026-01-02T00:00:00Z", "to": "2026-01-01T00:00:00Z"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_delay_event_query_service, None)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
 
 
 async def test_list_passes_query_params_to_service(fake_service):
