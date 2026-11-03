@@ -16,7 +16,9 @@ C(분석 에이전트) 분석 표 5개와 delay_events 를 v6.2 DDL 과 같게 �
   - option_order_outcomes: 확보 상태·미회복 사유 2열 (ck8~ck12), 이름 변경 allocated_quantity → secured_quantity
     (ck4·ck5 는 열 이름을 따라 바뀜), 결과 코드 FULL·PARTIAL → RECOVERED (ck1), 공급처 EAST_WAREHOUSE → OTHER_REGION_WAREHOUSE (ck7)
   - delay_events: episode_no (ck3, ck6, uk3). 기존 행은 dedupe_key(`{shipment_id}:EP{n}`)의 n 으로 채운다
-  - 범위 밖: users 형식 차이(A 영역), run_code(0006), 워커 역할 권한, aux 보조 표
+  - 범위 밖: users 형식 차이(A 영역), run_code(0006), 워커 역할 권한, aux 보조 표,
+    2025 v5 합성데이터 적재(make db-seed): 0005 뒤에는 분석 표·delay_events 열이 v5 CSV 와 달라
+    seed 스크립트가 원본 파일 검증에서 멈춘다. v6.2 공유 묶음은 DDL + CSV 직접 적재가 기준(README 3절)
 
 v6.2 DDL 로 직접 만든 DB(팀 공통 개발 DB)에는 이미 있으므로 upgrade 대신 `alembic stamp 0005` 로 기준점만 맞춘다.
 그런 DB 에서 upgrade 를 하면 시작 전에 멈추고 stamp 를 안내한다(아무것도 바꾸지 않음).
@@ -25,8 +27,13 @@ upgrade·downgrade 는 다음 경우 시작 전에 멈춘다(아무것도 바꾸
   - 분석 결과 표 5개에 행이 있으면: 새 NOT NULL 열(생성 사유, SKU별 결과 등)을 채울 값이 없고,
     옛 코드값(FULL·PARTIAL, EAST_FULFILL 등)을 새 값으로 기계적으로 바꿀 수 없다. 행을 먼저 정리한다
   - delay_events.dedupe_key 가 `{shipment_id}:EP{n}` 형식이 아닌 행이 있으면(episode_no 를 정할 수 없음)
+
+downgrade 는 서버 마이그레이션(0001→0005)으로 만든 DB 에서만 쓴다. 환경 변수 GLOWSHIP_ALLOW_0005_DOWNGRADE=1 이 없으면 멈춘다.
+  - v6.2 DDL 로 만든 DB 도 0005 기록을 가질 수 있는데(stamp), 마이그레이션 기록만으로는 두 DB 를 구분할 수 없다.
+    그런 DB 에서 downgrade 하면 DDL 원본 표가 v5 모양(열 삭제·이름 복원·옛 코드값 CHECK)으로 바뀌므로 명시적으로 허용하게 한다.
 """
 
+import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -222,6 +229,9 @@ _CHECKS_BY_TABLE = {
 # 대응안 주문 집계: NULL = 계산 안 함 (DDL response_options_ck8)
 _NULLABLE_COUNTS = ("fully_recovered_orders", "not_recovered_orders")
 
+# downgrade 를 허용하는 환경 변수 (위 docstring 참고)
+_ALLOW_DOWNGRADE_ENV = "GLOWSHIP_ALLOW_0005_DOWNGRADE"
+
 # ":EP" 의 콜론은 sa.text() 가 바인드 변수로 읽으므로 정규식에서는 [:] 로 쓴다
 _EPISODE_KEY = r"^[0-9a-f-]{36}[:]EP[1-9][0-9]*$"
 
@@ -333,6 +343,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if os.environ.get(_ALLOW_DOWNGRADE_ENV) != "1":
+        raise RuntimeError(
+            "0005 downgrade: 분석 표를 v5 모양으로 되돌립니다. 서버 마이그레이션(0001→0005)으로 만든 DB 에서만 쓰세요. "
+            "v6.2 DDL 로 만든 DB(팀 공통 개발 DB)에서는 DDL 원본 표가 바뀝니다. "
+            f"진행하려면 {_ALLOW_DOWNGRADE_ENV}=1 을 주고 다시 실행하세요."
+        )
     _stop_if_analysis_rows("downgrade")
 
     op.drop_index("response_options_rank_uq", table_name="response_options")

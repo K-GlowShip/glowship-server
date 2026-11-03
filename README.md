@@ -200,10 +200,14 @@ uv run alembic revision --autogenerate -m "변경 내용"
 uv run alembic upgrade head
 ```
 
-합성데이터(2025, v5) 적재:
+합성데이터 적재:
+
+- 팀 공통 개발 DB는 v6.2 DDL로 빈 DB를 만든 뒤 CSV를 직접 적재합니다(설계 문서 저장소 `erd_glowship_v6_2_overview.md` 2절 적재 기준). 이 절차는 `make db-seed`를 쓰지 않습니다.
+- 2025 v5 합성데이터(`synthetic_2025_v5`)는 마이그레이션 `0005` 뒤로 적재할 수 없습니다. `0005`가 분석 표와 `delay_events`를 v6.2 열로 바꿔 v5 CSV와 열이 달라지므로, 적재 스크립트가 원본 파일 검증 단계에서 멈춥니다(아무것도 적재하지 않음).
+- `make db-seed`는 CSV 열이 지금 모델과 같은 데이터 폴더에만 씁니다.
 
 ```bash
-make db-seed SEED_DATA_DIR="<합성데이터 폴더>/synthetic_2025_v5/20261028T060456Z"
+make db-seed SEED_DATA_DIR="<합성데이터 폴더>"
 ```
 
 - 적재 전 `manifest.json`의 sha256·행 수로 원본 파일을 검증하고, 하나라도 다르면 중단합니다.
