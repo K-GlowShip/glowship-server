@@ -20,17 +20,23 @@ MAX_QUERY_LENGTH = 100
 
 
 class ExternalCodeResponse(CamelModel):
-    """원천 시스템 하나가 이 상품을 부르는 코드 (명세 4.3 externalCodes[]). /warehouses 도 같은 모양을 쓴다."""
+    """원천 시스템 하나가 이 상품을 부르는 코드 (명세 4.3 externalCodes[]). /warehouses 도 같은 모양을 쓴다.
+    SKU 코드를 쓰는 원천(INVENTORY·SHIPMENT)마다 항목이 항상 하나 있고, 매핑이 없으면 externalCode 가 null 이다."""
 
     source_domain: SourceDomain = Field(
         description="코드를 쓰는 원천 유형 (INVENTORY = WMS, SHIPMENT = TMS)",
         examples=["INVENTORY"],
     )
-    external_code: str = Field(
-        description="원천 시스템의 코드", examples=["WMS-SKU-001"]
+    external_code: str | None = Field(
+        description="원천 시스템의 코드. 이 원천에 MAPPED 매핑이 없으면 null",
+        examples=["WMS-SKU-001"],
     )
     mapping_status: MappingStatus = Field(
-        description="PENDING·MAPPED·UNMAPPED. MAPPED 가 아니면 validationStatus 가 CODE_MISSING",
+        description=(
+            "MAPPED(매핑 있음)·UNMAPPED(매핑 없음, externalCode = null). "
+            "UNMAPPED 항목이 하나라도 있으면 validationStatus 가 CODE_MISSING. "
+            "DB 의 PENDING·UNMAPPED 행은 SKU 에 붙지 않아 이 목록에 나오지 않는다"
+        ),
         examples=["MAPPED"],
     )
 
@@ -44,6 +50,10 @@ class SkuListItemResponse(CamelModel):
     )
     product_name: str = Field(examples=["A Glow Hydra Toner Pad 60ea"])
     brand_name: str = Field(examples=["A Glow"])
+    hs10: str = Field(
+        description="HS 10자리 코드 (skus.hs10). 상품 상세 모달에 표시",
+        examples=["3304995000"],
+    )
     category: str = Field(examples=["SKINCARE"])
     subcategory: str = Field(examples=["Toner Pad"])
     popularity_tier: PopularityTier = Field(
@@ -54,11 +64,14 @@ class SkuListItemResponse(CamelModel):
     units_per_case: int = Field(examples=[24])
     status: SkuStatus = Field(description="ACTIVE·INACTIVE", examples=["ACTIVE"])
     external_codes: list[ExternalCodeResponse] = Field(
-        description="원천별 외부 코드. sourceDomain 순. 매핑이 없으면 []"
+        description=(
+            "원천별 외부 코드. SKU 코드를 쓰는 원천(INVENTORY, SHIPMENT) 순으로 항목이 항상 하나씩 있고, "
+            "매핑이 없는 원천은 externalCode = null, mappingStatus = UNMAPPED"
+        )
     )
     validation_status: SkuValidationStatus = Field(
         description=(
-            "OK·CODE_MISSING(MAPPED 아닌 매핑 있음)·ISSUE_OPEN(이 SKU 코드로 열린 검증 오류 있음). "
+            "OK·CODE_MISSING(매핑 없는 원천 있음)·ISSUE_OPEN(이 SKU 코드로 열린 검증 오류 있음). "
             "둘 다면 CODE_MISSING"
         ),
         examples=["OK"],
@@ -71,6 +84,7 @@ class SkuListItemResponse(CamelModel):
             sku_code=item.sku_code,
             product_name=item.product_name,
             brand_name=item.brand_name,
+            hs10=item.hs10,
             category=item.category,
             subcategory=item.subcategory,
             popularity_tier=item.popularity_tier,

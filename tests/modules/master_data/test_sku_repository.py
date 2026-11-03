@@ -38,6 +38,7 @@ def _row(**overrides):
         "sku_code": "SKU-201",
         "product_name": "B Bloom Hydra Toner Pad 60ea",
         "brand_name": "B Bloom",
+        "hs10": "3304995000",
         "category": "SKINCARE",
         "subcategory": "Toner Pad",
         "popularity_tier": "HIT",
@@ -53,8 +54,8 @@ def _row(**overrides):
             },
             {
                 "source_domain": "SHIPMENT",
-                "external_code": "TMS-SKU-201",
-                "mapping_status": "PENDING",
+                "external_code": None,
+                "mapping_status": "UNMAPPED",
             },
         ],
         "has_unmapped": True,
@@ -103,10 +104,16 @@ async def test_SQL_이_외부_코드_집계와_이슈_연결_규칙을_담고_�
     await _find(session)
 
     sql = _sql(session.executed[0][0])
-    # 외부 코드: SKU 매핑만, 원천 순, 매핑 누락 여부
-    assert "entity_type = 'SKU'" in sql
-    assert "jsonb_agg" in sql and "ORDER BY source_domain, external_code" in sql
-    assert "BOOL_OR(mapping_status <> 'MAPPED')" in sql
+    # 외부 코드: SKU 코드 원천(INVENTORY·SHIPMENT) 고정 목록 × SKU 에 MAPPED 매핑만 붙이고, 원천 순으로 모은다
+    assert "VALUES (0, 'INVENTORY'), (1, 'SHIPMENT')" in sql
+    assert "CROSS JOIN sku_sources" in sql
+    assert "m.entity_type = 'SKU'" in sql and "m.mapping_status = 'MAPPED'" in sql
+    assert "jsonb_agg" in sql and "ORDER BY src.source_order, m.external_code" in sql
+    # 매핑이 없는 원천은 UNMAPPED 로 채우고, 하나라도 비면 매핑 누락이다
+    assert "COALESCE(m.mapping_status, 'UNMAPPED')" in sql
+    assert "BOOL_OR(m.external_code IS NULL)" in sql
+    # 목록 열에 hs10 이 있다
+    assert "s.hs10" in sql
     # OPEN 이슈: INVENTORY 이슈의 키 둘째 토막을 sku_code 로 본다
     assert "split_part(source_record_key, '|', 2)" in sql
     assert "status = 'OPEN'" in sql
@@ -149,6 +156,7 @@ async def test_행을_SkuListRow_로_바꾸고_건수를_함께_돌려준다():
         sku_code="SKU-201",
         product_name="B Bloom Hydra Toner Pad 60ea",
         brand_name="B Bloom",
+        hs10="3304995000",
         category="SKINCARE",
         subcategory="Toner Pad",
         popularity_tier="HIT",
@@ -158,7 +166,7 @@ async def test_행을_SkuListRow_로_바꾸고_건수를_함께_돌려준다():
         status="ACTIVE",
         external_codes=(
             ExternalCodeRow("INVENTORY", "WMS-SKU-201", "MAPPED"),
-            ExternalCodeRow("SHIPMENT", "TMS-SKU-201", "PENDING"),
+            ExternalCodeRow("SHIPMENT", None, "UNMAPPED"),
         ),
         has_unmapped=True,
         has_open_issue=True,
@@ -169,18 +177,24 @@ async def test_행을_SkuListRow_로_바꾸고_건수를_함께_돌려준다():
     assert page.rows[1].has_open_issue is False
 
 
-async def test_외부_코드가_문자열_JSON_이어도_읽는다():
+async def test_외부_코드가_문자열_JSON_이어도_읽고_누락_원천은_None_이다():
     session = FakeSession(
         rows=[
             _row(
-                external_codes='[{"source_domain": "INVENTORY", "external_code": "X", "mapping_status": "MAPPED"}]'
+                external_codes=(
+                    '[{"source_domain": "INVENTORY", "external_code": "X", "mapping_status": "MAPPED"},'
+                    ' {"source_domain": "SHIPMENT", "external_code": null, "mapping_status": "UNMAPPED"}]'
+                )
             )
         ]
     )
 
     page = await _find(session)
 
-    assert page.rows[0].external_codes == (ExternalCodeRow("INVENTORY", "X", "MAPPED"),)
+    assert page.rows[0].external_codes == (
+        ExternalCodeRow("INVENTORY", "X", "MAPPED"),
+        ExternalCodeRow("SHIPMENT", None, "UNMAPPED"),
+    )
 
 
 async def test_건수가_None_이면_0으로_본다():

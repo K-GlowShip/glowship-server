@@ -34,6 +34,7 @@ def _row(**overrides) -> SkuListRow:
         "sku_code": "SKU-001",
         "product_name": "A Glow Hydra Toner Pad 60ea",
         "brand_name": "A Glow",
+        "hs10": "3304995000",
         "category": "SKINCARE",
         "subcategory": "Toner Pad",
         "popularity_tier": "HIT",
@@ -41,7 +42,10 @@ def _row(**overrides) -> SkuListRow:
         "unit_code": "EA",
         "units_per_case": 24,
         "status": "ACTIVE",
-        "external_codes": (ExternalCodeRow("INVENTORY", "WMS-SKU-001", "MAPPED"),),
+        "external_codes": (
+            ExternalCodeRow("INVENTORY", "WMS-SKU-001", "MAPPED"),
+            ExternalCodeRow("SHIPMENT", "TMS-SKU-001", "MAPPED"),
+        ),
         "has_unmapped": False,
         "has_open_issue": False,
     }
@@ -106,6 +110,7 @@ async def test_행의_필드와_외부_코드를_항목으로_옮긴다():
     assert item.sku_code == "SKU-001"
     assert item.product_name == row.product_name
     assert item.brand_name == "A Glow"
+    assert item.hs10 == "3304995000"
     assert item.category == "SKINCARE"
     assert item.subcategory == "Toner Pad"
     assert item.popularity_tier == "HIT"
@@ -117,12 +122,20 @@ async def test_행의_필드와_외부_코드를_항목으로_옮긴다():
     assert item.validation_status == SkuValidationStatus.OK
 
 
-async def test_MAPPED_아닌_매핑이_있으면_CODE_MISSING_이다():
-    service, _ = _service([_row(has_unmapped=True)])
+async def test_매핑이_없는_원천이_있으면_CODE_MISSING_이다():
+    row = _row(
+        external_codes=(
+            ExternalCodeRow("INVENTORY", "WMS-SKU-001", "MAPPED"),
+            ExternalCodeRow("SHIPMENT", None, "UNMAPPED"),
+        ),
+        has_unmapped=True,
+    )
+    service, _ = _service([row])
 
     [item] = (await service.get_page(TENANT)).items
 
     assert item.validation_status == SkuValidationStatus.CODE_MISSING
+    assert item.external_codes[1].external_code is None
 
 
 async def test_열린_이슈가_있으면_ISSUE_OPEN_이다():

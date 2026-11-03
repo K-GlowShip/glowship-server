@@ -58,6 +58,7 @@ def _item(**overrides) -> SkuListItem:
         "sku_code": "SKU-201",
         "product_name": "B Bloom Hydra Toner Pad 60ea",
         "brand_name": "B Bloom",
+        "hs10": "3304995000",
         "category": "SKINCARE",
         "subcategory": "Toner Pad",
         "popularity_tier": "HIT",
@@ -89,8 +90,11 @@ class FakeSkuListService:
                 _item(
                     sku_id=uuid.uuid7(),
                     sku_code="SKU-202",
-                    external_codes=(),
-                    validation_status=SkuValidationStatus.OK,
+                    external_codes=(
+                        ExternalCodeRow("INVENTORY", "WMS-SKU-202", "MAPPED"),
+                        ExternalCodeRow("SHIPMENT", None, "UNMAPPED"),
+                    ),
+                    validation_status=SkuValidationStatus.CODE_MISSING,
                 ),
             ],
             total_count=20,
@@ -182,6 +186,7 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         "skuCode": "SKU-201",
         "productName": "B Bloom Hydra Toner Pad 60ea",
         "brandName": "B Bloom",
+        "hs10": "3304995000",
         "category": "SKINCARE",
         "subcategory": "Toner Pad",
         "popularityTier": "HIT",
@@ -203,8 +208,16 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         ],
         "validationStatus": "ISSUE_OPEN",
     }
-    assert body["items"][1]["externalCodes"] == []
-    assert body["items"][1]["validationStatus"] == "OK"
+    # 매핑이 없는 원천도 항목을 빼지 않고 externalCode = null 로 준다
+    assert body["items"][1]["externalCodes"] == [
+        {
+            "sourceDomain": "INVENTORY",
+            "externalCode": "WMS-SKU-202",
+            "mappingStatus": "MAPPED",
+        },
+        {"sourceDomain": "SHIPMENT", "externalCode": None, "mappingStatus": "UNMAPPED"},
+    ]
+    assert body["items"][1]["validationStatus"] == "CODE_MISSING"
 
 
 async def test_기본값과_쿼리_파라미터를_서비스에_넘긴다(fake_service, fake_session):

@@ -5,6 +5,9 @@ from sqlalchemy import text
 from app.modules.master_data.infrastructure.repository.sku_repository import (
     SkuRepository,
 )
+from app.modules.master_data.infrastructure.sku_code_sources import (
+    SKU_CODE_SOURCE_DOMAINS,
+)
 
 """
     SkuRepository SQL 스모크 테스트 (실제 DB, 읽기 전용, 롤백)
@@ -53,9 +56,16 @@ async def test_목록은_sku_code_순이고_건수는_필터와_맞는다(db_ses
     assert errors.total_count <= page.total_count
     assert all(row.has_unmapped or row.has_open_issue for row in errors.rows)
     assert beyond.rows == [] and beyond.total_count == page.total_count
+    expected_domains = [domain.value for domain in SKU_CODE_SOURCE_DOMAINS]
     for row in page.rows:
-        domains = [code.source_domain for code in row.external_codes]
-        assert domains == sorted(domains)
+        # SKU 코드 원천마다 항목이 항상 하나씩, 고정 순서. 비면 externalCode None·UNMAPPED 이고 매핑 누락이다
+        assert [code.source_domain for code in row.external_codes] == expected_domains
+        assert row.has_unmapped is any(
+            code.external_code is None for code in row.external_codes
+        )
+        for code in row.external_codes:
+            assert (code.external_code is None) == (code.mapping_status == "UNMAPPED")
+        assert row.hs10
 
 
 async def test_검색어는_상품명과_코드에_부분_일치한다(db_session):
@@ -99,9 +109,8 @@ async def test_합성데이터_B사_SKU_201_은_재고_이슈가_열려_있다(d
 
     [row] = [r for r in page.rows if r.sku_code == "SKU-201"]
     assert row.has_open_issue is True
-    assert row.has_unmapped is False
 
-    # 매핑 테이블까지 적재된 DB 에서만: SKU 당 WMS·TMS 코드 하나씩, 원천 순
+    # 매핑 테이블까지 적재된 DB 에서만: SKU 당 WMS·TMS 코드 하나씩, 원천 순, 매핑 누락 없음
     has_mapping = await db_session.scalar(
         text(
             "SELECT 1 FROM external_entity_mappings"
@@ -110,7 +119,8 @@ async def test_합성데이터_B사_SKU_201_은_재고_이슈가_열려_있다(d
         {"c": company_id},
     )
     if has_mapping:
-        assert [c.source_domain for c in row.external_codes] == [
-            "INVENTORY",
-            "SHIPMENT",
+        assert [(c.source_domain, c.mapping_status) for c in row.external_codes] == [
+            ("INVENTORY", "MAPPED"),
+            ("SHIPMENT", "MAPPED"),
         ]
+        assert row.has_unmapped is False

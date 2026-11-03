@@ -6,11 +6,18 @@ from typing import Any
 from sqlalchemy import UUID, Boolean, Integer, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.master_data.infrastructure.master_data_enums import MappingStatus
+from app.modules.master_data.infrastructure.sku_code_sources import (
+    SKU_CODE_SOURCE_DOMAINS,
+)
+
 """
     상품(SKU) 목록 조회 (API 명세 4.3 GET /skus, 연동 데이터 조회 화면의 상품 탭)
       - 상품 한 건에 원천별 외부 코드 목록과 검증 상태 판정 재료(매핑 누락·OPEN 이슈 여부)를 붙여 한 페이지를 돌려준다.
-      - 외부 코드: external_entity_mappings 의 entity_type = 'SKU' 행을 sku 별로 모은다 (source_domain 순).
-        창고별 SKU 코드는 제공하지 않는다 (명세 D15).
+      - 외부 코드: SKU 코드를 쓰는 원천(SKU_CODE_SOURCE_DOMAINS, INVENTORY·SHIPMENT)마다 항목 하나를 항상 만든다.
+        external_entity_mappings 의 MAPPED 행(entity_type = 'SKU')이 있으면 그 코드, 없으면 external_code = NULL,
+        mapping_status = 'UNMAPPED' 다. MAPPED 가 아닌 행은 sku_id 가 비어 있어(DDL ck5) SKU 에 붙을 수 없으므로,
+        매핑 누락(has_unmapped)은 MAPPED 행의 부재로 판정한다. 창고별 SKU 코드는 제공하지 않는다 (명세 D15).
       - OPEN 이슈: data_validation_issues 에 sku_id 가 없어 INVENTORY 이슈의 source_record_key
         ('창고코드|상품코드|날짜') 둘째 토막을 sku_code 로 본다. 수집기(GLOW-13)가 sku_id 컬럼을
         채우게 되면 이 파싱을 조인으로 바꾼다. ORDER·SHIPMENT 이슈는 각 탭의 몫이라 여기서 다루지 않는다.
@@ -20,21 +27,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _LIKE_ESCAPE = "\\"
 
-_COMMON_CTES = """
-    WITH external_codes AS (
-        SELECT sku_id,
+# SKU 코드 원천을 (순서, 원천) 행으로 펼친 VALUES 목록. 값은 서버 상수(enum)라 문자열로 넣어도 안전하다.
+_SKU_SOURCE_VALUES = ", ".join(
+    f"({order}, '{domain.value}')"
+    for order, domain in enumerate(SKU_CODE_SOURCE_DOMAINS)
+)
+_MISSING_MAPPING_STATUS = MappingStatus.UNMAPPED.value
+
+_COMMON_CTES = f"""
+    WITH sku_sources (source_order, source_domain) AS (
+        VALUES {_SKU_SOURCE_VALUES}
+    ),
+    external_codes AS (
+        SELECT s.sku_id,
                jsonb_agg(
                    jsonb_build_object(
-                       'source_domain', source_domain,
-                       'external_code', external_code,
-                       'mapping_status', mapping_status
+                       'source_domain', src.source_domain,
+                       'external_code', m.external_code,
+                       'mapping_status', COALESCE(m.mapping_status, '{_MISSING_MAPPING_STATUS}')
                    )
-                   ORDER BY source_domain, external_code
+                   ORDER BY src.source_order, m.external_code
                ) AS codes,
-               BOOL_OR(mapping_status <> 'MAPPED') AS has_unmapped
-          FROM external_entity_mappings
-         WHERE company_id = :company_id AND entity_type = 'SKU'
-         GROUP BY sku_id
+               BOOL_OR(m.external_code IS NULL) AS has_unmapped
+          FROM skus s
+         CROSS JOIN sku_sources src
+          LEFT JOIN external_entity_mappings m
+                 ON m.company_id = s.company_id
+                AND m.sku_id = s.sku_id
+                AND m.entity_type = 'SKU'
+                AND m.source_domain = src.source_domain
+                AND m.mapping_status = 'MAPPED'
+         WHERE s.company_id = :company_id
+         GROUP BY s.sku_id
     ),
     open_issue_skus AS (
         SELECT DISTINCT split_part(source_record_key, '|', 2) AS sku_code
@@ -44,7 +68,7 @@ _COMMON_CTES = """
            AND source_entity_type = 'INVENTORY'
     ),
     filtered AS (
-        SELECT s.sku_id, s.sku_code, s.product_name, s.brand_name, s.category, s.subcategory,
+        SELECT s.sku_id, s.sku_code, s.product_name, s.brand_name, s.hs10, s.category, s.subcategory,
                s.popularity_tier, s.emergency_air_eligible, s.unit_code, s.units_per_case, s.status,
                COALESCE(c.codes, '[]'::jsonb) AS external_codes,
                COALESCE(c.has_unmapped, false) AS has_unmapped,
@@ -63,7 +87,7 @@ _COMMON_CTES = """
 _LIST_PAGE = text(
     _COMMON_CTES
     + """
-    SELECT sku_id, sku_code, product_name, brand_name, category, subcategory,
+    SELECT sku_id, sku_code, product_name, brand_name, hs10, category, subcategory,
            popularity_tier, emergency_air_eligible, unit_code, units_per_case, status,
            external_codes, has_unmapped, has_open_issue
       FROM filtered
@@ -90,21 +114,22 @@ _COUNT_PAGE = text(
 
 @dataclass(frozen=True)
 class ExternalCodeRow:
-    """원천 시스템 하나가 이 상품을 부르는 코드"""
+    """원천 시스템 하나가 이 상품을 부르는 코드. 매핑이 없으면 external_code 는 None, mapping_status 는 UNMAPPED 다."""
 
     source_domain: str
-    external_code: str
+    external_code: str | None
     mapping_status: str
 
 
 @dataclass(frozen=True)
 class SkuListRow:
-    """상품 한 건과 검증 상태 판정 재료. 매핑이 없으면 external_codes 는 빈 목록이다."""
+    """상품 한 건과 검증 상태 판정 재료. external_codes 는 SKU 코드 원천마다 한 항목씩이다."""
 
     sku_id: uuid.UUID
     sku_code: str
     product_name: str
     brand_name: str
+    hs10: str
     category: str
     subcategory: str
     popularity_tier: str
@@ -138,13 +163,14 @@ def _like_pattern(query: str | None) -> str | None:
 def _external_codes(
     value: list[dict[str, Any]] | str | None,
 ) -> tuple[ExternalCodeRow, ...]:
-    """jsonb_agg 결과 → ExternalCodeRow 튜플. asyncpg 는 list[dict] 로, 코덱이 없는 드라이버는 문자열로 준다."""
+    """jsonb_agg 결과 → ExternalCodeRow 튜플. asyncpg 는 list[dict] 로, 코덱이 없는 드라이버는 문자열로 준다.
+    매핑이 없는 원천은 external_code 가 None 이다."""
     if isinstance(value, str):
         value = json.loads(value)
     return tuple(
         ExternalCodeRow(
             source_domain=item["source_domain"],
-            external_code=item["external_code"],
+            external_code=item.get("external_code"),
             mapping_status=item["mapping_status"],
         )
         for item in (value or [])
@@ -182,6 +208,7 @@ class SkuRepository:
                     sku_code=row.sku_code,
                     product_name=row.product_name,
                     brand_name=row.brand_name,
+                    hs10=row.hs10,
                     category=row.category,
                     subcategory=row.subcategory,
                     popularity_tier=row.popularity_tier,

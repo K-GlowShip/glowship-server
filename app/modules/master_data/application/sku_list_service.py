@@ -14,7 +14,8 @@ from app.modules.master_data.infrastructure.repository.sku_repository import (
 class SkuValidationStatus(str, Enum):
     """
     상품 한 건의 검증 상태 (API 명세 4.3 GET /skus 의 validationStatus)
-      - CODE_MISSING: 원천 중 MAPPED 가 아닌 매핑이 있음
+      - CODE_MISSING: SKU 코드를 쓰는 원천(INVENTORY·SHIPMENT) 중 MAPPED 매핑이 없는 원천이 있음
+        (externalCodes[] 에 externalCode = null 항목이 있음)
       - ISSUE_OPEN: 이 SKU 코드로 열린 검증 오류가 있음
       - OK: 그 밖
     둘 다 해당하면 CODE_MISSING 이다 (명세의 나열 순서).
@@ -33,6 +34,7 @@ class SkuListItem:
     sku_code: str
     product_name: str
     brand_name: str
+    hs10: str
     category: str
     subcategory: str
     popularity_tier: str
@@ -87,6 +89,7 @@ class SkuListService:
             sku_code=row.sku_code,
             product_name=row.product_name,
             brand_name=row.brand_name,
+            hs10=row.hs10,
             category=row.category,
             subcategory=row.subcategory,
             popularity_tier=row.popularity_tier,
