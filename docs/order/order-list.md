@@ -5,8 +5,6 @@
 상단 카드와 탭 배지(원천별 `openIssueCount`)는 [동기화 상태 API](../data-sync/latest-sync-status.md), 하단 오류 배너는 `GET /validation-issues`(미구현) 몫입니다.
 
 > 2026-11-03 명세 변경(C18·C20) 반영: 기간 필터 `from`·`to`는 **ISO 8601 UTC 시각**(`Z` 또는 시간대 표시 필수)이고 범위는 **`[from, to)`**(`to` 미포함)입니다. 시간대 없는 값·날짜만은 422, `from > to`는 422, `from = to`는 0건입니다. KST → UTC 변환은 프론트가 합니다(예: KST 6/30 하루 → `from=2026-06-29T15:00:00Z&to=2026-06-30T15:00:00Z`).
->
-> 2026-11-03 범위 조정: 명세 4.3의 주문 상세 `lines[]`는 **보류**해 응답에 없습니다(6절). 검색어의 SKU 코드·상품명 일치는 서버 안에서만 씁니다.
 
 ## 1. 전체 흐름
 
@@ -23,12 +21,14 @@ sequenceDiagram
     S->>S: from > to 확인 (422)
     S->>DB: orders ⋈ warehouses 한 페이지 + 그 페이지의 실제 출고일 역산 (SQL 1회)
     S->>DB: 같은 필터의 건수 (SQL 1회)
+    S->>DB: 페이지의 주문 ID 로 order_lines ⋈ skus (SQL 1회)
+    S->>S: 주문별로 상세 묶기
     S-->>W: 200 {items, page, size, totalCount, totalPages}
 ```
 
 - 고객사 범위는 **토큰의 `company_id`** 입니다. OWNER·ADMIN은 소속 고객사가 없어 403입니다.
 - `orders`·`order_lines`·`warehouses`·`skus`는 고객사 범위 테이블이라 RLS 컨텍스트를 먼저 설정합니다. 로컬 개발 DB는 슈퍼유저라 RLS를 우회하므로 SQL마다 `company_id` 조건을 직접 겁니다(ERD 설명 4.6).
-- 한 페이지에 SQL은 2회(목록·건수)입니다. 실제 출고일 역산(3절)은 목록 문장 안에서 잘라낸 페이지에 대해서만 합니다.
+- 한 페이지에 SQL은 3회(목록·건수·상세)입니다. 상세는 페이지의 주문 ID 배열로 한 번에 읽어 N+1이 없습니다. 실제 출고일 역산(3절)은 목록 문장 안에서 잘라낸 페이지에 대해서만 합니다.
 
 ## 2. 조회 API
 
@@ -80,7 +80,20 @@ HTTP/1.1 200 OK
       "securedDate": null,
       "plannedDispatchDate": null,
       "actualDispatchDate": null,
-      "expectedDeliveryDate": null
+      "expectedDeliveryDate": null,
+      "lines": [
+        {
+          "lineNo": 1,
+          "sku": {
+            "skuId": "834d3409-102e-5304-ae32-6ab4607a5d82",
+            "skuCode": "SKU-003",
+            "productName": "A Glow Hydra Cream 50ml"
+          },
+          "orderedQuantity": 1,
+          "shippedQuantity": 0,
+          "lineStatus": "ACTIVE"
+        }
+      ]
     }
   ],
   "page": 1,
@@ -100,6 +113,10 @@ HTTP/1.1 200 OK
 | `status` | 주문 상태 6종. **`OPEN`에는 재고 미확보 주문과 확보 후 출고 대기 주문이 함께 있습니다**(명세 4.3 주의) |
 | `actualDispatchDate` | 실제 출고일(UTC 날짜, `YYYY-MM-DD`). 수집 변경 기록으로 역산한 값이며 출고 전이면 `null`(3절) |
 | `securedDate`, `plannedDispatchDate`, `expectedDeliveryDate` | 재고 확보일·출고 예정일·배송 예정일. **아직 계산하지 않아 항상 `null`**(3절) |
+| `lines[]` | 주문 상세. `lineNo` 오름차순, 안쪽 배열이라 페이지 없이 그대로. 상세가 없으면 `[]` |
+| `lines[].sku` | 상품 요약 객체(응답 규칙 5.2) |
+| `lines[].orderedQuantity`, `shippedQuantity` | 주문 수량, 출고 수량(0 ~ 주문 수량) |
+| `lines[].lineStatus` | `ACTIVE`·`REMOVED_AT_SOURCE` |
 
 출고한 주문의 예: 로컬 DB `A-ORD-20260627-0213`(`DELIVERED`, 주문 6/27 23:35Z)은 상품 줄의 첫 변경이 6/29 00:02Z 수집에 기록되어 `actualDispatchDate`가 `"2026-06-28"`입니다.
 
@@ -114,7 +131,7 @@ HTTP/1.1 200 OK
 | 고객 권역 | `WEST` / `EAST` | 서부 / 동부 |
 | 판매 채널 | `AMAZON` / `SEPHORA` | Amazon / Sephora |
 
-- 목록 열은 주문 번호·채널·주문 일시·약속 배송일·출고 창고·고객 권역·상태를 권합니다. 상품 열과 펼쳐 보기는 `lines[]` 보류와 함께 뺐습니다.
+- 목록 열은 주문 번호·채널·주문 일시·약속 배송일·출고 창고·고객 권역·상품(첫 SKU 상품명 + "외 N건")·상태를 권합니다. 주문당 상세는 평균 1.5줄, 최대 3줄이라 펼쳐 보기로 충분합니다.
 - 원천에서 삭제된 주문(`REMOVED_AT_SOURCE`)도 목록에 나옵니다. 숨기려면 `status` 필터를 씁니다.
 
 ### 실패 응답
@@ -153,6 +170,7 @@ HTTP/1.1 200 OK
 - 목록·건수가 같은 `filtered` CTE를 씁니다. 필터 값이 `NULL`이면 그 조건은 통과합니다(`CAST(:x AS …) IS NULL OR …`).
 - 기간은 `ordered_at >= :ordered_from AND ordered_at < :ordered_to`입니다.
 - `q`는 `order_code ILIKE` 또는 `EXISTS(order_lines ⋈ skus WHERE sku_code ILIKE OR product_name ILIKE)`입니다. 패턴의 `\`·`%`·`_`는 이스케이프합니다.
+- 상세는 `order_id = ANY(:order_ids)`로 한 번에 읽고 `order_id, line_no` 순입니다.
 
 로컬 DB(고객사 A 주문 106,983건) 실측: 필터 없음 1페이지 약 60ms, 기간 필터 약 15ms, 검색(`q`)은 주문 번호·SKU 코드·상품명 모두 약 440~520ms(상품명 'hydra cream' 18,692건 일치 기준). `orders`에 `(company_id, ordered_at)` 색인, `order_lines`에 `(company_id, sku_id)` 색인이 없어 검색은 순차 스캔입니다. 느려지면 색인 추가를 별도 결정(스키마 변경은 데이터 팀 DDL과 조율)으로 다룹니다.
 
@@ -163,13 +181,12 @@ HTTP/1.1 200 OK
 | 파일 | 내용 |
 | --- | --- |
 | `test_order_api.py` | 401·403, 형식 오류 9종 422, camelCase 응답 모양, 기본값·파라미터 전달, RLS 컨텍스트 |
-| `test_order_list_service.py` | 다른 시간대 → UTC, `from > to` 422, 검색어 공백, 행 변환(역산한 출고일 전달, 나머지 세 값 `null`) |
+| `test_order_list_service.py` | 다른 시간대 → UTC, `from > to` 422, 검색어 공백, 행 변환(역산한 출고일 전달, 나머지 세 값 `null`), 상세 줄 주문별 묶기 |
 | `test_order_repository.py` | 가짜 세션으로 SQL 문장·파라미터·행 변환, 출고일 역산 CTE 가 페이지에만 조인하는지 |
-| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 출고일 역산 값을 독립 SQL 과 대조, 주문 번호·SKU 코드·상품명 검색 |
+| `test_order_repository_sql_smoke.py` | 실제 DB(읽기 전용): 정렬, 필터별 건수, 출고일 역산 값을 독립 SQL 과 대조, 주문 번호·SKU 코드·상품명 검색, 상세 소속 |
 
 ## 6. 아직 없는 것
 
-- 주문 상세 `lines[]`(명세 4.3: `lineNo`, SKU 요약, `orderedQuantity`, `shippedQuantity`, `lineStatus`). 화면에서 주문을 펼쳐 상품을 보는 기능을 보류해(2026-11-03) 응답에서 뺐습니다. 다시 넣을 때는 페이지의 주문 ID 배열로 `order_lines ⋈ skus`를 한 번에 읽어 주문별로 묶습니다(이전 구현 커밋 `1f8c9fc` 참고)
 - `securedDate`·`plannedDispatchDate`·`expectedDeliveryDate`(3절): 참조 엔진의 배정 재생·리드타임 계산을 포팅해야 함. 그때까지 `null`
 - `data_change_records(entity_ref)` 색인 여부: 출고일 역산을 페이지 밖(예: 필터)으로 넓히려면 필요
 - `GET /validation-issues`(하단 오류 배너)

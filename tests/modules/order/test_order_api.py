@@ -12,6 +12,7 @@ from app.core.security.cookies import ACCESS_TOKEN_COOKIE
 from app.core.security.jwt import create_access_token
 from app.main import app
 from app.modules.order.application.order_list_service import (
+    OrderLineItem,
     OrderListItem,
     OrderListResult,
 )
@@ -21,6 +22,7 @@ URL = "/api/v1/orders"
 COMPANY_ID = uuid.uuid7()
 ORDER_ID = uuid.uuid7()
 WAREHOUSE_ID = uuid.uuid7()
+SKU_ID = uuid.uuid7()
 
 
 def _access_cookie(role_code: str, company_id: uuid.UUID | None = None) -> dict:
@@ -50,6 +52,20 @@ class FakeSession:
         self.executed.append((str(statement), params))
 
 
+def _line(**overrides) -> OrderLineItem:
+    values = {
+        "line_no": 1,
+        "sku_id": SKU_ID,
+        "sku_code": "SKU-001",
+        "product_name": "A Glow Hydra Toner Pad 60ea",
+        "ordered_quantity": 3,
+        "shipped_quantity": 3,
+        "line_status": "ACTIVE",
+    }
+    values.update(overrides)
+    return OrderLineItem(**values)
+
+
 def _item(**overrides) -> OrderListItem:
     values = {
         "order_id": ORDER_ID,
@@ -66,6 +82,7 @@ def _item(**overrides) -> OrderListItem:
         "planned_dispatch_date": None,
         "actual_dispatch_date": date(2026, 6, 28),
         "expected_delivery_date": None,
+        "lines": (_line(), _line(line_no=2, shipped_quantity=0)),
     }
     values.update(overrides)
     return OrderListItem(**values)
@@ -80,7 +97,10 @@ class FakeOrderListService:
     async def get_page(self, tenant, **kwargs):
         self.calls.append((tenant, kwargs))
         return OrderListResult(
-            items=[_item(), _item(order_id=uuid.uuid7(), status="DELIVERED")],
+            items=[
+                _item(),
+                _item(order_id=uuid.uuid7(), status="DELIVERED", lines=()),
+            ],
             total_count=20,
             page=kwargs["page"],
         )
@@ -171,6 +191,11 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         20,
         1,
     )
+    sku = {
+        "skuId": str(SKU_ID),
+        "skuCode": "SKU-001",
+        "productName": "A Glow Hydra Toner Pad 60ea",
+    }
     assert body["items"][0] == {
         "orderId": str(ORDER_ID),
         "orderCode": "A-ORD-20260630-0177",
@@ -188,10 +213,27 @@ async def test_고객사_사용자는_200과_camelCase_공통_목록_모양을_�
         "plannedDispatchDate": None,
         "actualDispatchDate": "2026-06-28",
         "expectedDeliveryDate": None,
+        "lines": [
+            {
+                "lineNo": 1,
+                "sku": sku,
+                "orderedQuantity": 3,
+                "shippedQuantity": 3,
+                "lineStatus": "ACTIVE",
+            },
+            {
+                "lineNo": 2,
+                "sku": sku,
+                "orderedQuantity": 3,
+                "shippedQuantity": 0,
+                "lineStatus": "ACTIVE",
+            },
+        ],
     }
-    # 출고 날짜는 값이 없어도 키를 빼지 않고 null 로 준다 (응답 규칙 4절). 주문 상세 lines 는 보류라 없다
+    # 출고 날짜는 값이 없어도 키를 빼지 않고 null 로 준다 (응답 규칙 4절)
     assert body["items"][0]["securedDate"] is None
-    assert "lines" not in body["items"][0]
+    # 상세가 없는 주문도 lines 를 빼지 않고 빈 배열로 준다
+    assert body["items"][1]["lines"] == []
     assert body["items"][1]["status"] == "DELIVERED"
 
 

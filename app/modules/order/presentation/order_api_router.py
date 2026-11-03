@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/v1/orders", tags=["주문 (Client)"])
     summary="주문 목록 (API 10)",
     description=(
         "고객사의 주문을 주문 일시 최신순(같으면 orderId 순)으로 한 페이지씩 돌려줍니다. "
-        "행마다 출고 창고 요약(warehouse)과 출고 관련 날짜 4개가 붙습니다(주문 상세 lines[] 는 보류). "
+        "행마다 출고 창고 요약(warehouse)과 주문 상세(lines[], SKU 요약 포함)가 붙습니다. "
         "주문 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함). "
         "시간대가 없는 값이나 날짜만 보내면 422 입니다(명세 C18). "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다. "
