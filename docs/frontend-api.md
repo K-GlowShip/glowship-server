@@ -8,6 +8,7 @@
 | GET | `/delay-events` | 지연 목록·탭별 건수. 필터 `status`(`ALL`·`READY_FOR_REVIEW`·`ANALYZING`·`ON_HOLD`·`NEEDS_REANALYSIS`), `warehouseId`, `from`·`to`(UTC 날짜, `to` 포함), `q`, `hasFinalDecision`, `page`·`size`. 응답 `items`·`page`·`size`·`totalCount`·`totalPages`와 `counts`(키 `all`·`readyForReview`·`analyzing`·`onHold`·`needsReanalysis`, 탭·`hasFinalDecision` 필터 제외). 정렬은 `detectedAt` 최신순, 같으면 `delayEventId` | GLOW-16 | 11/02 |
 | GET | `/delay-events/{delayEventId}` | 지연 상세·분석 실행 버전 이력(`runs[]`, 최신 버전 먼저). 다른 고객사 건은 404 | GLOW-16 | 11/02 |
 | GET | `/orders` | 주문 목록. 필터 `status`(주문 상태 6종), `warehouseId`, `salesChannel`(`AMAZON`·`SEPHORA`), `from`·`to`(ISO 8601 UTC 시각, `[from, to)`로 `to` 미포함), `q`(주문 번호·SKU 코드·상품명), `page`·`size`. 행마다 `warehouse` 요약과 `lines[]`(`lineNo`, `sku` 요약, `orderedQuantity`, `shippedQuantity`, `lineStatus`). 정렬은 `orderedAt` 최신순, 같으면 `orderId`. 출고 날짜 4개(`securedDate`·`plannedDispatchDate`·`actualDispatchDate`·`expectedDeliveryDate`)는 ERP 원천 열이라 수집이 채우기 전까지 `null`. 고객사 사용자 전용. [문서](order/order-list.md) | GLOW-109 | 2026-11-03 |
+| GET | `/skus` | 상품(SKU) 목록. 필터 `q`(상품명·ERP 코드), `onlyErrors`, `page`·`size`. 행마다 `hs10`, 원천별 외부 코드 `externalCodes[]`(INVENTORY·SHIPMENT 항목 고정, 매핑 없으면 `externalCode: null`·`UNMAPPED`)와 `validationStatus`(`OK`·`CODE_MISSING`·`ISSUE_OPEN`). 정렬은 `skuCode`, 같으면 `skuId`. 고객사 사용자 전용. [문서](master-data/sku-list.md) | GLOW-104 | 2026-11-03 |
 
 **목록 API 공통:** 요청 `page`(1부터, 기본 1)·`size`(기본 20, 최대 100). 응답 `items`·`page`·`size`·`totalCount`·`totalPages` (`app/core/pagination.py`)
 

@@ -53,7 +53,7 @@ app/
     │   ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
     │   └── infrastructure/        # ORM 모델, enum, Repository
     ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)
-    ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references
+    ├── master_data/               # skus, warehouses, external_entity_mappings, market_leadtime_references + 상품 목록 조회 API
     ├── operating_rule/            # operating_rule_sets, operating_lead_times
     ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records + 원천 유형별 마지막 수집 상태 조회 API
     ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
@@ -66,7 +66,7 @@ scripts/
 └── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```
 
-> 사용자·고객사·데이터 수집 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
+> 사용자·고객사·데이터 수집·마스터 데이터·지연 분석 모듈을 제외한 모듈은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
 
 ### 모듈 계층
 

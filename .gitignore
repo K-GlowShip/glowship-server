@@ -28,3 +28,6 @@ dist/
 .mypy_cache/
 .coverage
 htmlcov/
+
+# 팀 공유 참고 자료(합성데이터·명세). 저장소에 올리지 않는다
+resource/
