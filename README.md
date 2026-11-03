@@ -61,7 +61,7 @@ app/
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
     ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개 + 분석 에이전트(application/agent)
     └── decision/                  # member_drafts, final_decisions
-migrations/                        # Alembic 마이그레이션 (versions/0001: v5 스키마 + RLS, 0002~0005: v6.2 DDL에 맞추는 변경)
+migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열)
 scripts/
 └── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```

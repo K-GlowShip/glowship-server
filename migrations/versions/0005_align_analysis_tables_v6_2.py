@@ -22,7 +22,8 @@ C(분석 에이전트) 분석 표 5개와 delay_events 를 v6.2 DDL 과 같게 �
 
 v6.2 DDL 로 직접 만든 DB(팀 공통 개발 DB)는 이미 이 모양이므로 upgrade 가 아무것도 바꾸지 않고 건너뛴다(0004 와 같은 방식).
   - 0005 가 만드는 열·제약·인덱스가 모두 있고, 옛 모양(옛 열 이름, 대응안·결과 CHECK 의 v5 코드값)이 없으면 v6.2 DB 로 본다.
-    판별 목록은 아래 생성용 목록(_columns, _CHECKS_BY_TABLE 등)에서 뽑으므로 만드는 것과 어긋나지 않는다.
+    판별 목록 중 새 열·CHECK 는 생성용 목록(_columns, _CHECKS_BY_TABLE, _DELAY_EVENT_CHECKS)에서, FK·고유 제약·인덱스는
+    생성과 같은 이름 상수에서 뽑는다. 이름이 바뀌는 2열과 episode_no 3개만 판별 목록에 따로 적는다.
   - 일부만 있으면 섞인 상태라 시작 전에 멈추고 빠진 항목을 보여 준다.
   - 이름만 확인하고 제약 식의 내용은 비교하지 않는다(대응안·결과 CHECK 3개는 v5 코드값이 없는지만 본다).
   - `alembic stamp 0005` 로 기준점만 맞춰도 결과는 같다.
@@ -236,9 +237,12 @@ _NULLABLE_COUNTS = ("fully_recovered_orders", "not_recovered_orders")
 
 # v6.2 DDL DB 판별용 (위 docstring 참고). 열·제약 목록은 _v62_markers 가 생성용 목록에서 뽑는다
 _TRIGGER_FK = "fk_analysis_runs__trigger_shipment_schedule_snapshot_id"
+_EPISODE_UK = "delay_events_uk3"
+_AUTO_TRIGGER_UQ = "analysis_runs_auto_trigger_uq"
+_RANK_UQ = "response_options_rank_uq"
 _NEW_INDEXES = (
-    ("analysis_runs", "analysis_runs_auto_trigger_uq"),
-    ("response_options", "response_options_rank_uq"),
+    ("analysis_runs", _AUTO_TRIGGER_UQ),
+    ("response_options", _RANK_UQ),
 )
 _OLD_COLUMNS = (
     ("response_options", "partially_recovered_orders"),
@@ -286,7 +290,7 @@ def _v62_markers() -> dict[str, set[tuple[str, str]]]:
     constraints = {(t, n) for t, checks in _CHECKS_BY_TABLE.items() for n in checks}
     constraints |= {("delay_events", n) for n in _DELAY_EVENT_CHECKS}
     constraints |= {
-        ("delay_events", "delay_events_uk3"),
+        ("delay_events", _EPISODE_UK),
         ("analysis_runs", _TRIGGER_FK),
     }
     return {"열": columns, "제약": constraints, "인덱스": set(_NEW_INDEXES)}
@@ -364,7 +368,7 @@ def upgrade() -> None:
     for name, condition in _DELAY_EVENT_CHECKS.items():
         op.create_check_constraint(name, "delay_events", condition)
     op.create_unique_constraint(
-        "delay_events_uk3", "delay_events", ["company_id", "shipment_id", "episode_no"]
+        _EPISODE_UK, "delay_events", ["company_id", "shipment_id", "episode_no"]
     )
 
     # 이름 변경과 NULL 허용 (분석 결과 행이 없음을 위에서 확인)
@@ -402,14 +406,14 @@ def upgrade() -> None:
         ["company_id", "shipment_schedule_snapshot_id"],
     )
     op.create_index(
-        "analysis_runs_auto_trigger_uq",
+        _AUTO_TRIGGER_UQ,
         "analysis_runs",
         ["delay_event_id", "trigger_shipment_schedule_snapshot_id"],
         unique=True,
         postgresql_where=sa.text("trigger_type = 'AUTO'"),
     )
     op.create_index(
-        "response_options_rank_uq",
+        _RANK_UQ,
         "response_options",
         ["analysis_run_id", "recommendation_rank"],
         unique=True,
@@ -426,8 +430,8 @@ def downgrade() -> None:
         )
     _stop_if_analysis_rows("downgrade")
 
-    op.drop_index("response_options_rank_uq", table_name="response_options")
-    op.drop_index("analysis_runs_auto_trigger_uq", table_name="analysis_runs")
+    op.drop_index(_RANK_UQ, table_name="response_options")
+    op.drop_index(_AUTO_TRIGGER_UQ, table_name="analysis_runs")
     op.drop_constraint(
         _TRIGGER_FK,
         "analysis_runs",
@@ -459,7 +463,7 @@ def downgrade() -> None:
         nullable=False,
     )
 
-    op.drop_constraint("delay_events_uk3", "delay_events", type_="unique")
+    op.drop_constraint(_EPISODE_UK, "delay_events", type_="unique")
     for name in reversed(_DELAY_EVENT_CHECKS):
         op.drop_constraint(name, "delay_events", type_="check")
     op.drop_column("delay_events", "episode_no")
