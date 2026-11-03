@@ -45,7 +45,7 @@ sequenceDiagram
 | 원천 유형 | 원천 시스템 | 레코드 | 코드 변환 |
 | --- | --- | --- | --- |
 | `PRODUCT` | ERP | `SourceSku` | 없음 (업무 키 `sku_code`) |
-| `WAREHOUSE` | ERP | `SourceWarehouse` | 없음 (업무 키 `warehouse_code`) |
+| `WAREHOUSE` | WMS | `SourceWarehouse` | 없음 (업무 키 `warehouse_code`) |
 | `ORDER` | ERP | `SourceOrder` + 상세 | 내부 SKU·창고 코드 그대로 |
 | `SHIPMENT` | TMS | `SourceShipment` + 상세 | `external_entity_mappings`(`MAPPED`) TMS 코드 (`TMS-LAX`·`TMS-SKU-001` …) |
 | `INVENTORY` | WMS | `SourceInventory` | `external_entity_mappings`(`MAPPED`) WMS 코드 |
@@ -133,10 +133,22 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 ## 7. 아직 없는 것
 
 - 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
-- 검증 오류 기록·분석 보류(GLOW-15)
+- 검증 오류 기록·해소·분석 보류(GLOW-15). 거부를 `data_validation_issues`에 `OPEN`으로 남기는 것과, 같은 원천 레코드가 뒤 수집에서 정상 적재되면 `RESOLVED`·`resolved_at`으로 바꾸는 **해소**도 GLOW-15 몫입니다(명세 v6.2 4.3 `GET /validation-issues` "해소는 수집 적재가 기록한다").
 - **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
 - **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
+  - **그 전까지 쓰는 수동 복구 (개발 DB).** 서버를 강제로 끝내는 등으로 `RUNNING`이 남아 `SYNC_IN_PROGRESS`로 막히면, 그 수집을 돌리던 프로세스가 **끝났는지 먼저 확인**한 뒤 한 건씩 `FAILED`로 바꿉니다. 살아 있는 수집에 쓰면 그 수집의 완료 기록이 실패합니다(fencing 이 없음). `applied_seq`는 `RUNNING`일 때 이미 비어 있어 `data_sync_runs_ck8`을 어기지 않습니다.
+
+    ```sql
+    -- 1) 막고 있는 RUNNING 찾기
+    SELECT data_sync_run_id, company_id, source_domain, started_at
+      FROM data_sync_runs WHERE status = 'RUNNING' ORDER BY started_at;
+    -- 2) 프로세스가 끝난 것을 확인한 실행만, ID 로 한 건씩
+    UPDATE data_sync_runs SET status = 'FAILED', finished_at = now()
+     WHERE data_sync_run_id = '<위에서 찾은 ID>' AND status = 'RUNNING';
+    ```
+
+    로컬에서는 `docker exec -it glowship-db psql -U username -d glowship_final`로 들어가 실행합니다(superuser 라 RLS 를 거치지 않음).
 
 ## 8. 검증
 

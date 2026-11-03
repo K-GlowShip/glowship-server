@@ -192,7 +192,12 @@ def diff_inventory(
 def diff_order(
     existing: ExistingOrder | None, incoming: OrderRecord
 ) -> OrderDiff | None:
-    """주문 머리와 상세를 함께 비교합니다. 원천 응답에 없는 기존 상세는 그대로 둡니다 (삭제로 보지 않음)."""
+    """
+    주문 머리와 상세를 함께 비교합니다. 원천 응답에 없는 기존 상세는 그대로 둡니다 (삭제로 보지 않음).
+    머리 변경 기록은 상세의 SKU 마다 남기므로, 상세가 하나도 없는 주문은 머리가 바뀌어도 변경 기록이 0건입니다.
+    의도한 동작입니다: 변경 기록은 SKU 가 필수이고(data_change_records_ck3), 상세 없는 주문은 재고를 쓰지 않아
+    분석 결과(SKU 기준)에 영향이 없으므로 STALE 판정 대상이 아닙니다. 행 자체는 그대로 갱신합니다.
+    """
     header = diff_row(
         Existing(existing.row_id, existing.record) if existing else None, incoming
     )

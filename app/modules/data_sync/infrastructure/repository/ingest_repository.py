@@ -506,7 +506,10 @@ class IngestRepository:
     async def has_running_run(
         self, company_id: uuid.UUID, source_domain: SourceDomain
     ) -> bool:
-        """같은 고객사·원천에 RUNNING 수집이 있는가. 시작 시각과 관계없이 봅니다 (L1 안에서 호출)."""
+        """
+        같은 고객사·원천에 RUNNING 수집이 있는가. 시작 시각과 관계없이 봅니다 (L1 안에서 호출).
+        작업이 죽어 남은 RUNNING 은 자동으로 풀지 않습니다. 수동 복구 SQL 은 docs/data-sync/ingest.md 7절입니다.
+        """
         return bool(
             await self.db.scalar(
                 select(
