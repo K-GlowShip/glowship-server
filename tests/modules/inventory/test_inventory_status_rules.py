@@ -101,6 +101,39 @@ def test_가용_0이고_판매가_있으면_기준일에_품절이고_RISK():
     assert outlook.status == InventoryStatus.RISK
 
 
+@pytest.mark.parametrize(
+    ("available", "daily_sales"),
+    [(130_000, average_daily_sales(1, 28)), (10_000_000, 0.5)],
+)
+def test_날짜로_나타낼_수_없는_먼_날은_None이고_OK(available, daily_sales):
+    """판매량이 아주 작고 재고가 크면 날짜가 date.max 를 넘는다 → 그 날짜는 None, 상태 OK (C22, PR #23 리뷰)"""
+    outlook = judge_inventory(
+        available_quantity=available,
+        daily_sales=daily_sales,
+        safety_stock_days=14,
+        basis_date=D,
+    )
+
+    assert (outlook.safety_stock_breach_date, outlook.stockout_date) == (None, None)
+    assert outlook.status == InventoryStatus.OK
+
+
+def test_하회일은_나타낼_수_있고_품절일만_넘으면_품절일만_None():
+    """μ = 1, 안전재고 20, 가용 = (date.max − D) + 10: 하회일은 offset span − 10(나타낼 수 있음),
+    품절일은 offset span + 9(date.max 뒤) → 품절일만 None. 상태는 하회일로 정하므로 OK."""
+    span = (date.max - D).days
+    outlook = judge_inventory(
+        available_quantity=span + 10,
+        daily_sales=1.0,
+        safety_stock_days=20,
+        basis_date=D,
+    )
+
+    assert outlook.safety_stock_breach_date == D + timedelta(days=span - 10)
+    assert outlook.stockout_date is None
+    assert outlook.status == InventoryStatus.OK
+
+
 def test_안전재고는_소수_4자리로_고정한_뒤_올린다():
     """μ = 1/3, 7일 → 2.3333…→ 3. μ × 일수가 float 잡음으로 정수를 살짝 넘어도 올리지 않는다."""
     assert ceil_q4((1 / 3) * 7) == 3

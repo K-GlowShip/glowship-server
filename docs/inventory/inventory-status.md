@@ -21,6 +21,7 @@
 | `status` | 하회일 ≤ D → `RISK`, D < 하회일 ≤ D + `safety_stock_days` → `CAUTION`, 그 밖 → `OK` |
 
 - μ가 0이면(그 창고에서 팔리지 않는 SKU, 예: 한국 창고 WH-KR) 두 날짜 모두 `null`이고 `OK`입니다.
+- μ가 아주 작아 날짜가 `9999-12-31`을 넘으면(예: 하루 1/28개에 가용 13만 개) 그 날짜는 `null`입니다(명세 C22). 하회일이 `null`이면 `OK`입니다.
 - 계산 함수는 `app/modules/inventory/application/inventory_status_rules.py`(순수 함수)이고, 날마다 반복하지 않고 이분 탐색으로 날짜를 찾습니다. 테스트가 엔진의 하루씩 누적하는 반복과 무작위 1,000건에서 같은 날짜를 내는지 확인합니다.
 
 ## 2. 조회 API

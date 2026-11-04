@@ -14,6 +14,7 @@ from enum import StrEnum
           품절일           = 남은 수량이 0 이하가 되는 첫날
         남은 수량은 소수 4자리(half-even)로 비교하고, 올림도 그 값에서 한다 (엔진 common.q4·ceil_i, DB numeric(12,4)).
       - μ 가 0 이면 줄지 않으므로 두 날짜 모두 None 이고 OK 다.
+      - μ 가 아주 작아 날짜가 date.max(9999-12-31)를 넘으면 그 날짜는 None 이다(C22). 하회일이 None 이면 OK 다.
       - status: 하회일 ≤ D → RISK, D < 하회일 ≤ D + safety_stock_days → CAUTION, 그 밖(하회일 없음 포함) → OK
 """
 
@@ -70,6 +71,13 @@ def _first_offset(available: int, daily_sales: float, below) -> int:
     return low
 
 
+def _date_after(basis_date: date, offset: int) -> date | None:
+    """basis_date + offset 일. date.max 를 넘어 날짜로 나타낼 수 없으면 None (C22)"""
+    if offset > (date.max - basis_date).days:
+        return None
+    return basis_date + timedelta(days=offset)
+
+
 def judge_inventory(
     *,
     available_quantity: int,
@@ -92,16 +100,18 @@ def judge_inventory(
     stockout_offset = _first_offset(
         available_quantity, daily_sales, lambda rest: rest <= 0
     )
-    breach_date = basis_date + timedelta(days=breach_offset)
-    if breach_date <= basis_date:
+    breach_date = _date_after(basis_date, breach_offset)
+    if breach_date is None:
+        status = InventoryStatus.OK
+    elif breach_offset == 0:
         status = InventoryStatus.RISK
-    elif breach_date <= basis_date + timedelta(days=safety_stock_days):
+    elif breach_offset <= safety_stock_days:
         status = InventoryStatus.CAUTION
     else:
         status = InventoryStatus.OK
     return InventoryOutlook(
         safety_stock_quantity=safety_stock,
         safety_stock_breach_date=breach_date,
-        stockout_date=basis_date + timedelta(days=stockout_offset),
+        stockout_date=_date_after(basis_date, stockout_offset),
         status=status,
     )
