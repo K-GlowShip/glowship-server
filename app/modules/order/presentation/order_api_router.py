@@ -1,10 +1,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import AwareDatetime
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
+from app.core.query_types import IsoAwareDatetime
 from app.core.security.tenant import TenantContext, get_tenant_context
 from app.modules.order.application.order_list_service import OrderListService
 from app.modules.order.dependencies import get_order_list_service
@@ -62,20 +62,20 @@ async def list_orders(
     sales_channel: SalesChannel | None = Query(
         default=None, alias="salesChannel", description="판매 채널: AMAZON·SEPHORA"
     ),
-    ordered_from: AwareDatetime | None = Query(
+    ordered_from: IsoAwareDatetime | None = Query(
         default=None,
         alias="from",
         description=(
             "주문 일시 시작 (ISO 8601 UTC 시각, 포함). 예: 2026-06-30T15:00:00Z. "
-            "시간대가 없는 값·날짜만은 422"
+            "시간대가 없는 값·날짜만·Unix 초 같은 숫자는 422"
         ),
     ),
-    ordered_to: AwareDatetime | None = Query(
+    ordered_to: IsoAwareDatetime | None = Query(
         default=None,
         alias="to",
         description=(
             "주문 일시 끝 (ISO 8601 UTC 시각, 미포함). 예: 2026-07-01T15:00:00Z. "
-            "시간대가 없는 값·날짜만은 422"
+            "시간대가 없는 값·날짜만·Unix 초 같은 숫자는 422"
         ),
     ),
     q: str | None = Query(

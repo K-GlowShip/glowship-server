@@ -1,12 +1,10 @@
-import re
 import uuid
-from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import AwareDatetime, BeforeValidator
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
+from app.core.query_types import IsoAwareDatetime
 from app.core.security.auth import CurrentUser, require_roles
 from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventQueryService,
@@ -24,19 +22,6 @@ router = APIRouter(prefix="/api/v1", tags=["지연 조회 (Client)"])
 
 # Ruff B008: 의존성 팩토리 호출은 기본 인자가 아니라 모듈 수준에서 한 번만 만든다.
 require_client = require_roles(UserRoleCode.CLIENT_MEMBER, UserRoleCode.CLIENT_LEAD)
-
-# 명세 v6.2 2절 시간: 기간 필터는 ISO 8601 시각 문자열만 받는다.
-# AwareDatetime 은 "0"·"1782777600" 같은 숫자를 Unix 초(UTC)로 바꿔 받으므로 날짜·시각 모양이 아니면 먼저 거부한다.
-_ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T")
-
-
-def _require_iso_datetime(value: object) -> object:
-    if isinstance(value, str) and not _ISO_DATETIME.match(value):
-        raise ValueError("ISO 8601 시각이어야 합니다 (예: 2026-10-20T15:00:00Z)")
-    return value
-
-
-IsoAwareDatetime = Annotated[AwareDatetime, BeforeValidator(_require_iso_datetime)]
 
 _COMMON_ERRORS = {
     401: {
