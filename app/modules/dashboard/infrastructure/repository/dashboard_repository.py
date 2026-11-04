@@ -12,6 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
         적재된 수집(SUCCEEDED·PARTIAL_SUCCESS)의 finished_at 최댓값이고, GET /data-sync-runs/latest 의 lastSyncedAt 과 같은 기준이다.
       - 입고 추이는 날짜별 선적 수다: 계획 = planned_3pl_inbound_date, 실제 = actual_3pl_inbound_date.
         0건인 날은 여기서 돌려주지 않고 서비스가 채운다.
+      - 요약 KPI 의 현재 값 (명세 4.4 표, C22):
+          진행 중인 선적 = current_stage <> RECEIVED 인 선적 수
+          지연 선적     = 열린 에피소드(closed_at 없음) 중 현재 실행(is_latest)이 NO_DELAY 가 아니고
+                          (실행이 없어도 센다) 그 지연의 어느 실행에도 최종 선택이 없는 것의 서로 다른 선적 수
+          정시 입고율    = (시작일, 끝일] 에 입고된 선적 중 actual ≤ planned 인 비율 (서비스가 나눗셈, 0건이면 null)
+          위험 주문     = 현재 실행이 READY_FOR_REVIEW 인 지연들의 at_risk_orders 를 주문으로 묶은 서로 다른 주문 수 (D21)
+          미출고 주문   = status 가 OPEN·PARTIALLY_SHIPPED 인 주문 수 (위험 주문 비율의 분모)
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
@@ -55,6 +62,79 @@ _INBOUND_COUNTS = text(
     bindparam("start_date", type_=Date()),
     bindparam("end_date", type_=Date()),
 )
+
+
+_IN_TRANSIT_SHIPMENTS = text(
+    """
+    SELECT COUNT(*)
+      FROM shipments
+     WHERE company_id = :company_id AND current_stage <> 'RECEIVED'
+    """
+).bindparams(bindparam("company_id", type_=_UUID))
+
+_DELAYED_SHIPMENTS = text(
+    """
+    SELECT COUNT(DISTINCT e.shipment_id)
+      FROM delay_events e
+      LEFT JOIN analysis_runs r
+        ON r.company_id = e.company_id AND r.delay_event_id = e.delay_event_id AND r.is_latest
+     WHERE e.company_id = :company_id
+       AND e.closed_at IS NULL
+       AND (r.status IS NULL OR r.status <> 'NO_DELAY')
+       AND NOT EXISTS (
+           SELECT 1
+             FROM final_decisions f
+             JOIN analysis_runs fr
+               ON fr.company_id = f.company_id AND fr.analysis_run_id = f.analysis_run_id
+            WHERE f.company_id = e.company_id AND fr.delay_event_id = e.delay_event_id
+       )
+    """
+).bindparams(bindparam("company_id", type_=_UUID))
+
+_INBOUND_TIMELINESS = text(
+    """
+    SELECT COUNT(*) AS received_count,
+           COUNT(*) FILTER (WHERE actual_3pl_inbound_date <= planned_3pl_inbound_date) AS on_time_count
+      FROM shipments
+     WHERE company_id = :company_id
+       AND actual_3pl_inbound_date > :after_date
+       AND actual_3pl_inbound_date <= :until_date
+    """
+).bindparams(
+    bindparam("company_id", type_=_UUID),
+    bindparam("after_date", type_=Date()),
+    bindparam("until_date", type_=Date()),
+)
+
+_AT_RISK_ORDERS = text(
+    """
+    SELECT COUNT(DISTINCT ol.order_id)
+      FROM at_risk_orders a
+      JOIN analysis_runs r
+        ON r.company_id = a.company_id AND r.analysis_run_id = a.analysis_run_id
+      JOIN order_lines ol
+        ON ol.company_id = a.company_id AND ol.order_line_id = a.order_line_id
+     WHERE a.company_id = :company_id
+       AND r.is_latest
+       AND r.status = 'READY_FOR_REVIEW'
+    """
+).bindparams(bindparam("company_id", type_=_UUID))
+
+_UNSHIPPED_ORDERS = text(
+    """
+    SELECT COUNT(*)
+      FROM orders
+     WHERE company_id = :company_id AND status IN ('OPEN', 'PARTIALLY_SHIPPED')
+    """
+).bindparams(bindparam("company_id", type_=_UUID))
+
+
+@dataclass(frozen=True)
+class InboundTimeliness:
+    """기간 안에 입고된 선적 수와 그중 계획일 이내 입고 수"""
+
+    received_count: int
+    on_time_count: int
 
 
 @dataclass(frozen=True)
@@ -101,3 +181,38 @@ class DashboardRepository:
             )
             for row in rows
         ]
+
+    async def count_in_transit_shipments(self, company_id: uuid.UUID) -> int:
+        """current_stage <> RECEIVED 인 선적 수"""
+        return await self.db.scalar(_IN_TRANSIT_SHIPMENTS, {"company_id": company_id})
+
+    async def count_delayed_shipments(self, company_id: uuid.UUID) -> int:
+        """열린 에피소드 중 현재 실행이 NO_DELAY 가 아니고 최종 선택 전인 지연의 서로 다른 선적 수 (C22)"""
+        return await self.db.scalar(_DELAYED_SHIPMENTS, {"company_id": company_id})
+
+    async def find_inbound_timeliness(
+        self, company_id: uuid.UUID, *, after_date: date, until_date: date
+    ) -> InboundTimeliness:
+        """(after_date, until_date] 에 실제 입고된 선적 수와 그중 계획 3PL 입고일 이내 입고 수"""
+        row = (
+            await self.db.execute(
+                _INBOUND_TIMELINESS,
+                {
+                    "company_id": company_id,
+                    "after_date": after_date,
+                    "until_date": until_date,
+                },
+            )
+        ).one()
+        return InboundTimeliness(
+            received_count=int(row.received_count),
+            on_time_count=int(row.on_time_count),
+        )
+
+    async def count_at_risk_orders(self, company_id: uuid.UUID) -> int:
+        """현재 실행이 READY_FOR_REVIEW 인 지연들의 위험 주문 수 (서로 다른 주문, D21)"""
+        return await self.db.scalar(_AT_RISK_ORDERS, {"company_id": company_id})
+
+    async def count_unshipped_orders(self, company_id: uuid.UUID) -> int:
+        """미출고 주문 수: status 가 OPEN·PARTIALLY_SHIPPED (C22)"""
+        return await self.db.scalar(_UNSHIPPED_ORDERS, {"company_id": company_id})
