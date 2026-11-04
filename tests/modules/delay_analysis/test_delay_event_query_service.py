@@ -36,6 +36,7 @@ COUNTS = DelayEventCounts(
 def _row(**kwargs) -> DelayEventRow:
     values = {
         "delay_event_id": EVENT_ID,
+        "episode_no": 1,
         "shipment_id": SHIPMENT_ID,
         "stage": "AT_SEA",
         "planned_3pl_inbound_date": date(2026, 1, 27),
@@ -53,6 +54,7 @@ def _row(**kwargs) -> DelayEventRow:
         "origin_region_code": "KR",
         "run_id": uuid.uuid7(),
         "run_status": "READY_FOR_REVIEW",
+        "run_result_class": "READY_ORDER_RISK",
         "has_final_decision": False,
         "at_risk_order_count": 4,
     } | kwargs
@@ -209,7 +211,10 @@ async def test_detail_returns_previous_expected_date_and_runs():
         status="READY_FOR_REVIEW",
         is_latest=True,
         trigger_type="AUTO",
+        trigger_reason="EPISODE_STARTED",
         parent_analysis_run_id=None,
+        completed_status="READY_FOR_REVIEW",
+        result_class="READY_ORDER_RISK",
         stale_detected_at=None,
         stale_primary_reason=None,
         started_at=datetime(2026, 1, 20, tzinfo=UTC),

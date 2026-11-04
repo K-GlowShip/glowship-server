@@ -39,6 +39,15 @@ class DelayEvent(Base):
         CheckConstraint(
             "closed_at IS NULL OR closed_at >= detected_at", name="delay_events_ck7"
         ),
+        # v6.2(0005): 에피소드 번호
+        CheckConstraint(
+            "episode_no > 0",
+            name="delay_events_ck3",
+        ),
+        CheckConstraint(
+            "dedupe_key = shipment_id::text || '\\:EP' || episode_no::text",
+            name="delay_events_ck6",
+        ),
         ForeignKeyConstraint(
             ["company_id", "shipment_id"],
             ["shipments.company_id", "shipments.shipment_id"],
@@ -60,6 +69,9 @@ class DelayEvent(Base):
             ],
             name="fk_delay_events__previous_shipment_schedule_snapshot_id",
         ),
+        UniqueConstraint(
+            "company_id", "shipment_id", "episode_no", name="delay_events_uk3"
+        ),
         # v6.2: 한 선적에 열린 지연 에피소드는 하나만
         Index(
             "delay_events_open_uq",
@@ -73,6 +85,7 @@ class DelayEvent(Base):
     delay_event_id: Mapped[uuid_pk]
     company_id: Mapped[uuid.UUID]
     shipment_id: Mapped[uuid.UUID]
+    episode_no: Mapped[int]
     detected_shipment_schedule_snapshot_id: Mapped[uuid.UUID]
     previous_shipment_schedule_snapshot_id: Mapped[uuid.UUID | None]
     stage: Mapped[str]

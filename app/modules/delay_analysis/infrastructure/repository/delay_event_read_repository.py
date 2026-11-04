@@ -11,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 지연 이벤트에 선적·도착 항구·현재 실행(is_latest)·최종 선택 여부·위험 주문 수를 붙여 읽습니다.
       - 모든 조회는 고객사(company_id)로 거릅니다. 로컬 superuser 접속은 RLS 를 우회하므로 조건을 직접 겁니다.
       - 경로·대표 상품·지연 일수 같은 표시값은 여기서 만들지 않고 서비스가 delay_display 로 계산합니다.
-      - episode_no(delay_events), result_class·completed_status·trigger_reason(analysis_runs)은 v6.2 DDL 에만 있고
-        develop 마이그레이션(0004까지)에는 없어 읽지 않습니다. 개발자 3의 0005 병합 후 연결합니다 (응답에서는 null).
+      - episode_no(delay_events), trigger_reason·completed_status·result_class(analysis_runs)는 0005 가 v6.2 DDL 과 같게 만든 열입니다.
 """
 
 # 진행 중 상태 (탭 "분석 중")
@@ -29,7 +28,7 @@ _EXPLANATION_ONLY_FAILURE = "EXPLANATION_GENERATION_FAILED"
 #   단계·계획·예상 입고일은 선적의 현재 값입니다. delay_events 의 값은 감지 시점 값이라 갱신하지 않습니다 (4.4절).
 #   위험 주문은 상세(order_line) 1줄이 1행이므로 서로 다른 주문 수로 셉니다 (D21).
 _BASE = f"""
-    SELECT e.delay_event_id, e.shipment_id, s.current_stage AS stage,
+    SELECT e.delay_event_id, e.episode_no, e.shipment_id, s.current_stage AS stage,
            s.planned_3pl_inbound_date,
            s.current_expected_3pl_inbound_date AS expected_3pl_inbound_date,
            e.detected_at, e.closed_at, e.close_reason,
@@ -43,6 +42,7 @@ _BASE = f"""
              ORDER BY w.warehouse_code
              LIMIT 1) AS origin_region_code,
            r.analysis_run_id AS run_id, r.status AS run_status,
+           r.result_class AS run_result_class,
            EXISTS (SELECT 1 FROM final_decisions f
                     WHERE f.company_id = r.company_id
                       AND f.analysis_run_id = r.analysis_run_id) AS has_final_decision,
@@ -163,9 +163,9 @@ _SNAPSHOT_EXPECTED_DATE = text(
 
 _RUNS = text(
     """
-    SELECT analysis_run_id, version_no, status, is_latest, trigger_type,
-           parent_analysis_run_id, stale_detected_at, stale_primary_reason,
-           started_at, finished_at
+    SELECT analysis_run_id, version_no, status, is_latest, trigger_type, trigger_reason,
+           parent_analysis_run_id, completed_status, result_class,
+           stale_detected_at, stale_primary_reason, started_at, finished_at
       FROM analysis_runs
      WHERE company_id = :company_id AND delay_event_id = :delay_event_id
      ORDER BY version_no DESC
@@ -178,6 +178,7 @@ _RUNS = text(
 @dataclass(frozen=True)
 class DelayEventRow:
     delay_event_id: uuid.UUID
+    episode_no: int
     shipment_id: uuid.UUID
     stage: str
     planned_3pl_inbound_date: date
@@ -195,6 +196,7 @@ class DelayEventRow:
     origin_region_code: str | None
     run_id: uuid.UUID | None
     run_status: str | None
+    run_result_class: str | None
     has_final_decision: bool
     at_risk_order_count: int | None
 
@@ -225,7 +227,10 @@ class RunHistoryRow:
     status: str
     is_latest: bool
     trigger_type: str
+    trigger_reason: str
     parent_analysis_run_id: uuid.UUID | None
+    completed_status: str | None
+    result_class: str | None
     stale_detected_at: datetime | None
     stale_primary_reason: str | None
     started_at: datetime

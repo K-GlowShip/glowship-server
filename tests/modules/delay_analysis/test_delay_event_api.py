@@ -36,6 +36,7 @@ WAREHOUSE_ID = uuid.uuid7()
 SKU_ID = uuid.uuid7()
 ROW = DelayEventRow(
     delay_event_id=EVENT_ID,
+    episode_no=2,
     shipment_id=SHIPMENT_ID,
     stage="AT_SEA",
     planned_3pl_inbound_date=date(2026, 1, 27),
@@ -53,6 +54,7 @@ ROW = DelayEventRow(
     origin_region_code="KR",
     run_id=RUN_ID,
     run_status="READY_FOR_REVIEW",
+    run_result_class="READY_ORDER_RISK",
     has_final_decision=False,
     at_risk_order_count=4,
 )
@@ -118,7 +120,10 @@ class FakeQueryService:
             status="READY_FOR_REVIEW",
             is_latest=True,
             trigger_type="REANALYSIS",
+            trigger_reason="USER_REANALYSIS",
             parent_analysis_run_id=PARENT_RUN_ID,
+            completed_status="READY_FOR_REVIEW",
+            result_class="FORECAST_ONLY_READY",
             stale_detected_at=None,
             stale_primary_reason=None,
             started_at=datetime(2026, 1, 20, tzinfo=UTC),
@@ -190,11 +195,11 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
         "runId": str(RUN_ID),
         "runCode": None,
         "status": "READY_FOR_REVIEW",
-        "resultClass": None,
+        "resultClass": "READY_ORDER_RISK",
     }
     assert "runStatus" not in item
     assert item["atRiskOrderCount"] == 4
-    assert item["episodeNo"] is None  # 0005 병합 전
+    assert item["episodeNo"] == 2
     assert body["counts"] == {
         "all": 1,
         "readyForReview": 1,
@@ -280,9 +285,10 @@ async def test_detail_returns_schedule_and_run_history(fake_service):
     assert run["parentRunId"] == str(PARENT_RUN_ID)
     assert run["triggerType"] == "REANALYSIS"
     assert (run["staleDetectedAt"], run["stalePrimaryReason"]) == (None, None)
-    # 0005·0006 병합 전에는 null
-    pending = ("runCode", "triggerReason", "completedStatus", "resultClass")
-    assert [run[key] for key in pending] == [None] * 4
+    assert run["triggerReason"] == "USER_REANALYSIS"
+    assert run["completedStatus"] == "READY_FOR_REVIEW"
+    assert run["resultClass"] == "FORECAST_ONLY_READY"
+    assert run["runCode"] is None  # 0006 병합 전
 
 
 async def test_detail_of_unknown_event_returns_404(fake_service):

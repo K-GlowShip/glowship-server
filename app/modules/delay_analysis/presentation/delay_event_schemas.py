@@ -30,16 +30,13 @@ from app.modules.delay_analysis.presentation.analysis_run_schemas import (
       - 연관 대상은 요약 객체(shipment·warehouse·representativeSku·currentRun)로 줍니다 (app/core/summary_schemas).
       - "3pl" 이 들어간 필드는 to_camel 이 "3Pl" 로 바꾸므로 명세 이름(planned3plInboundDate 등)을 별칭으로 직접 줍니다.
         계획·예상 입고일 별칭은 분석 실행 응답(analysis_run_schemas)과 같은 상수를 씁니다.
-      - 아직 열이 없어 null 로 주는 필드 (후속: 개발자 3의 0005·0006 병합 후 실제 값 연결)
-          episodeNo, currentRun.resultClass, runs[].triggerReason·completedStatus·resultClass → 0005
-          currentRun.runCode, runs[].runCode → 0006 (D14)
+      - episodeNo, currentRun.resultClass, runs[].triggerReason·completedStatus·resultClass 는 0005 열에서 읽습니다.
+      - 아직 열이 없어 null 로 주는 필드: currentRun.runCode, runs[].runCode → 0006 (D14)
 """
 
 _PLANNED = PLANNED_3PL
 _EXPECTED = EXPECTED_3PL
 _PREVIOUS_EXPECTED = "previousExpected3plInboundDate"
-
-_PENDING_0005 = "0005(analysis_runs·delay_events v6.2 열) 병합 전에는 null"
 
 
 class DelayEventCountsResponse(CamelModel):
@@ -56,7 +53,7 @@ class _DelayEventBase(CamelModel):
     """지연 목록 행과 상세가 함께 쓰는 필드. 단계·입고일·지연 일수는 선적의 현재 값입니다."""
 
     delay_event_id: uuid.UUID
-    episode_no: int | None = Field(description=f"지연 에피소드 번호. {_PENDING_0005}")
+    episode_no: int = Field(description="선적별 지연 에피소드 번호 (1부터)")
     shipment: ShipmentSummary
     warehouse: WarehouseSummary = Field(description="도착 창고")
     representative_sku: SkuSummary | None = Field(
@@ -88,7 +85,7 @@ class _DelayEventBase(CamelModel):
         line = shipment.representative_line
         return {
             "delay_event_id": row.delay_event_id,
-            "episode_no": None,
+            "episode_no": row.episode_no,
             "shipment": ShipmentSummary(
                 shipment_id=row.shipment_id, shipment_code=row.shipment_code
             ),
@@ -139,7 +136,7 @@ class DelayEventListItemResponse(_DelayEventBase):
                 run_id=row.run_id,
                 run_code=None,
                 status=row.run_status,
-                result_class=None,
+                result_class=row.run_result_class,
             )
             if row.run_id
             else None,
@@ -180,14 +177,18 @@ class AnalysisRunHistoryResponse(CamelModel):
     status: str
     is_latest: bool
     trigger_type: str = Field(description="AUTO·REANALYSIS")
-    trigger_reason: str | None = Field(description=f"실행 생성 사유. {_PENDING_0005}")
+    trigger_reason: str = Field(
+        description="실행 생성 사유 (analysis_runs_ck15, 명세 3절 실행 생성 경로)"
+    )
     parent_run_id: uuid.UUID | None = Field(
         description="이전 버전 실행. 1번째 버전이면 null"
     )
     completed_status: str | None = Field(
-        description=f"완료 판정 당시 상태. {_PENDING_0005}"
+        description="완료 판정 당시 상태. 완료 전(진행 중에 STALE 이 된 실행 포함)이면 null"
     )
-    result_class: str | None = Field(description=f"결과 분류. {_PENDING_0005}")
+    result_class: str | None = Field(
+        description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
+    )
     stale_detected_at: datetime | None = Field(
         description="STALE 기록 시각. STALE 이 아니면 null"
     )
@@ -220,10 +221,10 @@ class DelayEventDetailResponse(_DelayEventBase):
                     status=run.status,
                     is_latest=run.is_latest,
                     trigger_type=run.trigger_type,
-                    trigger_reason=None,
+                    trigger_reason=run.trigger_reason,
                     parent_run_id=run.parent_analysis_run_id,
-                    completed_status=None,
-                    result_class=None,
+                    completed_status=run.completed_status,
+                    result_class=run.result_class,
                     stale_detected_at=run.stale_detected_at,
                     stale_primary_reason=run.stale_primary_reason,
                     started_at=run.started_at,

@@ -145,6 +145,79 @@ class AnalysisRun(Base):
             " AND jsonb_typeof(dependency_scope->'sku_sets') = 'object', false)",
             name="analysis_runs_ck38",
         ),
+        # v6.2(0005): 생성 사유·완료 상태·결과 분류·계산 계약·판정 서명
+        CheckConstraint(
+            "trigger_reason IN ('EPISODE_STARTED','SCHEDULE_WORSENED','SCHEDULE_IMPROVED','STAGE_CHANGED','DELAY_RECOVERED','USER_REANALYSIS')",
+            name="analysis_runs_ck15",
+        ),
+        CheckConstraint(
+            "(trigger_type = 'AUTO') = (trigger_shipment_schedule_snapshot_id IS NOT NULL)",
+            name="analysis_runs_ck16",
+        ),
+        CheckConstraint(
+            "(trigger_type = 'REANALYSIS') = (trigger_reason = 'USER_REANALYSIS')",
+            name="analysis_runs_ck17",
+        ),
+        CheckConstraint(
+            "(version_no = 1) = (trigger_reason = 'EPISODE_STARTED')",
+            name="analysis_runs_ck18",
+        ),
+        CheckConstraint(
+            "completed_status IS NULL OR completed_status IN ('READY_FOR_REVIEW','NO_RISK','NO_DELAY','ON_HOLD','FAILED')",
+            name="analysis_runs_ck19",
+        ),
+        CheckConstraint(
+            "result_class IS NULL OR result_class IN ('READY_ORDER_RISK','FORECAST_ONLY_READY','PURE_NO_RISK','WARNING_NO_RISK')",
+            name="analysis_runs_ck20",
+        ),
+        CheckConstraint(
+            "result_class IS NULL OR COALESCE((completed_status = 'READY_FOR_REVIEW' AND result_class IN ('READY_ORDER_RISK','FORECAST_ONLY_READY')) OR (completed_status = 'NO_RISK' AND result_class IN ('PURE_NO_RISK','WARNING_NO_RISK')), false)",
+            name="analysis_runs_ck21",
+        ),
+        CheckConstraint(
+            "completed_status IS NULL OR completed_status NOT IN ('READY_FOR_REVIEW','NO_RISK') OR result_class IS NOT NULL",
+            name="analysis_runs_ck22",
+        ),
+        CheckConstraint(
+            "status NOT IN ('READY_FOR_REVIEW','NO_RISK','NO_DELAY','ON_HOLD','FAILED') OR completed_status IS NOT DISTINCT FROM status",
+            name="analysis_runs_ck23",
+        ),
+        CheckConstraint(
+            "status <> 'FINALIZED' OR completed_status IS NOT DISTINCT FROM 'READY_FOR_REVIEW'",
+            name="analysis_runs_ck24",
+        ),
+        CheckConstraint(
+            "status <> 'STALE' OR completed_status IS NULL OR completed_status IN ('READY_FOR_REVIEW','NO_RISK')",
+            name="analysis_runs_ck25",
+        ),
+        CheckConstraint(
+            "failure_code IS DISTINCT FROM 'EXPLANATION_GENERATION_FAILED' OR COALESCE(status = 'FAILED' AND failed_step = 'VALIDATING_OUTPUT' AND attempt_count = 3 AND retry_exhausted AND explanation_validation_status = 'FAILED' AND final_explanation_json IS NULL, false)",
+            name="analysis_runs_ck26",
+        ),
+        CheckConstraint(
+            "calculation_contract_version IN ('T14-v1')",
+            name="analysis_runs_ck34",
+        ),
+        CheckConstraint(
+            "allocation_rule_version IN ('D00-B-b2-v1')",
+            name="analysis_runs_ck35",
+        ),
+        CheckConstraint(
+            "status NOT IN ('READY_FOR_REVIEW','NO_RISK','FINALIZED') OR (dependency_scope IS NOT NULL AND decision_signature IS NOT NULL)",
+            name="analysis_runs_ck37",
+        ),
+        CheckConstraint(
+            "decision_signature IS NULL OR COALESCE(jsonb_typeof(decision_signature) = 'object' AND decision_signature->>'schema_version' = 'decision_signature.v1' AND jsonb_typeof(decision_signature->'options') = 'array', false)",
+            name="analysis_runs_ck39",
+        ),
+        CheckConstraint(
+            "(decision_signature IS NULL) = (decision_signature_sha256 IS NULL)",
+            name="analysis_runs_ck40",
+        ),
+        CheckConstraint(
+            "decision_signature_sha256 IS NULL OR decision_signature_sha256 ~ '^[0-9a-f]{64}$'",
+            name="analysis_runs_ck41",
+        ),
         ForeignKeyConstraint(
             ["company_id", "delay_event_id"],
             ["delay_events.company_id", "delay_events.delay_event_id"],
@@ -168,6 +241,14 @@ class AnalysisRun(Base):
             ["users.company_id", "users.user_id"],
             name="fk_analysis_runs__requested_by_user_id",
         ),
+        ForeignKeyConstraint(
+            ["company_id", "trigger_shipment_schedule_snapshot_id"],
+            [
+                "shipment_schedule_snapshots.company_id",
+                "shipment_schedule_snapshots.shipment_schedule_snapshot_id",
+            ],
+            name="fk_analysis_runs__trigger_shipment_schedule_snapshot_id",
+        ),
         Index(
             "analysis_runs_is_latest_uq",
             "delay_event_id",
@@ -180,6 +261,14 @@ class AnalysisRun(Base):
             postgresql_using="gin",
             postgresql_ops={"dependency_scope": "jsonb_path_ops"},
         ),
+        # v6.2(0005): 같은 지연·같은 트리거 스냅샷의 AUTO 실행은 하나만
+        Index(
+            "analysis_runs_auto_trigger_uq",
+            "delay_event_id",
+            "trigger_shipment_schedule_snapshot_id",
+            unique=True,
+            postgresql_where=text("trigger_type = 'AUTO'"),
+        ),
     )
 
     analysis_run_id: Mapped[uuid_pk]
@@ -190,11 +279,15 @@ class AnalysisRun(Base):
     operating_rule_set_id: Mapped[uuid.UUID]
     input_seq: Mapped[int]
     trigger_type: Mapped[str]
+    trigger_reason: Mapped[str]
+    trigger_shipment_schedule_snapshot_id: Mapped[uuid.UUID | None]
     requested_by_user_id: Mapped[uuid.UUID | None]
     request_reason: Mapped[str | None]
     requested_at: Mapped[datetime | None]
     status: Mapped[str]
     status_reason: Mapped[str | None]
+    completed_status: Mapped[str | None]
+    result_class: Mapped[str | None]
     failed_step: Mapped[str | None]
     failure_code: Mapped[str | None]
     attempt_count: Mapped[int | None]
@@ -205,7 +298,11 @@ class AnalysisRun(Base):
     stale_detected_seq: Mapped[int | None]
     stale_detected_at: Mapped[datetime | None]
     is_latest: Mapped[bool]
+    calculation_contract_version: Mapped[str]
+    allocation_rule_version: Mapped[str]
     dependency_scope: Mapped[dict[str, Any] | None]
+    decision_signature: Mapped[dict[str, Any] | None]
+    decision_signature_sha256: Mapped[str | None]
     model_name: Mapped[str | None]
     prompt_version: Mapped[str | None]
     final_explanation_json: Mapped[dict[str, Any] | None]

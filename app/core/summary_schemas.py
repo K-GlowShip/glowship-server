@@ -35,5 +35,5 @@ class RunSummary(CamelModel):
     )
     status: str
     result_class: str | None = Field(
-        description="결과 분류. 완료 전이면 null. analysis_runs 0005 병합 전에는 항상 null"
+        description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
     )

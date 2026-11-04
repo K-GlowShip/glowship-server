@@ -198,6 +198,41 @@ async def test_delay_event_rows_use_current_shipment_values(db_session):
         )
 
 
+async def test_delay_event_rows_read_0005_columns(db_session):
+    """지연 목록·상세가 0005 열(episode_no, 현재 실행 result_class, 실행 이력 trigger_reason·completed_status·result_class)을 읽는다"""
+    repo = DelayEventReadRepository(db_session)
+    company_id = await _sample_company(db_session)
+
+    for row in await repo.find_delay_events(company_id, DelayEventFilter()):
+        event_episode = await db_session.scalar(
+            text("SELECT episode_no FROM delay_events WHERE delay_event_id = :e"),
+            {"e": row.delay_event_id},
+        )
+        assert row.episode_no == event_episode
+        if row.run_id is not None:
+            assert row.run_result_class == await db_session.scalar(
+                text(
+                    "SELECT result_class FROM analysis_runs WHERE analysis_run_id = :r"
+                ),
+                {"r": row.run_id},
+            )
+        for run in await repo.find_runs(company_id, row.delay_event_id):
+            stored = (
+                await db_session.execute(
+                    text(
+                        "SELECT trigger_reason, completed_status, result_class"
+                        " FROM analysis_runs WHERE analysis_run_id = :r"
+                    ),
+                    {"r": run.analysis_run_id},
+                )
+            ).one()
+            assert (
+                run.trigger_reason,
+                run.completed_status,
+                run.result_class,
+            ) == tuple(stored)
+
+
 async def test_at_risk_order_count_counts_distinct_orders(db_session):
     repo = DelayEventReadRepository(db_session)
     company_id = await _sample_company(db_session)
