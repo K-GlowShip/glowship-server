@@ -215,12 +215,13 @@ async def record_input_data_versions(
 ) -> list[uuid.UUID]:
     """
     입력 확정 때 읽은 수집 ID 를 analysis_run_data_versions 에 기록하고, 기록된 수집 ID 를 돌려준다.
-      - 규칙(엔진 snapshot.build): 수집 도메인마다 시작 시각이 실행 시작 시각(started_at) 이하인 가장 최근 수집 1건.
-        overlay 의 검증을 통과한 실행 20건이 모두 이 규칙(도메인 5개)과 같다.
+      - 규칙: 수집 도메인마다 적용 순번이 실행의 입력 순번(input_seq) 이하인 가장 최근 수집 1건.
+        시각이 아니라 순번으로 자른다(serviceflow 5.2, STALE 판정과 같은 기준). 엔진 snapshot.build 는 같은 뜻을
+        시작 시각으로 고르며, overlay 의 검증을 통과한 실행 20건(도메인 5개, 100행)은 두 규칙 모두 저장값과 같다.
       - 이미 기록된 수집 ID 는 다시 넣지 않는다(analysis_run_data_versions_uk2). 여러 번 불러도 결과가 같다.
     """
     repo = RunCreationRepository(db)
-    wanted = await repo.find_domain_latest_sync_run_ids(run.company_id, run.started_at)
+    wanted = await repo.find_domain_latest_sync_run_ids(run.company_id, run.input_seq)
     recorded = await repo.find_recorded_sync_run_ids(run.analysis_run_id)
     for data_sync_run_id in wanted:
         if data_sync_run_id not in recorded:

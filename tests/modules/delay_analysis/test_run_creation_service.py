@@ -404,7 +404,7 @@ async def test_rules_match_overlay_runs(db_session):
             assert recorded == set()  # 입력 검증에 실패한 실행은 데이터 버전이 없다
             continue
         expected = await repo.find_domain_latest_sync_run_ids(
-            run.company_id, run.started_at
+            run.company_id, run.input_seq
         )
         assert set(expected) == recorded, run.analysis_run_id
         checked += 1

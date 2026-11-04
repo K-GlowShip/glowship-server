@@ -51,13 +51,16 @@ _OPERATING_RULE = text(
     """
 ).bindparams(bindparam("company_id", type_=_UUID))
 
-# 엔진 snapshot.build data_versions: 수집 도메인마다 시작 시각이 입력 확정 시각 이하인 가장 최근 수집 1건
+# 데이터 버전: 수집 도메인마다 적용 순번이 실행의 입력 순번 이하인 가장 최근(순번이 가장 큰) 수집 1건.
+# serviceflow 5.2 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)에 맞춘다. 엔진 snapshot.build 는 같은 뜻을
+# 시작 시각(confirm_t)으로 고르고, overlay 의 검증 통과 실행 20건(100행)은 두 규칙 모두 같은 결과다.
 _DOMAIN_LATEST_SYNC_RUNS = text(
     """
     SELECT DISTINCT ON (source_domain) data_sync_run_id
       FROM data_sync_runs
-     WHERE company_id = :company_id AND started_at <= :confirmed_at
-     ORDER BY source_domain, started_at DESC
+     WHERE company_id = :company_id
+       AND applied_seq IS NOT NULL AND applied_seq <= :input_seq
+     ORDER BY source_domain, applied_seq DESC
     """
 ).bindparams(bindparam("company_id", type_=_UUID))
 
@@ -146,11 +149,11 @@ class RunCreationRepository:
         return await self.db.scalar(text("SELECT clock_timestamp()"))
 
     async def find_domain_latest_sync_run_ids(
-        self, company_id: uuid.UUID, confirmed_at: datetime
+        self, company_id: uuid.UUID, input_seq: int
     ) -> list[uuid.UUID]:
         result = await self.db.scalars(
             _DOMAIN_LATEST_SYNC_RUNS,
-            {"company_id": company_id, "confirmed_at": confirmed_at},
+            {"company_id": company_id, "input_seq": input_seq},
         )
         return list(result)
 
