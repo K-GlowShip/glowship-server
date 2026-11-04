@@ -2,7 +2,7 @@
 
 선적의 일정 스냅샷이 새로 들어올 때 **지연 에피소드를 열고 닫고, 후속 AUTO 분석 실행의 생성 사유를 정하는 규칙**과 구현 범위를 설명합니다.
 기준은 serviceflow v6.2 4절 "지연 에피소드와 분석 실행"과 검증 엔진 `04_적재검증도구\glowship_engine\episodes.py`입니다.
-판정 순수 함수(1절)와 에피소드 저장(4절)이 있고, 수집 적재 연결과 실행 생성 연결은 5절에 남았습니다.
+판정 순수 함수(1절)와 에피소드 저장(4절)이 있고 SHIPMENT 수집에 연결되어 있습니다. 실행 생성 연결은 5절에 남았습니다.
 
 ## 1. 판정 규칙 (`application/detection/episode_rules.py` `decide_episode`)
 
@@ -43,7 +43,7 @@
 
 ## 4. 에피소드 저장 (`application/detection/episode_service.py`, `infrastructure/repository/delay_event_write_repository.py`)
 
-`EpisodeDetectionService.detect_after_sync(company_id, data_sync_run_id)`를 SHIPMENT 수집의 같은 트랜잭션에서 부릅니다(3절 위치).
+`DataIngestService`가 SHIPMENT 수집에서 수집 완료 기록 뒤·STALE 판정 전에 같은 트랜잭션으로 `EpisodeDetectionService.detect_after_sync(company_id, data_sync_run_id)`를 부릅니다(3절 위치). 판정 결과는 수집 결과 `IngestResult.episode_outcomes`에 담깁니다.
 
 | 단계 | 하는 일 |
 | --- | --- |
@@ -60,11 +60,10 @@
   - **무엇이 초기 적재인가:** 고객사의 **첫 SHIPMENT 수집**(그 전에 적용된 `SHIPMENT` 수집 `SUCCEEDED`·`PARTIAL_SUCCESS`가 없음)입니다. 그 수집이 남긴 일정 스냅샷이 결정 1-10의 기준 스냅샷입니다.
   - **누가 가르나:** 이 저장 단계가 가릅니다(`has_prior_applied_shipment_sync`). 초기 적재 수집의 스냅샷은 `decide_episode`에 넣지 않습니다. 그 뒤 수집부터는 이 스냅샷을 직전 스냅샷(`previous`)으로 씁니다.
   - **`decide_episode`는 이 신호를 받지 않습니다.** 순수 판정이라 받은 스냅샷만 봅니다. `previous is None`으로는 가를 수 없습니다(운영 중 새로 들어온 선적의 첫 스냅샷도 직전 스냅샷이 없음, 3절에 따라 에피소드를 엶).
-  - 확정 데이터: 두 고객사의 첫 SHIPMENT 수집(2025-12-31)이 남긴 스냅샷이 각 5건이고, 2026 이전 스냅샷 10건과 정확히 같습니다. 그중 이미 지연인 스냅샷은 없어 223건 재현으로는 이 규칙이 검증되지 않으므로, 수집 적재 연결 때 별도 테스트(첫 수집의 지연 스냅샷 → 에피소드 없음, 다음 수집의 지연 → 시작)를 넣습니다.
+  - 확정 데이터: 두 고객사의 첫 SHIPMENT 수집(2025-12-31)이 남긴 스냅샷이 각 5건이고, 2026 이전 스냅샷 10건과 정확히 같습니다. 그중 이미 지연인 스냅샷은 없어 223건 재현으로는 이 규칙이 검증되지 않으므로, 별도 테스트(`test_ingest_episode_sql.py`: 첫 수집의 지연 스냅샷 → 에피소드 없음, 다음 수집의 지연 → 시작)로 확인합니다.
 
 ## 5. 아직 없는 것
 
-- **수집 적재 연결:** `DataIngestService`가 SHIPMENT 수집에서 수집 완료 기록 뒤·STALE 판정 전에 `detect_after_sync`를 부르는 것. 확정 스냅샷 223건을 수집으로 다시 넣어 `delay_events` 8건이 같은지 확인합니다.
 - **실행 생성 연결:** `START`·`FOLLOW_UP`·`CLOSE_RECOVERED`일 때 `create_analysis_run`(개발자 3)을 불러 AUTO 실행을 만들고(원인 스냅샷 필수, ck16), 선택 전 이전 실행을 `STALE`로 바꿉니다. `CLOSE_RECOVERED`의 실행은 `NO_DELAY`입니다.
 
 ## 6. 테스트
@@ -74,4 +73,6 @@
 | `test_episode_rules.py` | 1절 표의 경우마다 하나씩, 입고 완료가 회복보다 먼저, 직전 스냅샷 없음 오류 (DB 없음) |
 | `test_episode_replay_sql.py` | 확정 스냅샷 223건 재현 → `delay_events` 8건·AUTO 실행 19건과 같음 (실제 DB) |
 | `test_episode_service.py` | 초기 적재 건너뜀, 시작(다음 번호·관측 시각), 운영 중 첫 관측 지연 → 1번, 입고·회복 종료, 후속은 저장 안 함 (DB 없음) |
+| `test_ingest_episode_sql.py` (data_sync) | 수집 → 지연 선적 에피소드 시작·입고 종료, 초기 적재의 지연 스냅샷은 에피소드 없음·다음 수집에서 시작, 다른 원천은 보지 않음 (실제 DB) |
+| `test_ingest_replay_sql.py` (data_sync) | 확정 스냅샷을 수집으로 다시 넣으면 재현 선적의 `delay_events`가 원래와 같고(8건), 판정 사유가 확정 AUTO 실행 19건과 같음 (실제 DB) |
 | `test_delay_event_write_repository_sql.py` | 첫 SHIPMENT 수집만 초기 적재(롤백 트랜잭션), 이번 수집 스냅샷·직전 스냅샷, 선적별 번호·열린 에피소드, 추가·한 번만 종료와 DB 제약 (실제 DB) |

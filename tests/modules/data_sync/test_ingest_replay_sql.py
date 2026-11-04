@@ -1,5 +1,5 @@
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, time
 
 import pytest
@@ -27,6 +27,10 @@ from app.modules.data_sync.infrastructure.repository.ingest_repository import (
       - 관측 원천: 초기 적재(첫 수집일)에 들어온 선적은 그날 값, 이후는 스냅샷이 있는 날의 값.
         스냅샷이 없는 선적(초기 적재 때 이미 RECEIVED)은 첫 수집일에 최종 값으로 한 번만 보냅니다 (결정 1-10).
       - STALE 판정은 대역을 씁니다 (재현한 선적 변경이 실제 실행을 건드리지 않게).
+      - 지연 에피소드 저장(GLOW-16)도 함께 돌아, 재현 선적의 delay_events 가 원래 선적의 것과 같고(번호·단계·계획·예상일·
+        감지·종료 날짜·종료 사유) 판정이 낸 AUTO 실행 생성 사유가 확정 DB 의 AUTO 실행과 같은지 확인합니다.
+        재현은 이미 SHIPMENT 수집이 있는 고객사에 넣으므로 초기 적재 예외는 적용되지 않습니다. 확정 데이터의 초기 적재
+        스냅샷에는 지연이 없어 결과는 같습니다 (docs/analysis/delay-detection.md 4절).
 """
 
 PREFIX = "R-"
@@ -87,6 +91,7 @@ async def test_time_ordered_tms_responses_reproduce_schedule_snapshots(
         pytest.skip("선적 데이터가 없는 DB")
 
     reproduced_total = original_total = 0
+    reasons_total: Counter = Counter()
     for company_id in companies:
         book = await repo.load_code_book(company_id, SourceDomain.SHIPMENT)
         tms_sku = {code.sku_id: external for external, code in book.skus.items()}
@@ -164,6 +169,9 @@ async def test_time_ordered_tms_responses_reproduce_schedule_snapshots(
                 day,
                 result.rejections,
             )
+            reasons_total.update(
+                o.trigger_reason for o in result.episode_outcomes if o.trigger_reason
+            )
 
         # 최종 선적 행이 같다 (코드만 다름)
         replayed = await repo.load_shipments(
@@ -190,10 +198,54 @@ async def test_time_ordered_tms_responses_reproduce_schedule_snapshots(
             original_total += len(original)
             reproduced_total += len(again)
 
+        # 지연 에피소드가 같다 (선적 코드만 다름, 시각은 재현 관측 시각이라 날짜로 비교)
+        for original_id, again_id in replayed_ids.items():
+            assert await _episodes(db, again_id) == await _episodes(db, original_id), (
+                by_id[original_id].shipment_code
+            )
+
     assert reproduced_total == original_total
+    original_reasons = Counter(
+        dict(
+            (
+                await db.execute(
+                    text(
+                        "SELECT trigger_reason, COUNT(*) FROM analysis_runs"
+                        " WHERE trigger_type = 'AUTO' GROUP BY trigger_reason"
+                    )
+                )
+            ).all()
+        )
+    )
+    assert (
+        reasons_total == original_reasons
+    )  # 확정 DB: EPISODE_STARTED 8·STAGE_CHANGED 8·SCHEDULE_WORSENED 2·DELAY_RECOVERED 1
     # 재현 전 확정 데이터(선적 166건)라면 스냅샷은 223건
     if len(codes_total := await _original_codes(db)) == 166:
         assert original_total == 223, len(codes_total)
+
+
+async def _episodes(db, shipment_id) -> list[tuple]:
+    rows = await db.execute(
+        text(
+            "SELECT episode_no, stage, planned_3pl_inbound_date, expected_3pl_inbound_date,"
+            " detected_at, closed_at, close_reason FROM delay_events"
+            " WHERE shipment_id = :s ORDER BY episode_no"
+        ),
+        {"s": shipment_id},
+    )
+    return [
+        (
+            r.episode_no,
+            r.stage,
+            r.planned_3pl_inbound_date,
+            r.expected_3pl_inbound_date,
+            r.detected_at.date(),
+            r.closed_at.date() if r.closed_at else None,
+            r.close_reason,
+        )
+        for r in rows
+    ]
 
 
 async def _original_codes(db) -> list[str]:
