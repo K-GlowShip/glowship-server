@@ -1,4 +1,8 @@
-from pydantic import BaseModel, ConfigDict
+import re
+from datetime import date
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 from pydantic.alias_generators import to_camel
 
 """
@@ -20,3 +24,24 @@ class CamelModel(BaseModel):
         serialize_by_alias=True,
         from_attributes=True,
     )
+
+
+"""
+    날짜 쿼리 파라미터 타입 (API 명세 2절 "날짜(date)는 YYYY-MM-DD")
+
+    pydantic 의 date 는 lax 모드라 "1782777600"(Unix 초), "0", "2026-06-30T00:00:00Z"(자정 datetime)도
+    날짜로 바꿔 받는다. 명세는 YYYY-MM-DD 만 허용하고 그 외는 422 이므로, pydantic 검증 전에 형식을 먼저 확인한다.
+    형식이 맞으면 pydantic 의 기존 date 검증(월·일 범위 등)이 그대로 이어진다.
+      - 라우터:  inventory_date: IsoDate | None = Query(default=None, alias="date")
+"""
+
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _require_iso_date(value: object) -> object:
+    if isinstance(value, str) and not _ISO_DATE_PATTERN.match(value):
+        raise ValueError("날짜는 YYYY-MM-DD 형식이어야 합니다")
+    return value
+
+
+IsoDate = Annotated[date, BeforeValidator(_require_iso_date)]

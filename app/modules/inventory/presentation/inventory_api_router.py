@@ -1,10 +1,10 @@
 import uuid
-from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
+from app.core.schemas import IsoDate
 from app.core.security.tenant import TenantContext, get_tenant_context
 from app.modules.inventory.application.inventory_list_service import (
     InventoryListService,
@@ -49,7 +49,7 @@ router = APIRouter(prefix="/api/v1/inventory", tags=["재고 (Client)"])
     },
 )
 async def list_inventory(
-    inventory_date: date | None = Query(
+    inventory_date: IsoDate | None = Query(
         default=None,
         alias="date",
         description="재고 기준 일자 (YYYY-MM-DD). 생략하면 고객사의 최신 적재 일자",
