@@ -113,6 +113,7 @@ async def test_지연이면_다음_번호로_에피소드를_연다():
             shipment_id=SHIPMENT_ID,
             trigger_snapshot_id=snapshot.snapshot_id,
             trigger_reason=TriggerReason.EPISODE_STARTED,
+            observed_at=OBSERVED_AT,
         )
     ]
     assert dedupe_key(SHIPMENT_ID, 3) == f"{SHIPMENT_ID}:EP3"
@@ -134,9 +135,10 @@ async def test_운영_중_처음_관측된_선적도_지연이면_1번으로_연
         ("AT_PORT", date(2026, 1, 19), "RECOVERED", TriggerReason.DELAY_RECOVERED),
     ],
 )
-async def test_열린_에피소드를_입고나_회복으로_닫는다(
+async def test_종료는_판정에서_돌려주기만_하고_close_episodes_가_닫는다(
     stage, expected, close_reason, trigger_reason
 ):
+    """회복 때 이전 실행 STALE(mark_runs_stale)이 닫기 전에 돌 수 있게, 판정은 닫지 않고 결과만 돌려준다"""
     snapshot = _snapshot(
         stage=stage, expected=expected, previous=("AT_SEA", date(2026, 1, 25))
     )
@@ -145,14 +147,19 @@ async def test_열린_에피소드를_입고나_회복으로_닫는다(
         episodes={SHIPMENT_ID: ShipmentEpisodes(1, OPEN_EVENT_ID)},
     )
 
-    outcomes = await EpisodeDetectionService(repo).detect_after_sync(COMPANY_ID, RUN_ID)
+    service = EpisodeDetectionService(repo)
 
+    outcomes = await service.detect_after_sync(COMPANY_ID, RUN_ID)
+    closed_after_detect = list(repo.closed)
+    await service.close_episodes(COMPANY_ID, outcomes)
+
+    assert closed_after_detect == []  # 판정만으로는 닫지 않음
     assert repo.closed == [
         (OPEN_EVENT_ID, {"closed_at": OBSERVED_AT, "close_reason": close_reason})
     ]
     assert repo.inserted == []
-    assert [(o.delay_event_id, o.trigger_reason) for o in outcomes] == [
-        (OPEN_EVENT_ID, trigger_reason)
+    assert [(o.delay_event_id, o.trigger_reason, o.close_reason) for o in outcomes] == [
+        (OPEN_EVENT_ID, trigger_reason, close_reason)
     ]
 
 
@@ -165,9 +172,12 @@ async def test_후속_변경은_저장하지_않고_사유만_돌려준다():
         episodes={SHIPMENT_ID: ShipmentEpisodes(1, OPEN_EVENT_ID)},
     )
 
-    outcomes = await EpisodeDetectionService(repo).detect_after_sync(COMPANY_ID, RUN_ID)
+    service = EpisodeDetectionService(repo)
 
-    assert repo.inserted == [] and repo.closed == []
+    outcomes = await service.detect_after_sync(COMPANY_ID, RUN_ID)
+    await service.close_episodes(COMPANY_ID, outcomes)
+
+    assert repo.inserted == [] and repo.closed == []  # 후속은 닫을 대상도 아님
     assert [(o.action, o.delay_event_id, o.trigger_reason) for o in outcomes] == [
         (EpisodeAction.FOLLOW_UP, OPEN_EVENT_ID, TriggerReason.SCHEDULE_WORSENED)
     ]

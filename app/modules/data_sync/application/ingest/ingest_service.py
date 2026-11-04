@@ -70,7 +70,8 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
          오래 남은 RUNNING(작업이 죽은 경우)도 시간과 관계없이 막습니다. 정리(FAILED 전환·fencing)는 후속 운영 작업입니다.
       2. 한 트랜잭션에서: 고객사 잠금(L1) → 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부, record_validation)
          → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용 → 거부 사유를 검증 이슈로 기록
-         → 변경 기록 → 적용 순번 → 수집 완료 기록 → (SHIPMENT 만) 지연 에피소드 저장(detect_after_sync)
+         → 변경 기록 → 적용 순번 → 수집 완료 기록 → (SHIPMENT 만) 지연 에피소드 판정·시작 저장(detect_after_sync)
+         → 에피소드 종료(close_episodes)
          → STALE 판정(judge_after_sync) → 커밋. 지연 감지가 STALE 판정보다 먼저다 (docs/analysis/delay-detection.md 3절).
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
          FAILED 기록이 또 실패해도 원래 예외를 올리고, 기록 실패는 그 예외의 note 로 붙입니다.
@@ -192,6 +193,9 @@ class DataIngestService:
                 if source_domain == SourceDomain.SHIPMENT
                 else []
             )
+            # GLOW-18 자리: AUTO 실행 생성·이전 실행 STALE(mark_runs_stale)은 여기, 에피소드를 닫기 전에 한다.
+            # 닫힌 에피소드의 실행은 동결이라 mark_runs_stale 이 건너뛰기 때문이다 (episode_service 설명).
+            await self.episode_service.close_episodes(company_id, episodes)
             staled = await self.stale_service.judge_after_sync(
                 company_id, applied_seq, self.now()
             )

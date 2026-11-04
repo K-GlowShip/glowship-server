@@ -157,3 +157,35 @@ async def test_SHIPMENT_가_아닌_수집은_에피소드를_보지_않는다(db
     )
 
     assert result.episode_outcomes == ()
+
+
+async def test_수집은_판정_종료_STALE_판정_순서로_부른다(db_write_session):
+    """회복 종료 전에 GLOW-18 이 이전 실행을 STALE 로 바꿀 수 있도록 판정과 종료가 나뉘어 있고,
+    닫힌 에피소드의 실행이 STALE 판정 대상이 아니게 종료는 STALE 판정보다 먼저다 (delay-detection.md 3·4절)."""
+    db = db_write_session
+    company_id = await _company(db)
+    calls: list[str] = []
+
+    class OrderEpisodes:
+        async def detect_after_sync(self, company_id, data_sync_run_id):
+            calls.append("detect")
+            return []
+
+        async def close_episodes(self, company_id, outcomes):
+            calls.append("close")
+
+    class OrderStale:
+        async def judge_after_sync(self, company_id, applied_seq, detected_at):
+            calls.append("stale")
+            return []
+
+    service = DataIngestService(
+        db,
+        IngestRepository(db),
+        OrderStale(),
+        episode_service=OrderEpisodes(),
+        now=lambda: DAY1,
+    )
+    await service.ingest(company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, [])
+
+    assert calls == ["detect", "close", "stale"]

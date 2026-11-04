@@ -148,8 +148,9 @@ class StaleJudgmentService:
         사유를 이미 아는 실행을 STALE 로 바꿉니다.
         예: 지연 선적 일정·단계가 바뀌어 새 AUTO 실행을 만들 때 이전 실행을
         DELAY_SCHEDULE_CHANGED·DELAY_STAGE_CHANGED 로 (D-08). 대상이 아닌 상태의 실행은 그대로 둡니다.
-        종료된 에피소드의 실행도 그대로 두므로(동결), 회복·입고로 에피소드를 닫을 때는
-        이 함수를 먼저 부른 뒤 delay_events.closed_at 을 기록해야 합니다.
+        종료된 에피소드의 실행도 그대로 두므로(동결), 회복으로 에피소드를 닫을 때는
+        이 함수를 먼저 부른 뒤 delay_events.closed_at 을 기록해야 합니다 (episode_service.close_episodes 가 나중).
+        입고(RECEIVED)로 닫을 때는 실행을 만들지 않고 이전 실행도 STALE 로 바꾸지 않습니다 (serviceflow 4절).
         """
         runs = await self._unfrozen(await lock_analysis_runs(self.db, analysis_run_ids))
         staled = [run for run in runs if run.status in STALE_TARGET_STATUSES]
