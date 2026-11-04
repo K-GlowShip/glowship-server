@@ -129,8 +129,10 @@ sequenceDiagram
 - 실행 상태 조회기는 그래프를 실행할 때 `config["configurable"]["run_status_reader"]`로 주입합니다. 주입하지 않으면 STALE 확인을 건너뜁니다(테스트·dry-run).
 - DB 구현체는 `infrastructure/repository/run_status_repository.py`의 `AnalysisRunStatusReader(session_factory, company_id)`입니다. 실행마다 하나 만들어 넘깁니다.
   - 조회마다 짧은 세션을 새로 열고 닫아, 분석 내내 트랜잭션을 열어 두지 않고 다른 트랜잭션이 커밋한 STALE을 바로 봅니다.
-  - `analysis_runs.status` 열만 읽고, 조회 전에 `app.company_id`를 설정합니다.
+  - `analysis_runs.status` 열만 읽고, 조회 전에 `app.company_id`를 설정합니다. 조회 조건에도 `company_id`를 넣어, RLS가 적용되지 않는 접속(로컬 superuser 등)에서도 다른 고객사 실행은 읽히지 않습니다.
   - **워커 역할 전용**입니다. 앱 역할 정책은 `app.user_id`의 사용자까지 확인하므로 실행이 보이지 않고 `None`(= STALE 아님)이 나옵니다.
+  - **`None`은 조용히 넘어갑니다.** `None`은 정상 흐름에서는 나오지 않습니다. 앱 역할 세션을 넘겼거나, 다른 고객사 ID로 만들었거나, 고객사가 ACTIVE가 아니거나(DDL `app_context_allowed`), 실행이 지워진 경우(앱 역할만 DELETE 가능)입니다. 그래프(`is_run_stale`)는 `None`을 STALE 아님으로 보고 끝까지 진행하므로, 조회기는 이때 **경고 로그**를 남깁니다. `None`이면 멈출지는 그래프를 백그라운드 실행과 잇는 작업에서 정합니다.
+  - DB 조회가 실패하면(연결 오류 등) 예외를 그대로 올립니다. 재시도·실패 처리는 그래프 실행 쪽(재시도 정책) 몫입니다.
 - 멈춘 위치는 `visited_nodes`에 `coordinator:stale_stop` 또는 `explain:stale_stop`으로 남습니다.
 - 에이전트는 상태를 `STALE`로 바꾸지 않습니다. 판정과 기록은 서비스 책임입니다.
 
