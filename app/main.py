@@ -12,6 +12,9 @@ from app.modules.delay_analysis.presentation.agent_dev_api_router import (
 from app.modules.delay_analysis.presentation.delay_event_api_router import (
     router as delay_event_router,
 )
+from app.modules.inventory.presentation.inventory_api_router import (
+    router as inventory_router,
+)
 from app.modules.master_data.presentation.sku_api_router import router as sku_router
 from app.modules.order.presentation.order_api_router import router as order_router
 from app.modules.user.presentation.auth_api_router import router as auth_router
@@ -33,6 +36,7 @@ app.include_router(auth_router)
 app.include_router(client_account_router)
 app.include_router(data_sync_run_router)
 app.include_router(delay_event_router)
+app.include_router(inventory_router)
 app.include_router(order_router)
 app.include_router(sku_router)
 
