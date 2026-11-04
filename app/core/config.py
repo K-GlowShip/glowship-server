@@ -1,5 +1,6 @@
 from datetime import timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -41,6 +42,11 @@ class Settings(BaseSettings):
     # 수집 멈춤 판정 배수. 마지막 수집 시작이 갱신 주기 × 배수보다 오래되면 동기화 안 됨으로 본다.
     # 0 이면 판정하지 않는다 (합성데이터처럼 오래된 이력으로 화면을 확인할 때).
     sync_stale_multiplier: int = Field(default=2, ge=0)
+
+    # Analysis engine
+    # 데이터 팀 분석 엔진 폴더(glowship_engine·synth2025_v5 의 부모). 엔진 코드는 저장소에 넣지 않고 이 경로에서
+    # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
+    glowship_engine_dir: Path | None = None
 
     @property
     def database_url(self) -> str:
