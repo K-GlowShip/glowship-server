@@ -36,10 +36,11 @@ def test_manifest_lists_engine_and_allocation_core_files():
     manifest = read_manifest()
     paths = {entry.path for entry in manifest}
 
-    assert len(manifest) == 41
-    assert len(paths) == 41
+    assert len(manifest) == 42
+    assert len(paths) == 42
     assert "synth2025_v5/allocation_core.py" in paths
     assert "glowship_engine/core.py" in paths
+    assert "glowship_engine/tests/test_q9_donor_reason.py" in paths  # Q9 수정판 시험
     assert all(len(entry.sha256) == 64 for entry in manifest)
 
 
@@ -125,7 +126,12 @@ def test_real_engine_dir_matches_manifest():
 
 @pytest.mark.parametrize(
     "module",
-    ["tests.test_engine", "tests.test_explain", "tests.test_forbidden_boundary"],
+    [
+        "tests.test_engine",
+        "tests.test_explain",
+        "tests.test_forbidden_boundary",
+        "tests.test_q9_donor_reason",
+    ],
 )
 def test_real_engine_self_tests_pass(module):
     engine_dir = _real_engine_dir()
