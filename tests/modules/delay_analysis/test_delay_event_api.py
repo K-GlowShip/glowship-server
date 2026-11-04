@@ -207,10 +207,16 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
 
 @pytest.mark.parametrize(
     "value",
-    ["2026-01-01", "2026-01-01T15:00:00"],  # 날짜만, 시간대 없는 시각
+    [
+        "2026-01-01",  # 날짜만
+        "2026-01-01T15:00:00",  # 시간대 없는 시각
+        "0",  # 숫자는 pydantic 이 Unix 초로 받으므로 따로 거부
+        "1782777600",
+        "1782777600.5",
+    ],
 )
 async def test_list_rejects_period_without_time_zone(fake_service, value):
-    """감지 기간은 시간대가 있는 UTC 시각만 받습니다 (명세 v6.2 C18). 날짜만 보내면 UTC 자정으로 조용히 바뀌지 않게 거부"""
+    """감지 기간은 시간대가 있는 ISO 8601 시각만 받습니다 (명세 v6.2 2절 시간, C18). 날짜만·숫자가 UTC 시각으로 조용히 바뀌지 않게 거부"""
     response = await _get("/api/v1/delay-events", params={"from": value})
 
     assert response.status_code == 422

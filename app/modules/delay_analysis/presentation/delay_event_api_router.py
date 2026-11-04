@@ -1,7 +1,9 @@
+import re
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, BeforeValidator
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
@@ -23,6 +25,19 @@ router = APIRouter(prefix="/api/v1", tags=["지연 조회 (Client)"])
 # Ruff B008: 의존성 팩토리 호출은 기본 인자가 아니라 모듈 수준에서 한 번만 만든다.
 require_client = require_roles(UserRoleCode.CLIENT_MEMBER, UserRoleCode.CLIENT_LEAD)
 
+# 명세 v6.2 2절 시간: 기간 필터는 ISO 8601 시각 문자열만 받는다.
+# AwareDatetime 은 "0"·"1782777600" 같은 숫자를 Unix 초(UTC)로 바꿔 받으므로 날짜·시각 모양이 아니면 먼저 거부한다.
+_ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T")
+
+
+def _require_iso_datetime(value: object) -> object:
+    if isinstance(value, str) and not _ISO_DATETIME.match(value):
+        raise ValueError("ISO 8601 시각이어야 합니다 (예: 2026-10-20T15:00:00Z)")
+    return value
+
+
+IsoAwareDatetime = Annotated[AwareDatetime, BeforeValidator(_require_iso_datetime)]
+
 _COMMON_ERRORS = {
     401: {
         "model": ErrorResponse,
@@ -37,7 +52,7 @@ _COMMON_ERRORS = {
     summary="지연 목록 (API 15)",
     description=(
         "고객사의 지연 건을 감지 시각 최신순(같으면 지연 ID 순)으로 반환합니다. 각 행에 현재 분석 실행(currentRun)과 최종 선택 여부를 붙이고, "
-        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함, 명세 v6.2 C18). 시간대가 없는 값이나 날짜만 보내거나 from > to 이면 422 VALIDATION_ERROR 이고, from = to 는 0건입니다(C20). KST → UTC 변환은 프론트가 합니다. "
+        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함, 명세 v6.2 C18). 시간대가 없는 값, 날짜만, Unix 초 같은 숫자를 보내거나 from > to 이면 422 VALIDATION_ERROR 이고, from = to 는 0건입니다(C20). KST → UTC 변환은 프론트가 합니다. "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다."
     ),
     response_model=DelayEventListResponse,
@@ -45,7 +60,7 @@ _COMMON_ERRORS = {
     | {
         422: {
             "model": ErrorResponse,
-            "description": "필터 형식 오류 (시간대 없는 from·to, from > to 포함)",
+            "description": "필터 형식 오류 (시간대 없는·숫자 from·to, from > to 포함)",
         }
     },
 )
@@ -58,12 +73,12 @@ async def list_delay_events(
         ),
     ),
     warehouse_id: uuid.UUID | None = Query(None, alias="warehouseId"),
-    detected_from: AwareDatetime | None = Query(
+    detected_from: IsoAwareDatetime | None = Query(
         None,
         alias="from",
         description="감지 시각 시작, 포함 (예: 2026-10-20T15:00:00Z)",
     ),
-    detected_to: AwareDatetime | None = Query(
+    detected_to: IsoAwareDatetime | None = Query(
         None,
         alias="to",
         description="감지 시각 끝, 미포함 (예: 2026-10-21T15:00:00Z)",
