@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
           지연 선적     = 열린 에피소드(closed_at 없음) 중 현재 실행(is_latest)이 NO_DELAY 가 아니고
                           (실행이 없어도 센다) 그 지연의 어느 실행에도 최종 선택이 없는 것의 서로 다른 선적 수
           정시 입고율    = (시작일, 끝일] 에 입고된 선적 중 actual ≤ planned 인 비율 (서비스가 나눗셈, 0건이면 null)
-          위험 주문     = 현재 실행이 READY_FOR_REVIEW 인 지연들의 at_risk_orders 를 주문으로 묶은 서로 다른 주문 수 (D21)
+          위험 주문     = 열린 에피소드(closed_at 없음) 중 현재 실행이 READY_FOR_REVIEW 인 지연들의 at_risk_orders 를
+                          주문으로 묶은 서로 다른 주문 수 (D21). 입고로 닫힌 에피소드는 새 실행 없이 READY_FOR_REVIEW 로
+                          남을 수 있지만 동결이고 선택도 막히므로(serviceflow 4절) 세지 않는다 (C22)
           미출고 주문   = status 가 OPEN·PARTIALLY_SHIPPED 인 주문 수 (위험 주문 비율의 분모)
       - 비교값의 과거 상태 (C22). 과거 값은 시각이 남는 열로만 되살린다:
           진행 중인 선적(시각 t) = t 까지 관측된 마지막 일정 스냅샷(observed_at ≤ t)의 stage 가 RECEIVED 가 아닌 선적 수.
@@ -163,11 +165,14 @@ _AT_RISK_ORDERS = text(
       FROM at_risk_orders a
       JOIN analysis_runs r
         ON r.company_id = a.company_id AND r.analysis_run_id = a.analysis_run_id
+      JOIN delay_events e
+        ON e.company_id = r.company_id AND e.delay_event_id = r.delay_event_id
       JOIN order_lines ol
         ON ol.company_id = a.company_id AND ol.order_line_id = a.order_line_id
      WHERE a.company_id = :company_id
        AND r.is_latest
        AND r.status = 'READY_FOR_REVIEW'
+       AND e.closed_at IS NULL
     """
 ).bindparams(bindparam("company_id", type_=_UUID))
 
@@ -277,7 +282,7 @@ class DashboardRepository:
         )
 
     async def count_at_risk_orders(self, company_id: uuid.UUID) -> int:
-        """현재 실행이 READY_FOR_REVIEW 인 지연들의 위험 주문 수 (서로 다른 주문, D21)"""
+        """열린 에피소드 중 현재 실행이 READY_FOR_REVIEW 인 지연들의 위험 주문 수 (서로 다른 주문, D21·C22)"""
         return await self.db.scalar(_AT_RISK_ORDERS, {"company_id": company_id})
 
     async def count_unshipped_orders(self, company_id: uuid.UUID) -> int:

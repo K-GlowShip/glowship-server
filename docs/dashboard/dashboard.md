@@ -33,10 +33,10 @@ sequenceDiagram
 | `inTransitShipmentCount` | `current_stage <> RECEIVED`인 선적 수 | `weekOverWeek` = 현재 − T−7일 값. T−7일 값은 그 시각까지 관측된 마지막 일정 스냅샷(`observed_at` ≤ 시각)의 `stage`가 `RECEIVED`가 아닌 선적 수(그때까지 스냅샷이 없는 선적은 세지 않음) |
 | `delayedShipmentCount` | **열린 에피소드**(`closed_at` 없음) 중 현재 실행(`is_latest`)이 `NO_DELAY`가 아니고(실행이 없어도 셈) 그 지연의 어느 실행에도 최종 선택이 없는 것의 서로 다른 선적 수 | `dayOverDay` = 현재 − T−1일 값. T−1일 값은 그 시각에 감지되어 있고 닫히지 않았으며, 그때까지 끝난 최신 실행(`finished_at` ≤ 시각, `version_no` 최대)이 `NO_DELAY`가 아니고, 그때까지 최종 선택(`decided_at` ≤ 시각)이 없는 지연의 선적 수 |
 | `onTimeInboundRate` | `(기준일 − 30일, 기준일]`에 입고된 선적 중 `actual_3pl_inbound_date ≤ planned_3pl_inbound_date` 비율(0~1). 입고 0건이면 `null` | `monthOverMonth` = 현재 − 직전 30일 `(기준일 − 60일, 기준일 − 30일]` 비율. 어느 쪽이든 `null`이면 `null` |
-| `atRiskOrderCount` | 현재 실행이 `READY_FOR_REVIEW`인 지연들의 위험 주문 수. `at_risk_orders`는 주문 상세 단위라 **서로 다른 주문 수**로 센다(D21). 대상이 없으면 0(`null` 아님) | `atRiskOrderRate` = 위험 주문 ÷ 미출고 주문(`OPEN`·`PARTIALLY_SHIPPED`). 미출고 주문이 0건이면 `null` |
+| `atRiskOrderCount` | **열린 에피소드** 중 현재 실행이 `READY_FOR_REVIEW`인 지연들의 위험 주문 수(입고로 닫혀 `READY_FOR_REVIEW`로 남은 실행은 동결이라 세지 않음, C22). `at_risk_orders`는 주문 상세 단위라 **서로 다른 주문 수**로 센다(D21). 대상이 없으면 0(`null` 아님) | `atRiskOrderRate` = 위험 주문 ÷ 미출고 주문(`OPEN`·`PARTIALLY_SHIPPED`). 미출고 주문이 0건이면 `null` |
 
 - 과거 값은 시각이 남는 열로만 되살립니다. 실행 `status`는 지금 값이지만 `NO_DELAY`는 끝난 실행의 최종 상태라 과거 판정에 써도 바뀌지 않습니다.
-- 지연 선적에 열린 에피소드 조건을 둔 것은 C22 결정입니다. 명세 문장대로면 입고·회복으로 닫힌 에피소드도 지연 선적이 됩니다.
+- 지연 선적과 위험 주문에 열린 에피소드 조건을 둔 것은 C22 결정입니다. 명세 문장대로면 입고·회복으로 닫힌 에피소드도 지연 선적이 되고, 입고로 닫힌 에피소드는 새 실행 없이 `READY_FOR_REVIEW`로 남을 수 있어(serviceflow 4절) 그 위험 주문도 KPI에 남습니다.
 
 ### 성공 응답 (확정 DB, A_BEAUTY)
 
@@ -54,7 +54,7 @@ sequenceDiagram
 }
 ```
 
-- 확정 DB는 지연 8건이 모두 닫혀 있고 `READY_FOR_REVIEW` 실행이 없어 지연 선적·위험 주문이 0입니다. 규칙은 테스트에서 롤백되는 트랜잭션 안에서 데이터를 바꿔 확인합니다(지연 8건을 열면 A 3·B 2, 위험 주문이 있는 실행을 현재 실행으로 바꾸면 상세 7행 → 주문 3건).
+- 확정 DB는 지연 8건이 모두 닫혀 있고 `READY_FOR_REVIEW` 실행이 없어 지연 선적·위험 주문이 0입니다. 규칙은 테스트에서 롤백되는 트랜잭션 안에서 데이터를 바꿔 확인합니다(지연 8건을 열면 A 3·B 2, 위험 주문이 있는 실행을 현재 실행·`READY_FOR_REVIEW`로 바꾸면 그 지연이 닫혀 있을 때 0건, 열면 상세 7행 → 주문 3건).
 - 과거 지연 선적 수는 지연 8건 이력에서 손으로 센 값과 비교합니다(예: A_BEAUTY 1/1 01:00 4건 → 1/2 12:00 2건, 최종 선택 2건이 빠짐).
 
 ## 3. `GET /api/v1/dashboard/inbound-trend` (API 23)

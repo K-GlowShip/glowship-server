@@ -102,7 +102,7 @@ class DashboardSummaryResponse(CamelModel):
     )
     at_risk_order_count: int = Field(
         description=(
-            "위험 주문: 현재 실행이 READY_FOR_REVIEW 인 지연들의 위험 주문 수. "
+            "위험 주문: 열린 에피소드 중 현재 실행이 READY_FOR_REVIEW 인 지연들의 위험 주문 수. "
             "상세 행이 아니라 서로 다른 주문 수(D21). 대상 실행이 없으면 0"
         ),
         examples=[3],

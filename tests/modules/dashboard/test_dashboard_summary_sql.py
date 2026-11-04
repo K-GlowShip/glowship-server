@@ -16,7 +16,8 @@ from app.modules.dashboard.infrastructure.repository.dashboard_repository import
       - 확정 DB(2026 H1)는 지연 8건이 모두 닫혀 있고 READY_FOR_REVIEW 실행이 없어 지연 선적·위험 주문이 0이다.
         그래서 롤백되는 트랜잭션 안에서 확정 데이터를 바꿔 지연 선적·위험 주문 규칙을 확인한다.
           - 지연 8건을 모두 연다 → 최종 선택이 있는 2건, 현재 실행이 NO_DELAY 인 1건을 빼고 A_BEAUTY 3·B_COSMETICS 2
-          - at_risk_orders 가 있는 실행(상세 7행·주문 3건, D12)을 현재 실행·READY_FOR_REVIEW 로 → 위험 주문 3 (D21: 행 수 7 이 아님)
+          - at_risk_orders 가 있는 실행(상세 7행·주문 3건, D12)을 현재 실행·READY_FOR_REVIEW 로 →
+            그 지연이 닫혀 있으면 0 (C22: 닫힌 에피소드의 실행은 동결), 지연을 열면 3 (D21: 행 수 7 이 아님)
       - DB 가 없으면 db_session·db_write_session 픽스처가 건너뜁니다 (tests/conftest.py).
 """
 
@@ -76,8 +77,8 @@ async def test_열린_지연만_세고_최종_선택과_NO_DELAY_는_뺀다(db_w
     assert (a.delayed_shipment_count, b.delayed_shipment_count) == (3, 2)
 
 
-async def test_위험_주문은_상세가_아니라_서로_다른_주문으로_센다(db_write_session):
-    db = db_write_session
+async def _make_ready_run_with_risk(db):
+    """at_risk_orders 가 있는 실행을 그 지연의 현재 실행·READY_FOR_REVIEW 로 바꾼다 (롤백 트랜잭션 안)"""
     run = (
         await db.execute(
             text(
@@ -91,7 +92,7 @@ async def test_위험_주문은_상세가_아니라_서로_다른_주문으로_�
         )
     ).one_or_none()
     if run is None:
-        return
+        return None
     await db.execute(
         text(
             "UPDATE analysis_runs SET is_latest = false WHERE delay_event_id = :event AND is_latest"
@@ -109,6 +110,38 @@ async def test_위험_주문은_상세가_아니라_서로_다른_주문으로_�
             """
         ),
         {"run": run.analysis_run_id},
+    )
+    return run
+
+
+async def test_닫힌_에피소드의_위험_주문은_세지_않는다(db_write_session):
+    db = db_write_session
+    run = await _make_ready_run_with_risk(db)
+    if run is None:
+        return
+    closed = await db.scalar(
+        text(
+            "SELECT closed_at IS NOT NULL FROM delay_events WHERE delay_event_id = :e"
+        ),
+        {"e": run.delay_event_id},
+    )
+
+    summary = await _service(db).get_summary(_tenant(run.company_id))
+
+    assert closed  # 확정 DB 의 지연은 모두 닫혀 있다
+    assert summary.at_risk_order_count == 0
+
+
+async def test_위험_주문은_상세가_아니라_서로_다른_주문으로_센다(db_write_session):
+    db = db_write_session
+    run = await _make_ready_run_with_risk(db)
+    if run is None:
+        return
+    await db.execute(
+        text(
+            "UPDATE delay_events SET closed_at = NULL, close_reason = NULL WHERE delay_event_id = :e"
+        ),
+        {"e": run.delay_event_id},
     )
     line_count = await db.scalar(
         text("SELECT COUNT(*) FROM at_risk_orders WHERE analysis_run_id = :run"),
