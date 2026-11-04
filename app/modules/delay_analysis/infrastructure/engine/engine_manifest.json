@@ -1,10 +1,11 @@
 {
   "schema_version": "glowship_engine_manifest.v1",
-  "note": "데이터 팀 엔진 원본의 파일 목록과 SHA-256. 코드는 저장소에 넣지 않고 GLOWSHIP_ENGINE_DIR 의 원본을 이 목록으로 대조해 불러온다(docs/analysis/engine-local-path.md). 목록에 없는 파일은 보지 않는다.",
+  "note": "데이터 팀 엔진 원본의 파일 목록과 SHA-256. 코드는 저장소에 넣지 않고 GLOWSHIP_ENGINE_DIR 의 원본을 이 목록으로 대조해 불러온다(docs/analysis/engine-local-path.md). 목록에 없는 파일은 보지 않는다. options.py 와 tests/test_q9_donor_reason.py 는 glowship-plan tools/glowship_engine 의 Q9 수정판이다(공유 묶음 SHA256SUMS.tsv 의 options.py 974577bc… 는 수정 전).",
   "engine_dir_layout": "GLOWSHIP_ENGINE_DIR/glowship_engine/…, GLOWSHIP_ENGINE_DIR/synth2025_v5/… (공유 묶음 04_적재검증도구 에 glowship-plan tools/synth2025_v5 를 복사한 모양)",
   "sources": {
     "glowship_engine": "공유 묶음 00_필수_최신DB_전체재적재/04_적재검증도구/glowship_engine (overlay v1_run1 manifest 에 해시 기록)",
-    "synth2025_v5": "K-GlowShip/glowship-plan main 838092b tools/synth2025_v5"
+    "synth2025_v5": "K-GlowShip/glowship-plan main 838092b tools/synth2025_v5",
+    "glowship_engine_q9": "K-GlowShip/glowship-plan main 11b902e tools/glowship_engine (options.py 수정판, test_q9_donor_reason.py)"
   },
   "files": [
     {
@@ -40,6 +41,11 @@
     {
       "path": "glowship_engine/explain/adapter.py",
       "sha256": "0ac75a816b05847081aa909f42534d54f5ae96ca17ef2909718db6f96a776740",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets.py",
+      "sha256": "898251e9b0ecd9d6e4d5a42b835947262b09873b4d510707900f1194f98ad360",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
@@ -83,11 +89,6 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
-      "path": "glowship_engine/explain/assets.py",
-      "sha256": "898251e9b0ecd9d6e4d5a42b835947262b09873b4d510707900f1194f98ad360",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
       "path": "glowship_engine/explain/generator.py",
       "sha256": "b195749e3c4bd7146dad72fa00ec2bf8ef4eb3aad64c74f65d447eccf7c24e1b",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
@@ -119,8 +120,8 @@
     },
     {
       "path": "glowship_engine/options.py",
-      "sha256": "974577bcc337978564d46a6693b9e54a279ad48f530190e6046ae185649b04ac",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+      "sha256": "f66e319c6bddbfb9dceb9365f134a260a9e0e67a51bec15d25795b2a455e45d6",
+      "recorded_in": "glowship-plan 11b902e tools/glowship_engine/options.py (Q9 수정판, PR #19 리뷰)"
     },
     {
       "path": "glowship_engine/pipeline.py",
@@ -196,6 +197,11 @@
       "path": "glowship_engine/tests/test_forbidden_boundary.py",
       "sha256": "1f4f9ef3e0be6a92442b5c53db4ada8aa2c8d42a087b8c29c56bd90bdfd6d0fd",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/test_q9_donor_reason.py",
+      "sha256": "0a616a2f16a725e1ebce856c15da02582c1a567f706d3501eea05a54a0e839ee",
+      "recorded_in": "glowship-plan 11b902e tools/glowship_engine/tests/test_q9_donor_reason.py (Q9 시험)"
     },
     {
       "path": "synth2025_v5/allocation_core.py",
