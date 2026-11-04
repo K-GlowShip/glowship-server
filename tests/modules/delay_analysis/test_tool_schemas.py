@@ -413,6 +413,30 @@ def test_literal_values_match_ddl(values, table, name):
     assert values == _check_values(table, name)
 
 
+def test_reason_sets_are_within_ddl():
+    """
+    표 A·B 와 사전 판정 사유가 DDL 이 받는 값 안에 있는지 직접 본다.
+    문서 표와 모델을 함께 잘못 고치면(예: Q9 조합 허용) 문서 = 모델 시험은 통과하므로 DDL 과 따로 대조한다.
+    """
+    status_words = {s.value for s in F}
+    not_feasible = (
+        _check_values("response_options", "response_options_ck6") - status_words
+    )
+    needs_check = (
+        _check_values("response_options", "response_options_ck7") - status_words
+    )
+    not_recovered = _check_values("option_order_outcomes", "option_order_outcomes_ck12")
+    for option, by_status in OS.OPTION_REASONS.items():
+        assert by_status.get(F.NOT_FEASIBLE, set()) <= not_feasible, option
+        assert by_status.get(F.NEEDS_CHECK, set()) <= needs_check, option
+    for option, reasons in OS.NOT_RECOVERED_REASONS.items():
+        assert {r.value for r in reasons} <= not_recovered, option
+    # 사전 판정 NO_SUPPLY 사유는 T10 에서 NOT_FEASIBLE 사유가 되고, NEEDS_CHECK 사유는 그대로 NEEDS_CHECK 사유다(5·6절)
+    for option, by_precheck in OS.PRECHECK_REASONS.items():
+        assert by_precheck.get(OS.Precheck.NO_SUPPLY, set()) <= not_feasible, option
+        assert by_precheck.get(OS.Precheck.NEEDS_CHECK, set()) <= needs_check, option
+
+
 # 문서에 나오는 대문자 코드값 가운데 서버 열거형이 아닌 것 (어디 값인지 밝혀 둔다)
 NON_ENUM_CODES = {
     "KR",  # region_code (Literal)
@@ -1122,3 +1146,69 @@ async def test_overlay_rows_pass_t10_model(db_session):
         run_options.sort(key=lambda o: OS.OPTION_ORDER.index(o.option_type))
         OS.OptionOutcomes(options=run_options)
     assert sum(len(v) for v in by_run.values()) == len(options)
+
+
+_OVERLAY_RISKS = text(
+    r"""
+    SELECT a.analysis_run_id::text AS run_id, o.order_id::text AS order_id, o.order_code, o.sales_channel,
+           to_char(o.ordered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24\:MI\:SS"Z"') AS ordered_at,
+           to_char(a.promised_delivery_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24\:MI\:SS"Z"') AS promised_delivery_at,
+           a.risk_attribution,
+           to_char(a.expected_delivery_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS expected_delivery_date,
+           to_char(a.baseline_expected_delivery_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS baseline_expected_delivery_date,
+           a.expected_beyond_horizon, a.order_line_id::text AS order_line_id, ol.line_no, s.sku_code,
+           a.open_quantity, a.wait_cause
+    FROM at_risk_orders a
+    JOIN order_lines ol ON ol.order_line_id = a.order_line_id
+    JOIN orders o ON o.order_id = ol.order_id
+    JOIN skus s ON s.sku_id = ol.sku_id
+    ORDER BY a.analysis_run_id, o.order_code, ol.line_no
+    """
+)
+_ORDER_KEYS = (
+    "order_id",
+    "order_code",
+    "sales_channel",
+    "ordered_at",
+    "promised_delivery_at",
+    "risk_attribution",
+    "expected_delivery_date",
+    "baseline_expected_delivery_date",
+    "expected_beyond_horizon",
+)
+
+
+async def test_overlay_risks_pass_t7_model(db_session):
+    """저장된 위험 주문(상세 단위)을 주문 단위로 묶어 T7 모델에 넣는다. 저장 시각 T23:59:59Z → 배송일로 되돌린다."""
+    rows = (await db_session.execute(_OVERLAY_RISKS)).mappings().all()
+    if not rows:
+        pytest.skip("위험 주문 행이 없는 DB 라 건너뜀")
+    orders: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        key = (row["run_id"], row["order_id"])
+        order = orders.setdefault(key, {k: row[k] for k in _ORDER_KEYS} | {"lines": []})
+        assert all(order[k] == row[k] for k in _ORDER_KEYS), (
+            "같은 주문의 상세끼리 주문 값이 다름"
+        )
+        order["lines"].append(
+            {
+                k: row[k]
+                for k in (
+                    "order_line_id",
+                    "line_no",
+                    "sku_code",
+                    "open_quantity",
+                    "wait_cause",
+                )
+            }
+        )
+    for body in orders.values():
+        I.AtRiskOrder.model_validate(body)
+    # 음성: 같은 행에서 귀속을 뒤집으면 DDL 규칙(ck5·ck6)으로 거부된다
+    flipped = next(iter(orders.values())) | {
+        "risk_attribution": "DELAY_INDUCED"
+        if next(iter(orders.values()))["risk_attribution"] == "PRE_EXISTING"
+        else "PRE_EXISTING"
+    }
+    with pytest.raises(ValidationError):
+        I.AtRiskOrder.model_validate(flipped)
