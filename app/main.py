@@ -3,6 +3,9 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.exceptions import include_exception_handlers
 from app.core.middleware import include_middlewares
+from app.modules.dashboard.presentation.dashboard_api_router import (
+    router as dashboard_router,
+)
 from app.modules.data_sync.presentation.data_sync_run_api_router import (
     router as data_sync_run_router,
 )
@@ -34,6 +37,7 @@ include_exception_handlers(app)
 # Routers
 app.include_router(auth_router)
 app.include_router(client_account_router)
+app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
 app.include_router(delay_event_router)
 app.include_router(inventory_router)
