@@ -18,9 +18,14 @@ from app.modules.dashboard.infrastructure.repository.dashboard_repository import
       - 요약 KPI (명세 4.4, C22): 정시 입고율은 (기준일 − 30일, 기준일] 에 입고된 선적 기준이고 0건이면 None,
         위험 주문은 항상 정수(대상 실행이 없으면 0), 위험 주문 비율은 미출고 주문이 0건이면 None.
         적재된 수집이 없으면 기준일이 없으므로 건수는 0, 비율은 None 이고 DB 를 더 읽지 않는다.
+      - 비교값 (C22): 진행 중인 선적은 T − 7일 대비 증감(weekOverWeek), 지연 선적은 T − 1일 대비 증감(dayOverDay),
+        정시 입고율은 직전 30일 (기준일 − 60일, 기준일 − 30일] 대비 차이(monthOverMonth, 0~1 단위, 어느 쪽이든 None 이면 None).
+        적재된 수집이 없으면 비교값은 모두 None.
 """
 
 ON_TIME_WINDOW_DAYS = 30
+IN_TRANSIT_COMPARE = timedelta(days=7)
+DELAYED_COMPARE = timedelta(days=1)
 
 
 class InboundTrendDays(IntEnum):
@@ -45,12 +50,15 @@ class InboundTrendResult:
 
 @dataclass(frozen=True)
 class DashboardSummary:
-    """대시보드 KPI 4개의 현재 값과 기준 시각 (명세 4.4)"""
+    """대시보드 KPI 4개, 각 비교값, 기준 시각 (명세 4.4)"""
 
     last_synced_at: datetime | None
     in_transit_shipment_count: int
+    week_over_week: int | None
     delayed_shipment_count: int
+    day_over_day: int | None
     on_time_inbound_rate: float | None
+    month_over_month: float | None
     at_risk_order_count: int
     at_risk_order_rate: float | None
 
@@ -58,6 +66,13 @@ class DashboardSummary:
 def ratio(numerator: int, denominator: int) -> float | None:
     """0~1 비율. 분모가 0 이면 None (응답 규칙: 비율은 0~1, 0건이면 null)"""
     return numerator / denominator if denominator else None
+
+
+def rate_change(current: float | None, previous: float | None) -> float | None:
+    """비율 차이 (0~1 단위). 어느 쪽이든 None 이면 None"""
+    if current is None or previous is None:
+        return None
+    return current - previous
 
 
 def basis_date_of(basis_at: datetime) -> date:
@@ -110,27 +125,45 @@ class DashboardQueryService:
             return DashboardSummary(
                 last_synced_at=None,
                 in_transit_shipment_count=0,
+                week_over_week=None,
                 delayed_shipment_count=0,
+                day_over_day=None,
                 on_time_inbound_rate=None,
+                month_over_month=None,
                 at_risk_order_count=0,
                 at_risk_order_rate=None,
             )
         basis_date = basis_date_of(basis_at)
-        timeliness = await self.repo.find_inbound_timeliness(
+        window = timedelta(days=ON_TIME_WINDOW_DAYS)
+        current = await self.repo.find_inbound_timeliness(
+            company_id, after_date=basis_date - window, until_date=basis_date
+        )
+        previous = await self.repo.find_inbound_timeliness(
             company_id,
-            after_date=basis_date - timedelta(days=ON_TIME_WINDOW_DAYS),
-            until_date=basis_date,
+            after_date=basis_date - 2 * window,
+            until_date=basis_date - window,
+        )
+        on_time_inbound_rate = ratio(current.on_time_count, current.received_count)
+        in_transit = await self.repo.count_in_transit_shipments(company_id)
+        in_transit_before = await self.repo.count_in_transit_shipments_at(
+            company_id, basis_at - IN_TRANSIT_COMPARE
+        )
+        delayed = await self.repo.count_delayed_shipments(company_id)
+        delayed_before = await self.repo.count_delayed_shipments_at(
+            company_id, basis_at - DELAYED_COMPARE
         )
         at_risk_order_count = await self.repo.count_at_risk_orders(company_id)
         unshipped_order_count = await self.repo.count_unshipped_orders(company_id)
         return DashboardSummary(
             last_synced_at=basis_at,
-            in_transit_shipment_count=await self.repo.count_in_transit_shipments(
-                company_id
-            ),
-            delayed_shipment_count=await self.repo.count_delayed_shipments(company_id),
-            on_time_inbound_rate=ratio(
-                timeliness.on_time_count, timeliness.received_count
+            in_transit_shipment_count=in_transit,
+            week_over_week=in_transit - in_transit_before,
+            delayed_shipment_count=delayed,
+            day_over_day=delayed - delayed_before,
+            on_time_inbound_rate=on_time_inbound_rate,
+            month_over_month=rate_change(
+                on_time_inbound_rate,
+                ratio(previous.on_time_count, previous.received_count),
             ),
             at_risk_order_count=at_risk_order_count,
             at_risk_order_rate=ratio(at_risk_order_count, unshipped_order_count),

@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import UUID, Date, bindparam, text
+from sqlalchemy import UUID, Date, DateTime, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 """
@@ -19,6 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
           정시 입고율    = (시작일, 끝일] 에 입고된 선적 중 actual ≤ planned 인 비율 (서비스가 나눗셈, 0건이면 null)
           위험 주문     = 현재 실행이 READY_FOR_REVIEW 인 지연들의 at_risk_orders 를 주문으로 묶은 서로 다른 주문 수 (D21)
           미출고 주문   = status 가 OPEN·PARTIALLY_SHIPPED 인 주문 수 (위험 주문 비율의 분모)
+      - 비교값의 과거 상태 (C22). 과거 값은 시각이 남는 열로만 되살린다:
+          진행 중인 선적(시각 t) = t 까지 관측된 마지막 일정 스냅샷(observed_at ≤ t)의 stage 가 RECEIVED 가 아닌 선적 수.
+                                  t 까지 스냅샷이 없는 선적은 세지 않는다.
+          지연 선적(시각 t)     = detected_at ≤ t 이고 (closed_at 없음 또는 > t) 인 지연 중, t 까지 끝난 최신 실행
+                                  (finished_at ≤ t, version_no 최대)이 NO_DELAY 가 아니고(끝난 실행이 없어도 센다)
+                                  t 까지 최종 선택(decided_at ≤ t)이 없는 것의 서로 다른 선적 수.
+                                  실행의 status 는 지금 값이지만 NO_DELAY 는 끝난 실행의 최종 상태라 바뀌지 않는다.
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
@@ -90,6 +97,50 @@ _DELAYED_SHIPMENTS = text(
        )
     """
 ).bindparams(bindparam("company_id", type_=_UUID))
+
+_IN_TRANSIT_SHIPMENTS_AT = text(
+    """
+    SELECT COUNT(*)
+      FROM (
+        SELECT DISTINCT ON (shipment_id) shipment_id, stage
+          FROM shipment_schedule_snapshots
+         WHERE company_id = :company_id AND observed_at <= :at
+         ORDER BY shipment_id, observed_at DESC, shipment_schedule_snapshot_id DESC
+      ) last_seen
+     WHERE stage <> 'RECEIVED'
+    """
+).bindparams(
+    bindparam("company_id", type_=_UUID), bindparam("at", type_=DateTime(timezone=True))
+)
+
+_DELAYED_SHIPMENTS_AT = text(
+    """
+    SELECT COUNT(DISTINCT e.shipment_id)
+      FROM delay_events e
+      LEFT JOIN LATERAL (
+        SELECT r.status
+          FROM analysis_runs r
+         WHERE r.company_id = e.company_id AND r.delay_event_id = e.delay_event_id
+           AND r.finished_at <= :at
+         ORDER BY r.version_no DESC
+         LIMIT 1
+      ) finished ON true
+     WHERE e.company_id = :company_id
+       AND e.detected_at <= :at
+       AND (e.closed_at IS NULL OR e.closed_at > :at)
+       AND (finished.status IS NULL OR finished.status <> 'NO_DELAY')
+       AND NOT EXISTS (
+           SELECT 1
+             FROM final_decisions f
+             JOIN analysis_runs fr
+               ON fr.company_id = f.company_id AND fr.analysis_run_id = f.analysis_run_id
+            WHERE f.company_id = e.company_id AND fr.delay_event_id = e.delay_event_id
+              AND f.decided_at <= :at
+       )
+    """
+).bindparams(
+    bindparam("company_id", type_=_UUID), bindparam("at", type_=DateTime(timezone=True))
+)
 
 _INBOUND_TIMELINESS = text(
     """
@@ -189,6 +240,22 @@ class DashboardRepository:
     async def count_delayed_shipments(self, company_id: uuid.UUID) -> int:
         """열린 에피소드 중 현재 실행이 NO_DELAY 가 아니고 최종 선택 전인 지연의 서로 다른 선적 수 (C22)"""
         return await self.db.scalar(_DELAYED_SHIPMENTS, {"company_id": company_id})
+
+    async def count_in_transit_shipments_at(
+        self, company_id: uuid.UUID, at: datetime
+    ) -> int:
+        """시각 at 에 진행 중이던 선적 수: at 까지 마지막으로 관측된 스냅샷 단계가 RECEIVED 가 아닌 선적 (C22)"""
+        return await self.db.scalar(
+            _IN_TRANSIT_SHIPMENTS_AT, {"company_id": company_id, "at": at}
+        )
+
+    async def count_delayed_shipments_at(
+        self, company_id: uuid.UUID, at: datetime
+    ) -> int:
+        """시각 at 의 지연 선적 수: 그때 열려 있고, 그때까지 끝난 최신 실행이 NO_DELAY 가 아니고, 최종 선택 전 (C22)"""
+        return await self.db.scalar(
+            _DELAYED_SHIPMENTS_AT, {"company_id": company_id, "at": at}
+        )
 
     async def find_inbound_timeliness(
         self, company_id: uuid.UUID, *, after_date: date, until_date: date
