@@ -27,12 +27,18 @@ class AnalysisRun(Base):
       - FAILED·ON_HOLD 상태일 때만 실패 요약 5컬럼(failed_step ~ failure_message)을 채웁니다.
       - STALE 상태일 때만 STALE 사유 4컬럼(stale_*)을 채웁니다. TIME_ELAPSED 만 stale_detected_seq 가 비어 있습니다.
       - dependency_scope 는 분석이 실제로 읽은 입력 범위(dependency_scope.v1)로, STALE 1차 판정에 씁니다.
+      - run_code 는 화면에 보이는 실행 ID(D14, `AN-YYMMDD-NNN`)로 고객사 안에서 고유합니다(0006).
     """
 
     __tablename__ = "analysis_runs"
     __table_args__ = (
         UniqueConstraint("company_id", "analysis_run_id", name="analysis_runs_uk1"),
         UniqueConstraint("delay_event_id", "version_no", name="analysis_runs_uk2"),
+        # 0006(D14): 표시용 실행 ID. v6.2 DDL 에는 없고 서버 리비전이 추가한다
+        UniqueConstraint("company_id", "run_code", name="analysis_runs_run_code_uk"),
+        CheckConstraint(
+            "run_code ~ '^AN-[0-9]{6}-[0-9]{3}$'", name="analysis_runs_run_code_ck"
+        ),
         CheckConstraint(
             "trigger_type IN ('AUTO','REANALYSIS')", name="analysis_runs_ck1"
         ),
@@ -273,6 +279,7 @@ class AnalysisRun(Base):
 
     analysis_run_id: Mapped[uuid_pk]
     company_id: Mapped[uuid.UUID]
+    run_code: Mapped[str]
     delay_event_id: Mapped[uuid.UUID]
     version_no: Mapped[int]
     parent_analysis_run_id: Mapped[uuid.UUID | None]
