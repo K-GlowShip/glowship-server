@@ -57,7 +57,7 @@ app/
     ├── operating_rule/            # operating_rule_sets, operating_lead_times
     ├── data_sync/                 # data_sync_runs, data_validation_issues, data_change_records + 원천 유형별 마지막 수집 상태 조회 API
     ├── order/                     # orders, order_lines (+ aux: 출고일·대기 이력)
-    ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots
+    ├── shipment/                  # shipments, shipment_lines, shipment_schedule_snapshots + 선적 목록 조회 API
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
     ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개 + 분석 에이전트(application/agent)
     └── decision/                  # member_drafts, final_decisions
