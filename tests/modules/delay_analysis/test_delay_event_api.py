@@ -13,6 +13,7 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventDetail,
     DelayEventList,
     DelayEventListItem,
+    DelayEventQueryService,
     DelayEventTab,
     ShipmentDisplay,
 )
@@ -209,6 +210,41 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
     }
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-01-01",  # 날짜만
+        "2026-01-01T15:00:00",  # 시간대 없는 시각
+        "0",  # 숫자는 pydantic 이 Unix 초로 받으므로 따로 거부
+        "1782777600",
+        "1782777600.5",
+    ],
+)
+async def test_list_rejects_period_without_time_zone(fake_service, value):
+    """감지 기간은 시간대가 있는 ISO 8601 시각만 받습니다 (명세 v6.2 2절 시간, C18). 날짜만·숫자가 UTC 시각으로 조용히 바뀌지 않게 거부"""
+    response = await _get("/api/v1/delay-events", params={"from": value})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert fake_service.calls == []
+
+
+async def test_list_rejects_from_after_to():
+    """명세 v6.2 C20: from > to 는 422 VALIDATION_ERROR (실제 서비스의 검사가 응답까지 이어지는지)"""
+    service = DelayEventQueryService.__new__(DelayEventQueryService)
+    app.dependency_overrides[get_delay_event_query_service] = lambda: service
+    try:
+        response = await _get(
+            "/api/v1/delay-events",
+            params={"from": "2026-01-02T00:00:00Z", "to": "2026-01-01T00:00:00Z"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_delay_event_query_service, None)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
 async def test_list_passes_query_params_to_service(fake_service):
     warehouse_id = uuid.uuid7()
 
@@ -217,8 +253,8 @@ async def test_list_passes_query_params_to_service(fake_service):
         params={
             "status": "NEEDS_REANALYSIS",
             "warehouseId": str(warehouse_id),
-            "from": "2026-01-01",
-            "to": "2026-01-31",
+            "from": "2025-12-31T15:00:00Z",
+            "to": "2026-01-31T15:00:00+09:00",
             "q": "OCN",
             "hasFinalDecision": "false",
         },
@@ -228,8 +264,8 @@ async def test_list_passes_query_params_to_service(fake_service):
     assert call["tab"] == DelayEventTab.NEEDS_REANALYSIS
     assert call["warehouse_id"] == warehouse_id
     assert (call["detected_from"], call["detected_to"]) == (
-        date(2026, 1, 1),
-        date(2026, 1, 31),
+        datetime(2025, 12, 31, 15, 0, tzinfo=UTC),
+        datetime(2026, 1, 31, 6, 0, tzinfo=UTC),  # 같은 순간, 시간대만 다름
     )
     assert call["q"] == "OCN"
     assert call["has_final_decision"] is False

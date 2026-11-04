@@ -19,6 +19,7 @@ from app.modules.data_sync.application.ingest.code_resolver import (
     TRANSPORT_MODE_TO_REFERENCE,
     CodeBook,
     LeadtimeReference,
+    Rejection,
     SkuCode,
     WarehouseCode,
 )
@@ -34,11 +35,15 @@ from app.modules.data_sync.application.ingest.source_records import (
 )
 from app.modules.data_sync.infrastructure.data_change_record import DataChangeRecord
 from app.modules.data_sync.infrastructure.data_sync_enums import (
+    ISSUE_ENTITY_TYPE_OF,
     ConnectionMethod,
     DataSyncRunStatus,
     SourceDomain,
 )
 from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
+from app.modules.data_sync.infrastructure.data_validation_issue import (
+    DataValidationIssue,
+)
 from app.modules.inventory.infrastructure.inventory_daily import InventoryDaily
 from app.modules.master_data.infrastructure.external_entity_mapping import (
     ExternalEntityMapping,
@@ -71,6 +76,9 @@ MAPPED_SOURCE_DOMAINS = frozenset({SourceDomain.INVENTORY, SourceDomain.SHIPMENT
 # 초기 적재(주문 17만 건·재고 6만 행) 같은 큰 수집도 한 트랜잭션 안에서 나눠 읽습니다.
 # 재고 키는 (날짜, 창고, SKU)라 키 하나에 값 3개이므로 5,000키 = 15,000값입니다.
 KEYS_PER_QUERY = 5_000
+ISSUE_SEVERITY = "ERROR"
+ISSUE_OPEN = "OPEN"
+ISSUE_RESOLVED = "RESOLVED"
 
 _SKU_COLUMNS = ("sku_code", *SkuRecord.FIELDS)
 _WAREHOUSE_COLUMNS = ("warehouse_code", *WarehouseRecord.FIELDS)
@@ -491,6 +499,120 @@ class IngestRepository:
                 for d in drafts
             ],
         )
+
+    async def insert_validation_issues(
+        self,
+        company_id: uuid.UUID,
+        data_sync_run_id: uuid.UUID,
+        source_domain: SourceDomain,
+        rejections: Sequence[Rejection],
+        detected_at: datetime,
+    ) -> None:
+        """
+        거부 사유를 검증 이슈 OPEN 으로 남깁니다 (GLOW-15). 수집과 같은 트랜잭션이라 수집이 FAILED 면 함께 되돌아갑니다.
+          - 확정 기준선의 검증 이슈는 모두 ERROR·분석 차단(blocks_analysis)입니다. ck2 는 ERROR 면 분석 차단을 강제합니다.
+          - detected_at 은 수집 완료 시각(data_sync_runs.finished_at)입니다. 확정 기준선 이슈 9행이 모두 이렇습니다.
+          - (엔터티 유형, 키, 오류 코드)마다 OPEN 은 1건입니다. 이미 열린 이슈가 있으면 새로 넣지 않고(detected_at = 처음 감지),
+            같은 수집 안에서 겹친 것도 1건만 넣습니다. 기준선 9행이 키마다 1건이고, 10분 주기 수집이 같은 오류를 반복해
+            GET /validation-issues 목록이 쌓이지 않게 합니다 (PR #17 리뷰, 설계 담당 결정 2026-11-03).
+        """
+        open_now = await self._open_issue_codes(
+            company_id, source_domain, [r.source_record_key for r in rejections]
+        )
+        fresh: dict[tuple[str, str], Rejection] = {}
+        for r in rejections:
+            key = (r.source_record_key, r.error_code)
+            if key not in open_now and key not in fresh:
+                fresh[key] = r
+        rows = [
+            {
+                "data_validation_issue_id": uuid.uuid7(),
+                "company_id": company_id,
+                "data_sync_run_id": data_sync_run_id,
+                "source_entity_type": ISSUE_ENTITY_TYPE_OF[source_domain].value,
+                "source_record_key": r.source_record_key,
+                "field_name": r.field_name,
+                "error_code": r.error_code,
+                "error_message": r.error_message,
+                "severity": ISSUE_SEVERITY,
+                "blocks_analysis": True,
+                "detected_at": detected_at,
+                "status": ISSUE_OPEN,
+            }
+            for r in fresh.values()
+        ]
+        if rows:
+            await self.db.execute(insert(DataValidationIssue), rows)
+
+    async def _open_issue_codes(
+        self, company_id: uuid.UUID, source_domain: SourceDomain, keys: Sequence[str]
+    ) -> set[tuple[str, str]]:
+        """그 원천 유형에서 키가 같은 OPEN 이슈의 (키, 오류 코드)"""
+        found: set[tuple[str, str]] = set()
+        for chunk in _chunked(sorted(set(keys))):
+            rows = await self.db.execute(
+                select(
+                    DataValidationIssue.source_record_key,
+                    DataValidationIssue.error_code,
+                ).where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.source_entity_type
+                    == ISSUE_ENTITY_TYPE_OF[source_domain].value,
+                    DataValidationIssue.status == ISSUE_OPEN,
+                    DataValidationIssue.source_record_key.in_(chunk),
+                )
+            )
+            found.update((row.source_record_key, row.error_code) for row in rows)
+        return found
+
+    async def resolve_validation_issues(
+        self,
+        company_id: uuid.UUID,
+        data_sync_run_id: uuid.UUID,
+        source_domain: SourceDomain,
+        loaded_keys: Sequence[str],
+        rejections: Sequence[Rejection],
+        resolved_at: datetime,
+    ) -> None:
+        """
+        이번 수집에 정상 적재된 레코드와 (고객사, 엔터티 유형, 키)가 같은 이전 수집의 OPEN 이슈를 RESOLVED 로 바꿉니다 (GLOW-15, 명세 4.3).
+          - 이번 수집이 만든 이슈는 바꾸지 않습니다.
+          - 이번 수집에서 같은 (키, 오류 코드)로 다시 거부된 이슈도 바꾸지 않습니다. 같은 키가 첫 건은 적재되고 두 번째는
+            중복으로 거부되는 경우 등으로, 고쳐지지 않았는데 해소·재기록되면 OPEN 1건·처음 감지 시각 규칙(C21)이 깨집니다.
+          - 응답에 없던 레코드의 이슈는 그대로 OPEN 입니다 (빠진 행은 삭제·정정으로 보지 않음).
+          - resolved_at 은 해소한 수집의 완료 시각입니다 (detected_at 과 같은 규칙).
+        """
+        still_rejected = {(r.source_record_key, r.error_code) for r in rejections}
+        resolved_ids: list[uuid.UUID] = []
+        for chunk in _chunked(sorted(set(loaded_keys))):
+            rows = await self.db.execute(
+                select(
+                    DataValidationIssue.data_validation_issue_id,
+                    DataValidationIssue.source_record_key,
+                    DataValidationIssue.error_code,
+                ).where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.source_entity_type
+                    == ISSUE_ENTITY_TYPE_OF[source_domain].value,
+                    DataValidationIssue.status == ISSUE_OPEN,
+                    DataValidationIssue.data_sync_run_id != data_sync_run_id,
+                    DataValidationIssue.source_record_key.in_(chunk),
+                )
+            )
+            resolved_ids += [
+                row.data_validation_issue_id
+                for row in rows
+                if (row.source_record_key, row.error_code) not in still_rejected
+            ]
+        for chunk in _chunked(resolved_ids):
+            await self.db.execute(
+                update(DataValidationIssue)
+                .where(
+                    DataValidationIssue.company_id == company_id,
+                    DataValidationIssue.data_validation_issue_id.in_(chunk),
+                )
+                .values(status=ISSUE_RESOLVED, resolved_at=resolved_at)
+            )
 
     async def next_applied_seq(self, company_id: uuid.UUID) -> int:
         """고객사의 다음 적용 순번. L1 안에서 불러야 순번이 겹치지 않습니다 (data_sync_runs_uk2 가 최종 방어선)."""

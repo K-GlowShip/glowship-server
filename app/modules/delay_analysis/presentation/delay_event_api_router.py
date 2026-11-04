@@ -1,10 +1,10 @@
 import uuid
-from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
+from app.core.query_types import IsoAwareDatetime
 from app.core.security.auth import CurrentUser, require_roles
 from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventQueryService,
@@ -37,12 +37,17 @@ _COMMON_ERRORS = {
     summary="지연 목록 (API 15)",
     description=(
         "고객사의 지연 건을 감지 시각 최신순(같으면 지연 ID 순)으로 반환합니다. 각 행에 현재 분석 실행(currentRun)과 최종 선택 여부를 붙이고, "
-        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 UTC 날짜이며 to 날짜를 포함합니다. "
+        "탭별 건수(counts)를 함께 줍니다. 감지 기간(from·to)은 ISO 8601 UTC 시각이며 범위는 [from, to) 입니다(to 미포함, 명세 v6.2 C18). 시간대가 없는 값, 날짜만, Unix 초 같은 숫자를 보내거나 from > to 이면 422 VALIDATION_ERROR 이고, from = to 는 0건입니다(C20). KST → UTC 변환은 프론트가 합니다. "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다."
     ),
     response_model=DelayEventListResponse,
     responses=_COMMON_ERRORS
-    | {422: {"model": ErrorResponse, "description": "필터 형식 오류"}},
+    | {
+        422: {
+            "model": ErrorResponse,
+            "description": "필터 형식 오류 (시간대 없는·숫자 from·to, from > to 포함)",
+        }
+    },
 )
 async def list_delay_events(
     status: DelayEventTab = Query(
@@ -53,11 +58,15 @@ async def list_delay_events(
         ),
     ),
     warehouse_id: uuid.UUID | None = Query(None, alias="warehouseId"),
-    detected_from: date | None = Query(
-        None, alias="from", description="감지일 시작 (UTC)"
+    detected_from: IsoAwareDatetime | None = Query(
+        None,
+        alias="from",
+        description="감지 시각 시작, 포함 (예: 2026-10-20T15:00:00Z)",
     ),
-    detected_to: date | None = Query(
-        None, alias="to", description="감지일 끝 (UTC, 포함)"
+    detected_to: IsoAwareDatetime | None = Query(
+        None,
+        alias="to",
+        description="감지 시각 끝, 미포함 (예: 2026-10-21T15:00:00Z)",
     ),
     q: str | None = Query(
         None, max_length=50, description="선적 코드·SKU 코드·상품명 일부"

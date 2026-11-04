@@ -22,7 +22,7 @@ from app.modules.data_sync.application.ingest.source_records import (
     외부 코드 → 내부 ID 변환 (GLOW-13)
       - 원천 레코드의 SKU·창고 코드를 고객사 코드표(CodeBook)로 내부 ID 로 바꿉니다.
         바꿀 수 없는 레코드는 통째로 거부하고 이유를 돌려줍니다. 거부 건수는 수집 실행의 rejected_record_count 가 되고,
-        검증 오류 기록(data_validation_issues)은 GLOW-15 가 이 거부 사유로 남깁니다.
+        적재 서비스가 이 거부 사유를 검증 이슈(data_validation_issues)로 남깁니다.
       - 선적의 미국 항구·시장 리드타임 기준·계획 3PL 입고일은 원천(TMS)이 보내지 않고 서버가 정합니다.
           항구: (도착 창고 지역, 운송 수단) 경로표 ROUTE_PORTS
           HS10: 선적 상세 SKU 의 HS10. 정확히 하나여야 합니다 (기준 고유 키 market_leadtime_references_uk1 이
@@ -110,7 +110,7 @@ class ShipmentPlan:
 
 @dataclass(frozen=True)
 class Rejection:
-    """거부한 원천 레코드 1건 (GLOW-15 가 data_validation_issues 로 남길 정보)"""
+    """거부한 원천 레코드 1건 (적재 서비스가 data_validation_issues 로 남기는 정보)"""
 
     source_record_key: str
     field_name: str
@@ -276,6 +276,19 @@ def inventory_record_key(source: SourceInventory, book: CodeBook) -> str:
     sku = book.skus.get(source.sku_code)
     sku_part = sku.sku_code if sku else source.sku_code
     return f"{source.warehouse_code}|{sku_part}|{source.inventory_date.isoformat()}"
+
+
+def inventory_issue_keys(source: SourceInventory, book: CodeBook) -> tuple[str, ...]:
+    """
+    이 재고 레코드가 정상 적재될 때 해소할 수 있는 이전 이슈의 키들.
+    SKU 매핑 전에 기록된 이슈는 SKU 자리가 원천 외부 코드라, 지금 키(내부 sku_code)와 함께 그 형식도 돌려줍니다.
+    예: 매핑 전 `WMS-EWR01|WMS-SKU-001|2026-01-01` → 매핑 뒤 적재 키 `WMS-EWR01|SKU-001|2026-01-01`.
+    """
+    current = inventory_record_key(source, book)
+    before_mapping = (
+        f"{source.warehouse_code}|{source.sku_code}|{source.inventory_date.isoformat()}"
+    )
+    return (current,) if before_mapping == current else (current, before_mapping)
 
 
 def find_leadtime_reference(

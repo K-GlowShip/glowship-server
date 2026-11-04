@@ -359,6 +359,388 @@ async def test_parse_rejections_come_before_apply_rejections(db_write_session):
     assert [r.error_code for r in result.rejections] == ["INVALID_DATE", UNKNOWN_SKU]
 
 
+# --- 검증 이슈 기록 (GLOW-15) ------------------------------------------------------------
+
+
+async def _issues(db, run_id):
+    return (
+        await db.execute(
+            text(
+                "SELECT source_entity_type, source_record_key, field_name, error_code, severity,"
+                " blocks_analysis, detected_at, status, resolved_at FROM data_validation_issues"
+                " WHERE data_sync_run_id = :r ORDER BY source_record_key"
+            ),
+            {"r": run_id},
+        )
+    ).all()
+
+
+async def test_rejections_are_recorded_as_open_issues(db_write_session):
+    """파서 거부·적재 단계 거부가 같은 수집 ID 의 검증 이슈 OPEN 으로 남음 (ERROR·분석 차단, 감지 시각 = 수집 완료)"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    bad = replace(
+        order,
+        order_code="TEST-BAD",
+        lines=(SourceOrderLine(1, "NO-SUCH-SKU", 1, 0, "ACTIVE"),),
+    )
+
+    result = await _service_at(db, NOW).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [order, bad],
+        parse_rejections=[PARSE_REJECTION],
+    )
+
+    issues = await _issues(db, result.data_sync_run_id)
+    assert [
+        (i.source_entity_type, i.source_record_key, i.field_name, i.error_code)
+        for i in issues
+    ] == [
+        ("ORDER", "B-ORD-ERR-0003", "orderedAt", "INVALID_DATE"),
+        ("ORDER", "TEST-BAD", "lines[0].sku_code", UNKNOWN_SKU),
+    ]
+    assert {
+        (i.severity, i.blocks_analysis, i.status, i.resolved_at) for i in issues
+    } == {("ERROR", True, "OPEN", None)}
+    # 감지 시각 = 수집 완료 시각 (기준선과 같음). 시작 시각이 아님
+    started_at, finished_at = await _run_times(db, result.data_sync_run_id)
+    assert started_at != finished_at
+    assert {i.detected_at for i in issues} == {finished_at}
+    assert len(issues) == result.counts.rejected
+
+
+async def test_baseline_issues_are_detected_at_sync_finish(db_write_session):
+    """확정 기준선의 검증 이슈는 모두 detected_at = 그 수집의 finished_at (서버가 따르는 규칙의 근거)"""
+    db = db_write_session
+    rows = (
+        await db.execute(
+            text(
+                "SELECT i.detected_at = r.finished_at AS at_finish"
+                " FROM data_validation_issues i JOIN data_sync_runs r USING (data_sync_run_id)"
+            )
+        )
+    ).all()
+    if not rows:
+        pytest.skip("검증 이슈가 없는 DB")
+    assert all(r.at_finish for r in rows), rows
+
+
+async def test_product_issue_entity_type_is_sku(db_write_session):
+    """source_entity_type 은 엔터티 이름: 상품 원천(PRODUCT)의 이슈는 SKU (명세 v6.2 4.3 C21)"""
+    db = db_write_session
+    company_id = await _company(db)
+    rejection = Rejection("SKU-TEST-1", "hs10", "MISSING_REQUIRED", "없음")
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.PRODUCT,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[rejection],
+    )
+
+    [issue] = await _issues(db, result.data_sync_run_id)
+    assert issue.source_entity_type == "SKU"
+
+
+async def test_inventory_issue_keeps_baseline_key(db_write_session):
+    """재고 이슈의 원천 유형은 INVENTORY, 키는 창고(외부)|SKU(내부)|일자 (기준선 행과 같은 모양)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    negative = replace(record, on_hand_quantity=-1, available_quantity=-1)
+
+    result = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [negative]
+    )
+
+    [issue] = await _issues(db, result.data_sync_run_id)
+    assert (issue.source_entity_type, issue.source_record_key, issue.error_code) == (
+        "INVENTORY",
+        f"{row.wh}|{row.sku_code}|2026-07-01",
+        NEGATIVE_QUANTITY,
+    )
+
+
+# --- 검증 이슈 해소 (GLOW-15) ------------------------------------------------------------
+
+LATER = NOW + timedelta(days=1)
+
+
+def _ticking(start):
+    """부를 때마다 1초씩 가는 시계 (수집 시작·완료 시각을 구별하려고)"""
+    ticks = iter(range(10_000))
+    return lambda: start + timedelta(seconds=next(ticks))
+
+
+def _service_at(db, moment) -> DataIngestService:
+    return DataIngestService(
+        db, IngestRepository(db), RecordingStale(), now=_ticking(moment)
+    )
+
+
+async def _run_times(db, run_id):
+    return (
+        await db.execute(
+            text(
+                "SELECT started_at, finished_at FROM data_sync_runs WHERE data_sync_run_id = :r"
+            ),
+            {"r": run_id},
+        )
+    ).one()
+
+
+async def _issue_states(db, company_id, key):
+    return (
+        await db.execute(
+            text(
+                "SELECT data_sync_run_id, source_entity_type, error_code, status, resolved_at"
+                " FROM data_validation_issues WHERE company_id = :c AND source_record_key = :k"
+                " ORDER BY detected_at, error_code"
+            ),
+            {"c": company_id, "k": key},
+        )
+    ).all()
+
+
+async def test_later_successful_load_resolves_open_issue(db_write_session):
+    """기준선 E9: 재고 거부(OPEN) → 뒤 수집에서 정정 적재 → RESOLVED, resolved_at = 뒤 수집의 완료 시각"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    key = f"{row.wh}|{row.sku_code}|2026-07-01"
+    negative = replace(record, on_hand_quantity=-1, available_quantity=-1)
+
+    first = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [negative]
+    )
+    second = await _service_at(db, LATER).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [record]
+    )
+
+    assert second.status == DataSyncRunStatus.SUCCEEDED
+    assert [
+        (i.data_sync_run_id, i.status, i.resolved_at)
+        for i in await _issue_states(db, row.company_id, key)
+    ] == [
+        (
+            first.data_sync_run_id,
+            "RESOLVED",
+            (await _run_times(db, second.data_sync_run_id)).finished_at,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("before_mapping", "error_code"),
+    [
+        ({}, UNKNOWN_SKU),
+        ({"on_hand_quantity": -1, "available_quantity": -1}, NEGATIVE_QUANTITY),
+    ],
+)
+async def test_issue_recorded_before_sku_mapping_resolves_after_mapping(
+    db_write_session, before_mapping, error_code
+):
+    """매핑 전 이슈 키는 SKU 자리가 외부 코드(ALIAS-SKU)라, 매핑 뒤 적재 키(내부 sku_code)와 달라도 해소 (리뷰 #17 크리티컬 1)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    unmapped = replace(record, sku_code="ALIAS-SKU", **before_mapping)
+    external_key = f"{row.wh}|ALIAS-SKU|2026-07-01"
+
+    first = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [unmapped]
+    )
+    [issue] = await _issues(db, first.data_sync_run_id)
+    assert (issue.source_record_key, issue.error_code) == (external_key, error_code)
+
+    mapped = DataIngestService(
+        db, AliasSkuRepository(db, row.sku), RecordingStale(), now=_ticking(LATER)
+    )
+    second = await mapped.ingest(
+        row.company_id,
+        SourceDomain.INVENTORY,
+        ConnectionMethod.FILE,
+        [replace(record, sku_code="ALIAS-SKU")],
+    )
+
+    assert second.status == DataSyncRunStatus.SUCCEEDED
+    assert [
+        i.status for i in await _issue_states(db, row.company_id, external_key)
+    ] == ["RESOLVED"]
+
+
+async def test_issue_stays_open_when_rejected_again_or_absent(db_write_session):
+    """다시 같은 오류로 거부된 키는 OPEN 1건 그대로(처음 감지한 수집), 응답에 없던 키의 이슈도 OPEN (빠진 행은 정정이 아님)"""
+    db = db_write_session
+    row, record = await _mapped_inventory(db)
+    again = replace(record, on_hand_quantity=-1, available_quantity=-1)
+    absent = replace(again, inventory_date=record.inventory_date - timedelta(days=1))
+
+    first = await _service(db).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [again, absent]
+    )
+    second = await _service_at(db, LATER).ingest(
+        row.company_id, SourceDomain.INVENTORY, ConnectionMethod.FILE, [again]
+    )
+
+    again_key = f"{row.wh}|{row.sku_code}|2026-07-01"
+    absent_key = f"{row.wh}|{row.sku_code}|2026-06-30"
+    assert [
+        (i.data_sync_run_id, i.status)
+        for i in await _issue_states(db, row.company_id, again_key)
+    ] == [(first.data_sync_run_id, "OPEN")]
+    assert second.counts.rejected == 1  # 수집 건수는 레코드 기준이라 그대로 거부 1
+    assert [i.status for i in await _issue_states(db, row.company_id, absent_key)] == [
+        "OPEN"
+    ]
+
+
+async def test_one_open_issue_per_key_and_error_code(db_write_session):
+    """같은 수집 안에서 겹친 (키, 오류 코드)는 1건, 오류 코드가 다르면 따로 (PR #17 리뷰 크리티컬 2, 설계 담당 결정)"""
+    db = db_write_session
+    company_id = await _company(db)
+    same = Rejection("TEST-PARSE-1", "orderedAt", "INVALID_DATE", "읽을 수 없음")
+    other_code = Rejection("TEST-PARSE-1", "orderedAt", "MISSING_REQUIRED", "없음")
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[same, same, other_code],
+    )
+
+    assert result.counts.rejected == 3
+    assert sorted(
+        i.error_code for i in await _issue_states(db, company_id, "TEST-PARSE-1")
+    ) == ["INVALID_DATE", "MISSING_REQUIRED"]
+
+
+async def test_repeated_duplicate_keeps_first_open_issue(db_write_session):
+    """같은 중복이 매 수집 반복돼도(첫 건 적재 + 두 번째 중복 거부) 이전 이슈는 OPEN 그대로·감지 시각 유지, 새 이슈 없음 (C21)"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+
+    first = await _service(db).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order, order]
+    )
+    second = await _service_at(db, LATER).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order, order]
+    )
+
+    assert second.counts.rejected == 1
+    assert [
+        (i.data_sync_run_id, i.error_code, i.status)
+        for i in await _issue_states(db, company_id, order.order_code)
+    ] == [(first.data_sync_run_id, DUPLICATE_SOURCE_RECORD, "OPEN")]
+
+
+async def test_resolution_matches_source_type(db_write_session):
+    """키가 같아도 원천 유형이 다르면 해소하지 않음 (선적 이슈 키 = 주문 코드여도 주문 적재로는 그대로)"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    shipment_issue = Rejection(order.order_code, "shipmentNo", "INVALID_VALUE", "시험")
+
+    await _service(db).ingest(
+        company_id,
+        SourceDomain.SHIPMENT,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[shipment_issue],
+    )
+    await _service_at(db, LATER).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order]
+    )
+
+    assert [
+        (i.source_entity_type, i.status)
+        for i in await _issue_states(db, company_id, order.order_code)
+    ] == [("SHIPMENT", "OPEN")]
+
+
+async def test_first_loaded_duplicate_resolves_old_issue_and_records_new_one(
+    db_write_session,
+):
+    """같은 키가 이번 수집에서 첫 건은 적재되고 두 번째는 중복으로 거부되면: 이전 이슈는 RESOLVED, 이번 중복 이슈는 OPEN"""
+    db = db_write_session
+    company_id = await _company(db)
+    [order] = await _source_orders(db, company_id, limit=1)
+    old_issue = Rejection(order.order_code, "orderedAt", "INVALID_DATE", "시험")
+
+    await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=[old_issue],
+    )
+    await _service_at(db, LATER).ingest(
+        company_id, SourceDomain.ORDER, ConnectionMethod.FILE, [order, order]
+    )
+
+    assert [
+        (i.error_code, i.status)
+        for i in await _issue_states(db, company_id, order.order_code)
+    ] == [("INVALID_DATE", "RESOLVED"), (DUPLICATE_SOURCE_RECORD, "OPEN")]
+
+
+class FailingStale(RecordingStale):
+    async def judge_after_sync(self, company_id, applied_seq, detected_at):
+        raise RuntimeError("STALE 판정 실패")
+
+
+async def test_issues_roll_back_with_failed_sync(db_write_session):
+    """검증 이슈는 수집과 같은 트랜잭션이라, 뒤 단계가 실패해 FAILED 가 되면 이슈도 남지 않음"""
+    db = db_write_session
+    company_id = await _company(db)
+
+    with pytest.raises(RuntimeError):
+        await _service(db, stale=FailingStale()).ingest(
+            company_id,
+            SourceDomain.ORDER,
+            ConnectionMethod.FILE,
+            [],
+            parse_rejections=[PARSE_REJECTION],
+        )
+
+    run_id = await db.scalar(
+        text(
+            "SELECT data_sync_run_id FROM data_sync_runs WHERE company_id = :c"
+            " AND started_at = :t AND status = 'FAILED'"
+        ),
+        {"c": company_id, "t": NOW},
+    )
+    assert run_id is not None
+    assert await _issues(db, run_id) == []
+
+
+async def test_many_issues_are_all_recorded(db_write_session):
+    """거부가 많아도 모두 기록됨 (4,500건 × 열 12개 = 54,000 값. 행 목록 INSERT 는 SQLAlchemy 가 나눠 실행해 바인딩 한도에 걸리지 않음)"""
+    db = db_write_session
+    company_id = await _company(db)
+    rejections = [
+        Rejection(f"TEST-PARSE-{n:05d}", "orderedAt", "INVALID_DATE", "읽을 수 없음")
+        for n in range(4_500)
+    ]
+
+    result = await _service(db).ingest(
+        company_id,
+        SourceDomain.ORDER,
+        ConnectionMethod.FILE,
+        [],
+        parse_rejections=rejections,
+    )
+
+    count = await db.scalar(
+        text("SELECT count(*) FROM data_validation_issues WHERE data_sync_run_id = :r"),
+        {"r": result.data_sync_run_id},
+    )
+    assert count == 4_500
+
+
 async def _mapped_inventory(db):
     """실제 재고 매핑(창고·SKU)으로 원천 재고 1건을 만듭니다."""
     row = (

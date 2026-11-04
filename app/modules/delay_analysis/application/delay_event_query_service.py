@@ -1,7 +1,7 @@
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from app.modules.delay_analysis.application.delay_display import (
 )
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
+    InvalidDetectedPeriodException,
 )
 from app.modules.delay_analysis.application.stale.stale_service import (
     IN_PROGRESS_STATUSES,
@@ -107,25 +108,27 @@ class DelayEventQueryService:
         actor: CurrentUser,
         tab: DelayEventTab = DelayEventTab.ALL,
         warehouse_id: uuid.UUID | None = None,
-        detected_from: date | None = None,
-        detected_to: date | None = None,
+        detected_from: datetime | None = None,
+        detected_to: datetime | None = None,
         q: str | None = None,
         has_final_decision: bool | None = None,
         page: PageParams | None = None,
     ) -> DelayEventList:
         """
-        감지 기간은 UTC 날짜 기준이며 detected_to 날짜를 포함합니다.
+        감지 기간은 UTC 시각 [detected_from, detected_to) 입니다 (to 미포함, 명세 v6.2 C18).
+        시간대가 있는 값만 받습니다(라우터가 거부). 다른 시간대 값은 UTC 로 맞춥니다.
+        from > to 면 InvalidDetectedPeriodException(422), from = to 는 0건입니다 (명세 v6.2 C20).
         page 를 생략하면 첫 페이지(기본 크기)입니다. total_count 는 모든 필터를 적용한 전체 개수이고,
         counts(탭별 건수)는 탭·최종 선택 여부 필터를 뺀 값이라 서로 다를 수 있습니다.
         """
+        if detected_from and detected_to and detected_from > detected_to:
+            raise InvalidDetectedPeriodException()
         page = page or PageParams()
         company_id = await self._enter_company_scope(actor)
         filters = DelayEventFilter(
             warehouse_id=warehouse_id,
-            detected_from=_start_of_day(detected_from),
-            detected_to=_start_of_day(detected_to + timedelta(days=1))
-            if detected_to
-            else None,
+            detected_from=_to_utc(detected_from),
+            detected_to=_to_utc(detected_to),
             q=q.strip() or None if q else None,
             run_statuses=_TAB_STATUSES[tab],
             has_final_decision=has_final_decision,
@@ -186,8 +189,8 @@ class DelayEventQueryService:
         return company_id
 
 
-def _start_of_day(day: date | None) -> datetime | None:
-    return datetime.combine(day, time.min, tzinfo=UTC) if day else None
+def _to_utc(moment: datetime | None) -> datetime | None:
+    return moment.astimezone(UTC) if moment else None
 
 
 def _group_lines(

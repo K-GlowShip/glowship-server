@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -13,6 +13,7 @@ from app.modules.delay_analysis.application.delay_event_query_service import (
 )
 from app.modules.delay_analysis.application.exception.delay_event_exceptions import (
     DelayEventNotFoundException,
+    InvalidDetectedPeriodException,
 )
 from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repository import (
     DelayEventCounts,
@@ -144,21 +145,41 @@ async def test_list_computes_route_representative_sku_and_delay_days(rls_calls):
     assert rls_calls == [COMPANY_ID]
 
 
+async def test_list_rejects_from_after_to_and_allows_equal():
+    """명세 v6.2 C20: from > to 는 VALIDATION_ERROR, from = to 는 오류 없이 0건 조회"""
+    repo = FakeRepository()
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with pytest.raises(InvalidDetectedPeriodException):
+        await _service(repo).list_delay_events(
+            actor=ACTOR, detected_from=moment + timedelta(seconds=1), detected_to=moment
+        )
+    assert repo.filters == []  # 조회 전에 거부
+
+    await _service(repo).list_delay_events(
+        actor=ACTOR, detected_from=moment, detected_to=moment
+    )
+    [filters] = repo.filters
+    assert (filters.detected_from, filters.detected_to) == (moment, moment)
+
+
 async def test_list_maps_tab_and_date_range_to_filters():
     repo = FakeRepository()
 
     await _service(repo).list_delay_events(
         actor=ACTOR,
         tab=DelayEventTab.NEEDS_REANALYSIS,
-        detected_from=date(2026, 1, 1),
-        detected_to=date(2026, 1, 31),
+        detected_from=datetime(2025, 12, 31, 15, 0, tzinfo=UTC),
+        detected_to=datetime(2026, 2, 1, 0, 0, tzinfo=timezone(timedelta(hours=9))),
         q="  ",
     )
 
     [filters] = repo.filters
     assert filters.run_statuses == ("STALE", "FAILED")
-    assert filters.detected_from == datetime(2026, 1, 1, tzinfo=UTC)
-    assert filters.detected_to == datetime(2026, 2, 1, tzinfo=UTC)  # to 날짜 포함
+    # 받은 시각 그대로 [from, to) 로 넘기고, 다른 시간대 값은 UTC 로 맞춤 (날짜 +1 하지 않음)
+    assert filters.detected_from == datetime(2025, 12, 31, 15, 0, tzinfo=UTC)
+    assert filters.detected_to == datetime(2026, 1, 31, 15, 0, tzinfo=UTC)
+    assert filters.detected_to.tzinfo is UTC
     assert filters.q is None
 
 
