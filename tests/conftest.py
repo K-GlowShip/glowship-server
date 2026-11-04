@@ -16,18 +16,19 @@ from app.core.config import get_settings
 
     db_session: 실제 DB(.env 의 POSTGRES_*)에 붙는 읽기 전용 세션 (Repository SQL 스모크 테스트용)
       - 트랜잭션을 READ ONLY 로 열고 테스트가 끝나면 롤백하므로 DB 를 바꾸지 않는다.
-      - DB 에 접속할 수 없거나 마이그레이션 head(0005) 상태가 아니면 건너뛴다 (CI 등).
+      - DB 에 접속할 수 없거나 마이그레이션 head(0006) 상태가 아니면 건너뛴다 (CI 등).
       - 테스트마다 이벤트 루프가 달라서 앱 전역 엔진 대신 NullPool 엔진을 새로 만든다.
     db_write_session: 쓰기 SQL 을 확인하는 세션. 쓰기는 되지만 테스트가 끝나면 롤백하므로 DB 는 그대로다.
 """
 
-# head(0005) 상태 표지: 0003 이 추가한 analysis_runs.stale_primary_reason, 0004 가 보장하는 users.created_at,
-# 0005 가 추가한 analysis_runs.trigger_reason·delay_events.episode_no (지연 목록 SQL 이 읽음).
+# head(0006) 상태 표지: 0003 이 추가한 analysis_runs.stale_primary_reason, 0004 가 보장하는 users.created_at,
+# 0005 가 추가한 analysis_runs.trigger_reason·delay_events.episode_no (지연 목록 SQL 이 읽음),
+# 0006 이 추가한 analysis_runs.run_code (분석 실행 생성이 씀).
 # 하나라도 없으면 head 가 아닌 DB 로 보고 건너뛴다 (0001 로 만든 DB 는 users.created_at 이 원래 있음).
 _HEAD_COLUMN_CHECK = text(
-    "SELECT count(*) = 4 FROM information_schema.columns"
+    "SELECT count(*) = 5 FROM information_schema.columns"
     " WHERE table_schema = 'public'"
-    " AND ((table_name = 'analysis_runs' AND column_name IN ('stale_primary_reason', 'trigger_reason'))"
+    " AND ((table_name = 'analysis_runs' AND column_name IN ('stale_primary_reason', 'trigger_reason', 'run_code'))"
     " OR (table_name = 'users' AND column_name = 'created_at')"
     " OR (table_name = 'delay_events' AND column_name = 'episode_no'))"
 )
@@ -54,7 +55,7 @@ async def _rollback_session(*, read_only: bool) -> AsyncGenerator[AsyncSession]:
         if read_only:
             await session.execute(text("SET TRANSACTION READ ONLY"))
         if not await session.scalar(_HEAD_COLUMN_CHECK):
-            pytest.skip("마이그레이션 head(0005) 가 적용되지 않은 DB 라 건너뜀")
+            pytest.skip("마이그레이션 head(0006) 가 적용되지 않은 DB 라 건너뜀")
         yield session
     finally:
         await session.close()
