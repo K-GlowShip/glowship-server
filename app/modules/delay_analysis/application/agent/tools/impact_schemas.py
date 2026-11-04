@@ -159,7 +159,7 @@ class ForecastPath(ToolModel):
 
 
 class InventoryImpactItem(ToolModel):
-    """K_SHIPMENT 의 SKU별 예측 층. 정렬: sku_code"""
+    """SKU별 예측 층: K_SHIPMENT SKU + K_SHIPMENT 밖 지연 유발 SKU(지연 수량 0, IMPACTED). 정렬: sku_code"""
 
     sku_id: ToolId
     sku_code: StrictStr

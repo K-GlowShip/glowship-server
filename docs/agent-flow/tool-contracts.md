@@ -33,7 +33,7 @@
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
 | 배열 | 아래 표마다 적은 정렬 키로 오름차순입니다. 엔진은 SKU를 SKU 코드로 묶어 다루므로, 이 문서도 SKU 배열은 `sku_code` 순으로 둡니다 |
 | 코드값 | DDL CHECK와 같은 값입니다. 서버는 `app/modules/delay_analysis/infrastructure/analysis_enums.py`의 열거형을 씁니다 |
-| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). 값 조합이 DDL CHECK에 걸리는 출력은 모델이 먼저 거부합니다. 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다 |
+| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다 |
 | 날짜 판정 | 엔진은 시각 값(`promised_delivery_at`, `ordered_at`)을 앞 10자리(UTC 날짜)로 잘라 날짜끼리 비교합니다(`common.d`). 도구도 같은 방식으로 판정합니다 |
 | 평균 수요 | 일평균을 소수로 넘기지 않고, **기간 합계(정수)와 일수**를 넘깁니다. 엔진은 합계 ÷ 28을 부동소수로 계산해 바로 쓰므로, 반올림한 평균을 넘기면 정수화 경계에서 결과가 달라질 수 있습니다 |
 | 이름 | agentflow 4절의 도구 이름(가칭)을 정식 이름으로 씁니다. 새 이름을 만들지 않아 문서·코드가 바뀌는 곳을 줄입니다 |
@@ -178,7 +178,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `simulation_horizon_end` | date | 아니오 | 시뮬레이션 구간 끝 = max(E, 약속일들) + 14일 | `h_end` |
 | `expected_plan_simulation` | 객체(엔진 연결에서 정함, 9절 Q12) | — | E 시뮬레이션 결과(주문별 확보일, 일별 보호량). T10의 `KEEP_PLAN`·다른 권역 출고가 씀 | `simE` |
 
-저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 2026 H1 주문 171,888건의 약속 시각은 모두 `23:59:59Z`입니다(11-04 확인).
+저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인).
 
 ### 4.2 T6 `calculate_inventory_impact` — 예측 층·영향 집합·결과 분류
 
@@ -186,7 +186,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 
 | 필드 | 형식 | NULL | 뜻 | 엔진 키 |
 | --- | --- | --- | --- | --- |
-| `items[]` | 배열(`sku_code`) | — | K_SHIPMENT의 SKU별 예측 층 | `fc` |
+| `items[]` | 배열(`sku_code`) | — | SKU별 예측 층. K_SHIPMENT SKU와, K_SHIPMENT 밖이지만 지연 유발 위험 주문에 들어간 SKU(지연 수량 0, `IMPACTED`)입니다(엔진 `pipeline.analyze` 70~72행) | `fc` |
 | `items[].sku_id`·`sku_code`·`sku_scope` | | 아니오 | `IMPACTED`·`WATCH`·`SHIPMENT_ONLY` | `impact_sets` |
 | `items[].raw_baseline_shortage`·`raw_total_shortage`·`raw_increment_shortage` | raw | 아니오 | P 기준·E 기준·증분 부족 원값 | `raw_baseline`·`raw_total`·`raw_increment` |
 | `items[].baseline_prepare_quantity`·`increment_prepare_quantity`·`total_prepare_quantity` | 정수 | 아니오 | 원값 올림, 합계 = 앞 둘의 합 | `baseline_prepare`·`increment_prepare`·`total_prepare` |
@@ -257,7 +257,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `reduction_committed_total` | 정수 | 예 | K_IMPACTED 확정 감소(원값 내림) 합. `KEEP_PLAN`은 0 | `reduction_committed_total` |
 | `expected_delivery_date` | date | 예 | 공급일 S | `expected_delivery_date` |
 | `fully_recovered_orders`·`delay_induced_recovered_orders`·`item_secured_blocked_orders`·`not_recovered_orders` | 정수 | 예 | 주문 단위 집계(`pipeline.aggregates`). 주문 결과가 없으면 모두 `null` | 같은 이름 |
-| `sku_results` | `sku_results.v1` | 아니오 | 분석 JSON 계약 v3 1절 그대로(K_SHIPMENT SKU별 효과, `sku_id` 순) | `sku_results` |
+| `sku_results` | `sku_results.v1` | 아니오 | 분석 JSON 계약 v3 1절 그대로(T6 `items[]`와 같은 SKU별 효과, `sku_id` 순) | `sku_results` |
 | `outcomes[]` | 배열(`order_line_id`) | — | 위험 주문 **상세** 단위(D21). 아래 표 | `option_order_outcomes` |
 
 `outcomes[]` 한 항목(위험 주문 상세 1개)
@@ -369,7 +369,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q9 | 다른 권역 출고의 대표 사유가 `DONOR_NO_NEXT_INBOUND`가 되는 경우(6.1절 C) | **결정(설계 담당, PR #19 승인 리뷰)** | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND`(판정 순서 7번). 엔진 참조 구현은 설계 담당이 같은 규칙으로 고침(glowship-plan `b80fd04`, `options.py` `f66e319c6bdd`). agentflow 4절 "실행 가능 조건"에도 반영됨(`1c0eb49`). 모델은 `NOT_FEASIBLE`과의 조합을 거부함 |
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장(노드·저장 작업)에서 더하고, 그때 이 문서 4절도 함께 고침 |
-| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"에 있던 일을 옮긴 것 |
+| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
 
 ### 9.1 모델로 옮기며 채운 것
 
@@ -400,10 +400,11 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | F9 | PR #19가 머지된 뒤에도 9절 Q9를 "새 질문, 오류로 드러냄"으로 둠 | Q9 결정이 마지막 승인 리뷰(머지 직전)에 달렸고, 문서·인수인계에 옮기지 않음 | 모델 작업 전 재검증(리뷰·agentflow·엔진 대조)에서 찾아 이번에 고침 |
 | F10 | 10절에 "엔진 자체 시험(50·97·57건)은 배정 시뮬레이션 경로까지 실제 `allocation_core`로 통과"라고 적음 | 시험 건수만 보고, 각 시험이 배정 모듈을 실제로 부르는지 확인하지 않음 | 개발 1·2 세션 일치 시험(11-04)에서 배정 모듈을 빈 파일·망가뜨린 파일로 바꿔 확인. 아래 검증 설명을 고침 |
 | F11 | 처음 모델 초안은 `uuid.UUID`·`datetime`·기존 `RawDecimal`(음수 불가)을 그대로 쓰려 함 | 계약 1절 값 모양과 타입의 실제 동작을 대조하지 않음 | 실행해 보고 문자열 타입과 부호 있는 raw 타입으로 바꿈(9.1절) |
+| F12 | T6 `items[]`·T10 `sku_results`를 "K_SHIPMENT의 SKU별"로 적음(PR #19). 모델 주석에도 그대로 옮김 | 엔진 `pipeline.analyze`가 K_SHIPMENT 밖 지연 유발 SKU도 예측 행·대응안 항목에 넣는 것(70~72행)을 확인하지 않음. overlay에는 이런 SKU가 없어 데이터로도 드러나지 않음 | 모델 재검증에서 엔진을 다시 읽어 찾음. 문서·주석을 고침. 모델 규칙은 그 SKU를 `IMPACTED`로 받으므로 바뀌지 않음 |
 
 **문서 검증:**
 - **대조 스크립트:** 코드값(백틱 안 대문자 값)은 DDL·엔진 원문에, `표.열`은 DDL 열에, 제약·인덱스 이름은 DDL에, 엔진 키는 엔진 코드에 있는지 대조했습니다. 결과는 0건이고, 새로 정한 `CALCULATE`·`NO_SUPPLY`만 예외로 뒀습니다. 없는 코드값·없는 열·없는 제약을 일부러 넣은 음성 시험 3건은 모두 잡혔습니다.
-- **엔진 실행 대조(5~7절):** 엔진 함수를 실제로 실행해 문서 규칙과 대조했습니다. 11-04에 실제 `allocation_core`(`fcb08cf8…`)를 넣고 다시 돌려 **92건 일치**입니다. 대조한 것은 후보 규칙(운송 방식 2 × 단계 5), 추천 순위 4가지 경우, 사전 판정 → 최종 상태 6가지 경우(운영 기준 누락, 지연 선적보다 늦은 공급, 긴급 항공 대상·한국 보유 없음, 공여 창고 다음 입고 전부 없음, 기존 계획 유지)입니다. 문서 규칙을 일부러 세 군데 틀리게 바꾼 음성 실행에서는 어긋남이 잡혔습니다.
+- **엔진 실행 대조(5~7절):** 엔진 함수를 실제로 실행해 문서 규칙과 대조했습니다. 11-04에 실제 `allocation_core`(`fcb08cf8…`)를 넣고 다시 돌려 **92건 일치**입니다. 대조한 것은 후보 규칙(운송 방식 2 × 단계 5), 추천 순위 4가지 경우, 사전 판정 → 최종 상태 6가지 경우(운영 기준 누락, 지연 선적보다 늦은 공급, 긴급 항공 대상·한국 보유 없음, 공여 창고 다음 입고 전부 없음, 기존 계획 유지)입니다. 문서 규칙을 일부러 세 군데 틀리게 바꾼 음성 실행에서는 어긋남이 잡혔습니다. 이 92건은 수정 전 `options.py`(`974577bcc337`)로 돌린 결과입니다. 수정판이 바꾼 판정 순서 7번(Q9)은 92건에 없는 경우이고, 수정판의 Q9 시험 6건이 따로 확인합니다.
 - **6.1절 사유 표:** 엔진 코드에서 옮겼습니다. 그리고 엔진이 실제로 만든 overlay 결과(대응안 39행, 주문 결과 21행)가 표 A·B의 집합 안에 모두 들어가는 것을 확인했습니다. 다른 권역 출고의 `NO_TRANSFERABLE_STOCK` 2행은 위험 주문이 없는 실행이라 규칙 C-2(넘길 재고 전부 0)로 나온 값입니다. 규칙 C-1(모든 주문 미회복 → 우선순위)은 overlay에 사례가 없어 코드로만 확인했습니다.
 - **엔진 자체 시험:** 엔진 자체 시험(50·97·57건)은 실제 `allocation_core`로 통과했습니다. 다만 배정 모듈을 실제로 부르는 것은 `test_explain`(97건)뿐입니다(`simulate` 109회, `allocate_day` 3,856회). `test_engine`(50)·`test_forbidden_boundary`(57)는 배정 모듈을 빈 파일이나 망가뜨린 파일로 바꿔도 통과합니다(11-04 개발 1·2 세션 일치 시험, F10). Q9 시험(6건)도 배정 모듈을 씁니다.
-- **모델 대조 시험(GLOW-112):** `test_tool_schemas.py`가 이 문서 3~7절 표의 필드 이름과 모델 필드를 양방향으로, 5절·6.1절 표의 사유 집합과 모델 규칙을 대조합니다. 모델 필드를 빼거나 문서에 가짜 필드·코드값을 넣으면 실패합니다. 실제 DB의 overlay 대응안 39행·주문 결과 21행은 모두 T10 모델 검증을 통과합니다.
+- **모델 대조 시험(GLOW-112):** `test_tool_schemas.py`가 이 문서 3~7절 표의 필드 이름과 모델 필드를 양방향으로, 5절·6.1절 표의 사유 집합과 모델 규칙을 대조합니다. 표 A·B와 사전 판정 사유가 DDL `response_options_ck6`·`ck7`, `option_order_outcomes_ck12` 안에 있는지도 따로 대조합니다(문서와 모델을 함께 잘못 고친 경우를 잡기 위해서). 모델 필드를 빼거나 문서에 가짜 필드·코드값을 넣으면 실패합니다. 실제 DB의 overlay 대응안 39행·주문 결과 21행은 T10 모델을, 위험 주문 7행은 T7 모델을 모두 통과합니다.
