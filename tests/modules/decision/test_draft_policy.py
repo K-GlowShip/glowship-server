@@ -146,7 +146,7 @@ def test_draft_rejection_examples(target, expected):
 
 
 def test_error_codes_follow_spec_status():
-    """명세 4.6·5절: 초안 거부는 409, 다른 실행의 대응안은 422, 없는 실행은 404"""
+    """명세 4.6·5절: 초안 거부는 409, 다른 실행의 대응안은 422 (없는 실행 404 는 API 17 과 같은 예외)"""
     conflict = [
         DecisionErrorCode.EPISODE_CLOSED,
         DecisionErrorCode.EXPLANATION_NOT_READY,
@@ -158,4 +158,3 @@ def test_error_codes_follow_spec_status():
     assert {code.status_code for code in conflict} == {409}
     assert all(code.code == code.name for code in DecisionErrorCode)
     assert DecisionErrorCode.OPTION_NOT_IN_RUN.status_code == 422
-    assert DecisionErrorCode.ANALYSIS_RUN_NOT_FOUND.status_code == 404

@@ -10,6 +10,9 @@ from app.modules.decision.application.exception.decision_exceptions import (
     DecisionException,
 )
 from app.modules.decision.application.member_draft_service import MemberDraftService
+from app.modules.delay_analysis.application.exception.analysis_run_query_exceptions import (
+    AnalysisRunNotFoundException,
+)
 
 """
     의견·선택 초안 저장 서비스 (API 18): 실행 조회 → 허용 판정 → 대응안 소속 → 한 행 추가 순서와,
@@ -84,10 +87,14 @@ async def test_opinion_only_skips_option_check():
 async def test_unknown_run_is_404_and_saves_nothing():
     repo = FakeRepository(target=None)
 
-    with pytest.raises(DecisionException) as raised:
+    with pytest.raises(AnalysisRunNotFoundException) as raised:
         await _save(repo)
 
-    assert raised.value.error_code == DecisionErrorCode.ANALYSIS_RUN_NOT_FOUND
+    # API 17(GET /analysis-runs/{runId}) 과 같은 코드·상태
+    assert (raised.value.error_code.status_code, raised.value.error_code.code) == (
+        404,
+        "ANALYSIS_RUN_NOT_FOUND",
+    )
     assert repo.inserted == []
 
 

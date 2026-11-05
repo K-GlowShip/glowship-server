@@ -13,6 +13,9 @@ from app.modules.decision.infrastructure.repository.member_draft_repository impo
     MemberDraftRepository,
     NewMemberDraft,
 )
+from app.modules.delay_analysis.application.exception.analysis_run_query_exceptions import (
+    AnalysisRunNotFoundException,
+)
 
 """
     의견·선택 초안 저장 서비스 (API 18 POST /analysis-runs/{runId}/drafts, API 명세 v6.2 4.6절)
@@ -49,7 +52,7 @@ class MemberDraftService:
     ) -> SavedMemberDraft:
         target = await self.repo.find_draft_target(tenant.company_id, analysis_run_id)
         if target is None:
-            raise DecisionException(DecisionErrorCode.ANALYSIS_RUN_NOT_FOUND)
+            raise AnalysisRunNotFoundException()
         rejection = draft_rejection(target)
         if rejection is not None:
             raise DecisionException(rejection)

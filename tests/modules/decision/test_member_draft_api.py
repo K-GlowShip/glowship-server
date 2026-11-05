@@ -16,6 +16,9 @@ from app.modules.decision.application.exception.decision_exceptions import (
 )
 from app.modules.decision.application.member_draft_service import SavedMemberDraft
 from app.modules.decision.dependencies import get_member_draft_service
+from app.modules.delay_analysis.application.exception.analysis_run_query_exceptions import (
+    AnalysisRunNotFoundException,
+)
 
 """
     의견·선택 초안 저장 API 라우터 테스트 (API 18 POST /analysis-runs/{runId}/drafts)
@@ -62,12 +65,12 @@ class FakeSession:
 class FakeService:
     def __init__(self):
         self.calls: list[tuple] = []
-        self.error: DecisionErrorCode | None = None
+        self.error: Exception | None = None
 
     async def save_draft(self, tenant, **kwargs):
         self.calls.append((tenant, kwargs))
         if self.error is not None:
-            raise DecisionException(self.error)
+            raise self.error
         return SavedMemberDraft(member_draft_id=DRAFT_ID, created_at=CREATED_AT)
 
 
@@ -181,11 +184,16 @@ async def test_non_member_returns_403(fake_service, role):
 # --- 서비스 거부 전달 (명세 4.6 대응표, D22) -------------------------------------------
 
 
-@pytest.mark.parametrize("error", list(DecisionErrorCode))
+@pytest.mark.parametrize(
+    "error",
+    [DecisionException(code) for code in DecisionErrorCode]
+    + [AnalysisRunNotFoundException()],
+    ids=lambda error: error.error_code.code,
+)
 async def test_service_rejection_is_returned_as_is(fake_service, error):
     fake_service.error = error
 
     response = await _post({"responseOptionId": str(OPTION_ID)})
 
-    assert response.status_code == error.status_code
-    assert response.json()["code"] == error.code
+    assert response.status_code == error.error_code.status_code
+    assert response.json()["code"] == error.error_code.code
