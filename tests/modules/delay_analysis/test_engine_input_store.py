@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import os
 import shutil
 import subprocess
@@ -18,25 +19,40 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 
 """
     엔진 입력 저장소 (docs/analysis/engine-input-store.md)
-      - 단위 시험: 엔진·DB 없이 돎(CSV 해석 규칙, 시각 변환, 입력 순번 확인, 표 목록 검사)
-      - DB 시험: GLOWSHIP_ENGINE_DIR 과 개발 DB(overlay 적재)가 있을 때. 한 고객사만 읽히는지, 행 수, 입력 순번, 스냅샷
-      - 정답 대조: GLOWSHIP_ENGINE_GOLDEN=1 이고 docker 로 DB 컨테이너에 psql 을 쓸 수 있을 때만(1분 이상 걸림).
-        엔진 원래 방식(psql COPY 로 전체 읽기)으로 만든 Store 와 속성·스냅샷을 하나씩 대조한다
+      - 단위 시험: 엔진·DB 없이 돎(CSV 해석·초 아래 버림·오류 감싸기, 시각 변환, 입력 순번 확인, 표 목록·SQL 모양)
+      - 엔진 시험: GLOWSHIP_ENGINE_DIR 만 있으면 돎(엔진 Store 소스 해시 고정, 순번 없는 수집을 뺀 input_seq)
+      - DB 시험: 엔진 경로 + 개발 DB(overlay 적재). 한 고객사·한 입력 순번만 읽히는지, 리뷰에서 나온 상황
+        (마이크로초 시각·RUNNING 수집·겹친 수집)을 롤백 트랜잭션에 넣어 재현
+      - 정답 대조: GLOWSHIP_ENGINE_GOLDEN=1 이고 docker 로 DB 컨테이너에 psql 을 쓸 수 있을 때만(몇 분 걸림).
+        엔진 원래 방식(psql COPY 로 전체 읽기)으로 만든 Store 와 속성·실행별 스냅샷을 대조한다
 """
+
+# 엔진 store.py 의 Store 클래스·TABLES·DCR_SQL·iso_ts·bool_text·TS_COLS·BOOL_COLS 소스 해시(엔진 manifest 판, 11-05).
+# 서버는 Store.__init__ 의 색인 코드를 옮겨 적었고 input_seq 를 덮어썼다(engine_input_store.company_store_class).
+# 이 값이 바뀌면: 옮겨 적은 코드를 엔진 새 판과 다시 맞추고, GLOWSHIP_ENGINE_GOLDEN=1 정답 대조를 돌린 뒤 이 값을 갱신한다.
+ENGINE_STORE_SOURCE_SHA256 = (
+    "8234f5f7b4c2113c0836205bc3d89f1394eed5257d86150beae75f2cc63ea5ed"
+)
+
+
+def _strict_iso(v):
+    """엔진 iso_ts 처럼 1초 미만이면 거부하는 대역."""
+    if v and "." in v:
+        raise ValueError(f"1초 미만 시각 미지원: {v!r}")
+    return f"ISO({v})" if v else v
 
 
 def _stub_store_module(tables=EIS.ENGINE_TABLES):
-    def iso_ts(v):
-        return f"ISO({v})" if v else v
-
     def bool_text(v):
-        return {"t": "true", "f": "false"}.get(v, v)
+        if v in ("", "t", "f"):
+            return {"t": "true", "f": "false"}.get(v, v)
+        raise ValueError(f"불리언 형식 불가: {v!r}")
 
     return SimpleNamespace(
         TABLES=list(tables),
         TS_COLS={"started_at"},
         BOOL_COLS={"blocks_analysis"},
-        iso_ts=iso_ts,
+        iso_ts=_strict_iso,
         bool_text=bool_text,
     )
 
@@ -58,6 +74,33 @@ def test_parse_engine_csv_converts_only_time_and_bool_columns():
         },
         {"id": "2", "started_at": "", "blocks_analysis": "false", "note": "x"},
     ]
+
+
+def test_parse_engine_csv_drops_sub_seconds_before_engine_conversion():
+    # PR #36 리뷰 [critical]: 서버 수집 시각(datetime.now)에는 마이크로초가 있고 엔진 iso_ts 는 거부한다
+    data = b"id,started_at\n1,2026-07-01 00:10:00.123456+00\n2,2026-07-01T00:10:00.5Z\n"
+
+    rows = EIS.parse_engine_csv(_stub_store_module(), data)
+
+    assert [r["started_at"] for r in rows] == [
+        "ISO(2026-07-01 00:10:00+00)",
+        "ISO(2026-07-01T00:10:00Z)",
+    ]
+
+
+def test_parse_engine_csv_wraps_bad_values_as_engine_input_error():
+    data = b"id,blocks_analysis\n1,maybe\n"
+
+    with pytest.raises(EIS.EngineInputError, match="blocks_analysis"):
+        EIS.parse_engine_csv(_stub_store_module(), data)
+
+
+def test_floor_seconds():
+    assert (
+        EIS.floor_seconds("2026-07-01 00:10:00.123456+00") == "2026-07-01 00:10:00+00"
+    )
+    assert EIS.floor_seconds("2026-07-01 00:10:00+00") == "2026-07-01 00:10:00+00"
+    assert EIS.floor_seconds("") == ""
 
 
 def test_parse_engine_csv_empty_result():
@@ -98,7 +141,27 @@ def test_store_module_rejects_engine_with_different_tables(monkeypatch):
         EIS._store_module()
 
 
-# --- 실제 엔진 + 개발 DB -----------------------------------------------------------
+def test_table_queries_filter_by_input_seq_only_where_rows_belong_to_a_run():
+    runs, runs_seq = EIS._table_query("data_sync_runs")
+    inventory, inventory_seq = EIS._table_query("inventory_daily")
+    orders, orders_seq = EIS._table_query("orders")
+
+    assert runs_seq and "applied_seq IS NULL OR applied_seq <= $2" in runs
+    assert (
+        inventory_seq
+        and "data_sync_run_id IN (" in inventory
+        and "applied_seq <= $2" in inventory
+    )
+    assert not orders_seq and "$2" not in orders  # 현재 상태 표는 거르지 않음
+    assert EIS.RUN_SCOPED_TABLES == {
+        "inventory_daily",
+        "shipment_schedule_snapshots",
+        "data_validation_issues",
+    }
+    assert all(q.endswith("ORDER BY ctid") for q in (runs, inventory, orders))
+
+
+# --- 실제 엔진 (DB 없이) ------------------------------------------------------------
 
 
 @pytest.fixture
@@ -125,6 +188,57 @@ def _calendar():
     )
 
 
+def test_engine_store_source_is_the_version_we_copied(real_engine):
+    # PR #36 리뷰 [should]: 옮겨 적은 색인 코드가 엔진 새 판과 조용히 어긋나지 않게, 평소 pytest 에서 잡는다
+    s = real_engine.store
+    parts = [
+        inspect.getsource(s.Store),
+        repr(list(s.TABLES)),
+        s.DCR_SQL,
+        inspect.getsource(s.iso_ts),
+        inspect.getsource(s.bool_text),
+        repr(sorted(s.TS_COLS)),
+        repr(sorted(s.BOOL_COLS)),
+    ]
+    actual = hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+    assert actual == ENGINE_STORE_SOURCE_SHA256, (
+        "엔진 Store 소스가 바뀌었습니다. engine_input_store.company_store_class 의 옮겨 적은 __init__·input_seq 를"
+        " 새 판과 맞추고, GLOWSHIP_ENGINE_GOLDEN=1 정답 대조를 돌린 뒤 ENGINE_STORE_SOURCE_SHA256 을 갱신하세요"
+    )
+
+
+def _empty_tables(**rows):
+    tables = {name: [] for name in EIS.ENGINE_TABLES}
+    tables.update(rows)
+    return tables
+
+
+def test_company_store_input_seq_ignores_runs_without_applied_seq(real_engine):
+    company = str(uuid.uuid4())
+    run = lambda seq, at: {"data_sync_run_id": str(uuid.uuid4()), "company_id": company, "started_at": at,
+                           "applied_seq": seq, "source_domain": "ORDER", "status": "SUCCEEDED" if seq else "RUNNING"}  # fmt: skip
+    store = EIS.company_store_class()(
+        uuid.UUID(company),
+        _empty_tables(
+            data_sync_runs=[
+                run("5", "2026-01-01T00:00:00Z"),
+                run("", "2026-01-01T00:05:00Z"),
+            ]
+        ),
+        [],
+    )
+
+    assert (
+        store.input_seq(company, "2026-01-01T00:10:00Z") == 5
+    )  # 엔진 원본은 여기서 int('') 로 멈춤
+    with pytest.raises(EIS.EngineInputError, match="적재된 수집이 없습니다"):
+        store.input_seq(company, "2025-12-31T00:00:00Z")
+
+
+# --- 실제 엔진 + 개발 DB -----------------------------------------------------------
+
+
 _RUNS_SQL = text(
     "SELECT r.run_code, r.status, r.started_at, r.input_seq, e.shipment_id,"
     " sn.stage, sn.expected_3pl_inbound_date"
@@ -135,13 +249,20 @@ _RUNS_SQL = text(
 )
 
 
-async def _company(db_session, code: str) -> uuid.UUID:
-    company_id = await db_session.scalar(
+async def _company(session, code: str) -> uuid.UUID:
+    company_id = await session.scalar(
         text("SELECT company_id FROM companies WHERE company_code = :c"), {"c": code}
     )
     if company_id is None:
         pytest.skip(f"고객사 {code} 가 없는 DB(overlay 미적재)라 건너뜀")
     return company_id
+
+
+async def _max_seq(session, company_id) -> int:
+    return await session.scalar(
+        text("SELECT max(applied_seq) FROM data_sync_runs WHERE company_id = :c"),
+        {"c": company_id},
+    )
 
 
 def _build(engine, store, run):
@@ -162,20 +283,37 @@ def _build(engine, store, run):
         return ("HOLD", hold.code)
 
 
-async def test_company_store_reads_only_that_company(db_session, real_engine):
+async def test_company_store_reads_only_that_company_up_to_input_seq(
+    db_session, real_engine
+):
     company_id = await _company(db_session, "B_COSMETICS")
+    max_seq = await _max_seq(db_session, company_id)
+    cut = max_seq - 300  # 중간 순번으로 잘라 거르기가 실제로 행을 빼는지 본다
 
-    tables, dcr = await EIS.read_company_tables(db_session, company_id)
+    tables, dcr = await EIS.read_company_tables(db_session, company_id, cut)
 
+    params = {"c": company_id, "n": cut}
     for name in EIS.ENGINE_TABLES:
+        where = "company_id = :c"
+        if name == "data_sync_runs":
+            where += " AND (applied_seq IS NULL OR applied_seq <= :n)"
+        elif name in EIS.RUN_SCOPED_TABLES:
+            where += " AND data_sync_run_id IN (SELECT data_sync_run_id FROM data_sync_runs WHERE company_id = :c AND applied_seq <= :n)"
         count = await db_session.scalar(
-            text(
-                f"SELECT count(*) FROM {name} WHERE company_id = :c"
-            ),  # 표 이름은 허용 목록
-            {"c": company_id},
-        )
+            text(f"SELECT count(*) FROM {name} WHERE {where}"), params
+        )  # 표 이름은 허용 목록
         assert len(tables[name]) == count, name
         assert {row["company_id"] for row in tables[name]} <= {str(company_id)}, name
+    assert (
+        max(int(r["applied_seq"]) for r in tables["data_sync_runs"] if r["applied_seq"])
+        == cut
+    )
+    total_inventory = await db_session.scalar(
+        text("SELECT count(*) FROM inventory_daily WHERE company_id = :c"), params
+    )
+    assert (
+        len(tables["inventory_daily"]) < total_inventory
+    )  # 순번 뒤 수집의 재고는 빠짐
     assert dcr and {row["company_id"] for row in dcr} == {str(company_id)}
 
 
@@ -183,19 +321,118 @@ async def test_company_store_matches_run_input_seq_and_builds_snapshot(
     db_session, real_engine
 ):
     company_id = await _company(db_session, "B_COSMETICS")
-    store = await EIS.load_company_engine_store(db_session, company_id)
     runs = (await db_session.execute(_RUNS_SQL, {"company_id": company_id})).all()
-    assert runs, "overlay 실행이 없습니다"
-
-    for run in runs:  # 엔진의 "수집 시작 ≤ 입력 확정 시각" 기준 = 실행의 input_seq
-        EIS.check_input_seq(
-            store, company_id, EIS.engine_timestamp(run.started_at), run.input_seq
-        )
-
     no_risk = next(run for run in runs if run.status == "NO_RISK")
+
+    store = await EIS.load_company_engine_store(
+        db_session, company_id, no_risk.input_seq
+    )
+
+    EIS.check_input_seq(
+        store, company_id, EIS.engine_timestamp(no_risk.started_at), no_risk.input_seq
+    )
     snap = _build(real_engine, store, no_risk)
     assert snap["company_id"] == str(company_id)
     assert snap["input_seq"] == no_risk.input_seq
+
+
+_INSERT_RUN = text(
+    "INSERT INTO data_sync_runs (data_sync_run_id, company_id, source_domain, connection_method, started_at,"
+    " finished_at, status, received_record_count, loaded_record_count, rejected_record_count, applied_seq)"
+    " VALUES (:id, :c, 'ORDER', 'API', :started, :finished, :status, :n, :n, 0, :seq)"
+)
+
+
+async def _insert_run(session, company_id, started, status, seq):
+    done = status != "RUNNING"
+    await session.execute(
+        _INSERT_RUN,
+        {
+            "id": uuid.uuid4(),
+            "c": company_id,
+            "started": started,
+            "finished": started + timedelta(seconds=30) if done else None,
+            "status": status,
+            "n": 0 if done else None,
+            "seq": seq,
+        },
+    )
+
+
+async def test_running_run_with_microseconds_does_not_break_store(
+    db_write_session, real_engine
+):
+    # PR #36 리뷰 [critical] 1·2-①: 서버 수집은 RUNNING 을 먼저 커밋하고 시각에 마이크로초가 있다(롤백 트랜잭션)
+    company_id = await _company(db_write_session, "B_COSMETICS")
+    run = next(
+        r
+        for r in (
+            await db_write_session.execute(_RUNS_SQL, {"company_id": company_id})
+        ).all()
+        if r.status == "NO_RISK"
+    )
+    await _insert_run(
+        db_write_session,
+        company_id,
+        run.started_at - timedelta(minutes=5, microseconds=-123456),
+        "RUNNING",
+        None,
+    )
+
+    store = await EIS.load_company_engine_store(
+        db_write_session, company_id, run.input_seq
+    )
+
+    running = [r for r in store.t["data_sync_runs"] if r["status"] == "RUNNING"]
+    assert len(running) == 1 and running[0]["started_at"].endswith(
+        ":00Z"
+    )  # 초 아래를 버린 엔진 시각
+    EIS.check_input_seq(
+        store, company_id, EIS.engine_timestamp(run.started_at), run.input_seq
+    )
+
+
+async def test_run_committed_after_input_is_excluded_even_if_it_started_earlier(
+    db_write_session, real_engine
+):
+    # PR #36 리뷰 [critical] 2-②: 먼저 시작해 L1 을 기다린 수집이 실행 생성 뒤 다음 순번으로 커밋된 경우(롤백 트랜잭션)
+    company_id = await _company(db_write_session, "B_COSMETICS")
+    run = next(
+        r
+        for r in (
+            await db_write_session.execute(_RUNS_SQL, {"company_id": company_id})
+        ).all()
+        if r.status == "NO_RISK"
+    )
+    late_seq = await _max_seq(db_write_session, company_id) + 1
+    await _insert_run(
+        db_write_session,
+        company_id,
+        run.started_at - timedelta(minutes=10, microseconds=-654321),
+        "SUCCEEDED",
+        late_seq,
+    )
+    confirm_t = EIS.engine_timestamp(run.started_at)
+
+    store = await EIS.load_company_engine_store(
+        db_write_session, company_id, run.input_seq
+    )
+
+    assert all(
+        int(r["applied_seq"]) <= run.input_seq
+        for r in store.t["data_sync_runs"]
+        if r["applied_seq"]
+    )
+    EIS.check_input_seq(
+        store, company_id, confirm_t, run.input_seq
+    )  # 순번으로 거르므로 통과
+
+    # 음성: 그 수집까지 읽은 저장소에서는 엔진의 시각 기준 순번이 실행 기록과 달라진다(거르지 않으면 생기는 일)
+    unfiltered = await EIS.load_company_engine_store(
+        db_write_session, company_id, late_seq
+    )
+    with pytest.raises(EIS.EngineInputError, match="입력 순번이 다릅니다"):
+        EIS.check_input_seq(unfiltered, company_id, confirm_t, run.input_seq)
 
 
 # --- 정답 대조: 엔진 원래 방식으로 만든 Store 와 하나씩 (선택 실행) -----------------------------
@@ -203,9 +440,7 @@ async def test_company_store_matches_run_input_seq_and_builds_snapshot(
 
 def _psql_reader():
     if os.environ.get("GLOWSHIP_ENGINE_GOLDEN") != "1":
-        pytest.skip(
-            "GLOWSHIP_ENGINE_GOLDEN=1 일 때만 도는 정답 대조(1분 이상)라 건너뜀"
-        )
+        pytest.skip("GLOWSHIP_ENGINE_GOLDEN=1 일 때만 도는 정답 대조(몇 분)라 건너뜀")
     if shutil.which("docker") is None:
         pytest.skip("docker 가 없어 정답 대조를 건너뜀")
     settings = get_settings()
@@ -251,21 +486,31 @@ async def test_company_store_equals_engine_store_golden(
     }
     engine_store = _engine_store_from(store_module, rows_by_sql, monkeypatch)
 
-    ours = await EIS.load_company_engine_store(db_session, company_id)
-
-    expected, actual = vars(engine_store), vars(ours)
+    # 1) 마지막 순번까지 읽으면(overlay 는 모든 수집이 완료) 엔진이 직접 만든 Store 와 속성이 행 순서까지 같다
+    full = await EIS.load_company_engine_store(
+        db_session, company_id, await _max_seq(db_session, company_id)
+    )
+    expected, actual = vars(engine_store), vars(full)
     assert set(expected) == set(actual)
-    assert [
-        k for k in expected if k != "db" and expected[k] != actual[k]
-    ] == []  # 행 순서까지 같음
+    assert [k for k in expected if k != "db" and expected[k] != actual[k]] == []
 
+    # 2) 실행마다 그 실행의 입력 순번으로 읽은 저장소의 스냅샷 = 엔진(전체, 시각 기준)의 스냅샷
     runs = (await db_session.execute(_RUNS_SQL, {"company_id": company_id})).all()
+    by_seq = {}
     for run in runs:
+        if run.input_seq not in by_seq:
+            by_seq[run.input_seq] = await EIS.load_company_engine_store(
+                db_session, company_id, run.input_seq
+            )
+        ours = by_seq[run.input_seq]
+        EIS.check_input_seq(
+            ours, company_id, EIS.engine_timestamp(run.started_at), run.input_seq
+        )
         assert _build(real_engine, ours, run) == _build(
             real_engine, engine_store, run
         ), run.run_code
 
     # 음성: 값 하나만 달라도 대조가 잡는다
-    tampered = {k: list(v) for k, v in ours.t.items()}
+    tampered = {k: list(v) for k, v in full.t.items()}
     tampered["skus"][0] = {**tampered["skus"][0], "sku_code": "TAMPERED"}
     assert tampered != engine_store.t
