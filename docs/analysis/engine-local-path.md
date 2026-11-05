@@ -36,7 +36,7 @@
 | --- | --- |
 | 경로 확인 | `GLOWSHIP_ENGINE_DIR`이 비었거나 그 아래에 `glowship_engine`이 없으면 `EngineNotConfiguredError`. 상대경로·`~`는 절대 경로로 바꾼 뒤 봅니다 |
 | 해시 대조 | 목록의 42개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
-| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다 |
+| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다. 이때 엔진이 `synth2025_v5`를 `sys.path` **맨 앞**에 넣습니다(`core.py` 11행·`snapshot.py` 17행, 원본이라 서버에서 못 바꿈). 그래서 서버 코드에서 `allocation_core`·`keys`·`tests`라는 최상위 모듈을 만들거나 import 하지 않습니다(저장소의 `tests/`는 `__init__.py`가 없는 시험 폴더이고, `import tests`를 하는 곳이 없음. 11-05 확인) |
 | 캐시 파일 | 불러올 때 원본 폴더에 `.pyc`를 만들지 않습니다(`sys.dont_write_bytecode`). 공유 묶음을 바꾸지 않기 위해서입니다 |
 | 한 번만 | 해시 대조는 프로세스당 한 번, **엔진을 처음 부를 때** 합니다(`load_verified_engine_dir`, `lru_cache`). 서버 시작 때는 검사하지 않습니다 |
 
