@@ -1,7 +1,7 @@
 # 로그인과 인증 쿠키
 
-`app/modules/user/`의 로그인 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
-토큰 재발급(refresh)과 로그아웃은 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
+`app/modules/user/`의 로그인·로그아웃 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
+토큰 재발급(refresh)과 토큰 폐기는 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
 
 ## 1. 전체 흐름
 
@@ -73,9 +73,45 @@ Base64 해제 → 72바이트 초과면 401 → users.email 조회 → bcrypt �
 - **72바이트 한도**: bcrypt는 72바이트를 넘는 입력에 `ValueError`를 던집니다(bcrypt 5.x). 정책상 비밀번호는 16자 이하이므로 이를 넘는 입력은 조회 없이 `INVALID_CREDENTIALS`로 거절해 500을 막습니다.
 - 토큰 발급은 서비스가 하고(`TokenPair`), 쿠키에 싣는 일은 라우터가 `set_auth_cookies`로 합니다.
 
+## 2-1. 로그아웃 API
+
+`POST /api/v1/auth/logout` — `app/modules/user/presentation/auth_api_router.py`
+
+### 요청
+
+본문·쿼리·경로 변수가 없습니다. **인증을 요구하지 않습니다.** 쿠키가 없거나 만료·위조된 토큰이어도 같은 응답입니다.
+
+### 응답
+
+```http
+HTTP/1.1 204 No Content
+Set-Cookie: access_token=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Max-Age=0; Path=/; SameSite=lax; Secure
+Set-Cookie: refresh_token=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Max-Age=0; Path=/api/v1/auth/refresh; SameSite=lax; Secure
+```
+
+- 서버가 두 쿠키를 발급 때와 **같은 이름·Path·SameSite·HttpOnly**로 `Max-Age=0` 처리해 브라우저가 지우게 합니다(`clear_auth_cookies`). HttpOnly 쿠키는 프론트가 지울 수 없습니다. 브라우저는 이름·도메인·Path가 같은 쿠키만 덮어쓰므로 Path가 다르면 지워지지 않습니다. `tests/core/test_cookies.py`가 발급과 삭제의 쌍을 대조합니다.
+- 브라우저는 refresh 쿠키를 `/api/v1/auth/refresh`에만 보내므로 로그아웃 요청에는 refresh 쿠키가 실려 오지 않습니다. 서버는 토큰 값을 볼 필요 없이 삭제 지시만 내립니다.
+- 프론트는 204를 받으면 로그인 화면으로 이동합니다. 보관하는 토큰 상태가 없으므로 그 밖의 정리는 없습니다.
+
+| 상태 | code | 상황 |
+| --- | --- | --- |
+| 204 | – | 항상. 멱등 |
+| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청(3-1절). 다른 사이트가 사용자를 강제로 로그아웃시키는 것을 SameSite=Lax와 함께 막습니다 |
+
+### 왜 인증을 요구하지 않는가
+
+- 로그아웃은 "이 브라우저의 세션을 끝낸다"는 뜻이고, 세션이 이미 만료되어 실패하는 로그아웃은 사용자에게 의미가 없습니다. 항상 성공해야 버튼이 꼬이지 않습니다.
+- access 토큰이 만료된 상태에서 401을 돌려주면 프론트가 재발급을 시도한 뒤 다시 로그아웃하는 우회 경로가 생깁니다.
+- 명세 3절의 권한 "로그인"은 "로그인한 화면에서 부른다"는 뜻으로 해석했습니다. 인증 없이도 서버 상태는 바뀌지 않고, 교차 사이트 요청은 출처 검사가 막습니다.
+
+### 한계 (무상태 로그아웃)
+
+- 서버는 토큰을 기록하지 않습니다. **로그아웃 전에 복사된 토큰은 만료까지 유효합니다**: access 최대 30분(재발급 API 머지 때 15분), refresh 최대 7일.
+- 같은 쿠키 값을 다시 보내면 `GET /me`는 여전히 200입니다. 즉시 무효화가 필요하면 refresh `jti` 폐기 목록이 필요하며, 재발급 API 구현 때 저장소와 함께 정합니다(7절).
+
 ## 3. 쿠키
 
-`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급·로그아웃도 같은 값을 써야 합니다.
+`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급·로그아웃(`clear_auth_cookies`)도 같은 값을 씁니다.
 
 | 쿠키 | Path | Max-Age | 속성 |
 | --- | --- | --- | --- |
@@ -192,20 +228,20 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | 기능 | 비워 둔 자리 |
 | --- | --- |
 | 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급 |
-| 로그아웃 | `cookies.py`의 이름·Path 상수로 두 쿠키를 삭제 |
+| ~~로그아웃~~ | 구현됨. `POST /api/v1/auth/logout`이 `clear_auth_cookies`로 두 쿠키를 만료시킨다 (2-1절) |
 | ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
-| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 별도 결정 |
+| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태라(2-1절 한계) 폐기 목록이 생기면 로그아웃에서 refresh `jti`를 기록하는 한 줄을 더한다 |
 | 서버 간 호출 | 로그인 토큰이 아니라 별도 자격(서비스 토큰·API 키)으로 다룸 |
 
 ## 8. 관련 파일
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login`·`/auth/logout` 엔드포인트, 쿠키 응답 |
 | `app/modules/user/application/auth_service.py` | `login` 비즈니스 로직, `TokenPair` |
 | `app/modules/user/application/exception/user_exceptions.py` | `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED` |
 | `app/core/security/jwt.py` | 토큰 발급·검증, `JwtConfig`, `TokenType`, `TokenError` |
-| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies` |
+| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies`, `clear_auth_cookies` |
 | `app/core/security/auth.py` | `CurrentUser`, `get_current_user`, `require_roles` |
 | `app/core/security/hashing.py` | bcrypt 해싱·검증, `DUMMY_PASSWORD_HASH`, 72바이트 한도 |
 | `app/core/exceptions.py` | `UNAUTHENTICATED`, `FORBIDDEN`, `INVALID_ORIGIN` 공통 에러 코드 |
