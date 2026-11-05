@@ -15,6 +15,9 @@ from app.modules.decision.presentation.member_draft_api_router import (
 from app.modules.delay_analysis.presentation.agent_dev_api_router import (
     router as agent_dev_router,
 )
+from app.modules.delay_analysis.presentation.analysis_run_api_router import (
+    router as analysis_run_router,
+)
 from app.modules.delay_analysis.presentation.delay_event_api_router import (
     router as delay_event_router,
 )
@@ -51,6 +54,7 @@ app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
 app.include_router(delay_event_router)
+app.include_router(analysis_run_router)
 app.include_router(member_draft_router)
 app.include_router(inventory_router)
 app.include_router(inventory_status_router)

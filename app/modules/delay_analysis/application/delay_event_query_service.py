@@ -38,7 +38,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repos
       - 고객사 범위는 로그인 토큰의 company_id 로 정하고, 같은 값으로 RLS 컨텍스트를 설정합니다.
       - 경로·대표 상품·SKU 수·지연 일수는 delay_display 의 순수 함수로 계산합니다 (D13).
       - 단계·계획·예상 입고일·지연 일수는 선적의 현재 값 기준입니다 (Repository 참고).
-      - 표시용 실행 ID(runCode, D14)는 analysis_runs.run_code 마이그레이션 전이라 아직 없습니다.
+      - 표시용 실행 ID(runCode, D14)는 analysis_runs.run_code(0006)에서 읽습니다.
 """
 
 # 경로 출발지는 한국 출고 창고의 지역입니다. 고객사에 KR_ORIGIN 창고가 없으면 이 값을 씁니다.
@@ -53,6 +53,9 @@ class DelayEventTab(StrEnum):
     ANALYZING = "ANALYZING"
     ON_HOLD = "ON_HOLD"
     NEEDS_REANALYSIS = "NEEDS_REANALYSIS"
+    FINALIZED = "FINALIZED"
+    NO_RISK = "NO_RISK"
+    NO_DELAY = "NO_DELAY"
 
 
 _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
@@ -61,6 +64,9 @@ _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
     DelayEventTab.ANALYZING: IN_PROGRESS_STATUSES,
     DelayEventTab.ON_HOLD: (AnalysisRunStatus.ON_HOLD,),
     DelayEventTab.NEEDS_REANALYSIS: (AnalysisRunStatus.STALE, AnalysisRunStatus.FAILED),
+    DelayEventTab.FINALIZED: (AnalysisRunStatus.FINALIZED,),
+    DelayEventTab.NO_RISK: (AnalysisRunStatus.NO_RISK,),
+    DelayEventTab.NO_DELAY: (AnalysisRunStatus.NO_DELAY,),
 }
 
 
@@ -145,7 +151,7 @@ class DelayEventQueryService:
         items = [
             DelayEventListItem(
                 row=row,
-                shipment=_summarize(row, lines_by_shipment[row.shipment_id]),
+                shipment=summarize_shipment(row, lines_by_shipment[row.shipment_id]),
                 delay_days=calculate_delay_days(
                     row.planned_3pl_inbound_date, row.expected_3pl_inbound_date
                 ),
@@ -173,7 +179,7 @@ class DelayEventQueryService:
         )
         return DelayEventDetail(
             row=row,
-            shipment=_summarize(row, lines),
+            shipment=summarize_shipment(row, lines),
             delay_days=calculate_delay_days(
                 row.planned_3pl_inbound_date, row.expected_3pl_inbound_date
             ),
@@ -202,7 +208,10 @@ def _group_lines(
     return grouped
 
 
-def _summarize(row: DelayEventRow, lines: list[ShipmentLineRow]) -> ShipmentDisplay:
+def summarize_shipment(
+    row: DelayEventRow, lines: list[ShipmentLineRow]
+) -> ShipmentDisplay:
+    """선적 표시값(D13). 지연 조회(4.4)와 분석 실행 상세(4.5) 대상이 같은 함수를 씁니다."""
     quantities = [
         ShipmentLineQuantity(
             line_no=line.line_no,

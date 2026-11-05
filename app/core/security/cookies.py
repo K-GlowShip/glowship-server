@@ -6,6 +6,7 @@ from starlette.responses import Response
 """
     인증 쿠키 규칙
       - 이름·Path·SameSite 는 발급(로그인)과 재발급·삭제(로그아웃)가 같은 값을 써야 하므로 이곳에만 둔다.
+        브라우저는 이름·도메인·Path 가 같은 쿠키만 덮어쓰므로, 삭제 쿠키의 Path 가 발급과 다르면 지워지지 않는다.
       - refresh 쿠키는 Path 를 재발급 엔드포인트로 좁혀 다른 요청에는 실리지 않게 한다.
 """
 
@@ -52,6 +53,34 @@ def set_auth_cookies(
         key=REFRESH_TOKEN_COOKIE,
         value=refresh_token,
         max_age=int(refresh_max_age.total_seconds()),
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite=COOKIE_SAMESITE,
+    )
+
+
+def clear_auth_cookies(response: Response, *, secure: bool) -> None:
+    """
+    access / refresh 쿠키를 만료시켜 브라우저가 지우게 한다 (로그아웃).
+
+    set_auth_cookies 와 같은 이름·Path·SameSite·HttpOnly 로 Max-Age=0 쿠키를 내린다.
+    서버는 토큰 값을 보거나 기록하지 않으므로, 로그아웃 요청에 refresh 쿠키가 실려 오지 않아도
+    (Path 가 재발급 엔드포인트로 좁혀져 있음) 삭제 지시는 내릴 수 있다.
+
+    Args:
+        response: 삭제 쿠키를 붙일 응답 객체
+        secure: 발급 때와 같은 Secure 여부 (Settings.cookie_secure_enabled)
+    """
+    response.delete_cookie(
+        key=ACCESS_TOKEN_COOKIE,
+        path=ACCESS_TOKEN_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite=COOKIE_SAMESITE,
+    )
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE,
         path=REFRESH_TOKEN_COOKIE_PATH,
         secure=secure,
         httponly=True,

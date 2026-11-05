@@ -30,7 +30,14 @@ SHIPMENT_ID = uuid.uuid7()
 SNAPSHOT_ID = uuid.uuid7()
 EVENT_ID = uuid.uuid7()
 COUNTS = DelayEventCounts(
-    all_count=1, ready_for_review=1, analyzing=0, on_hold=0, needs_reanalysis=0
+    all_count=1,
+    ready_for_review=1,
+    analyzing=0,
+    on_hold=0,
+    needs_reanalysis=0,
+    finalized=0,
+    no_risk=0,
+    no_delay=0,
 )
 
 
@@ -54,8 +61,10 @@ def _row(**kwargs) -> DelayEventRow:
         "us_port_name": "LOS ANGELES, CA",
         "origin_region_code": "KR",
         "run_id": uuid.uuid7(),
+        "run_code": "AN-260120-001",
         "run_status": "READY_FOR_REVIEW",
         "run_result_class": "READY_ORDER_RISK",
+        "run_failure_code": None,
         "has_final_decision": False,
         "at_risk_order_count": 4,
     } | kwargs
@@ -191,6 +200,23 @@ async def test_list_all_tab_has_no_status_filter():
     assert repo.filters[0].run_statuses is None
 
 
+@pytest.mark.parametrize(
+    ("tab", "statuses"),
+    [
+        (DelayEventTab.FINALIZED, ("FINALIZED",)),
+        (DelayEventTab.NO_RISK, ("NO_RISK",)),
+        (DelayEventTab.NO_DELAY, ("NO_DELAY",)),
+    ],
+)
+async def test_list_maps_c26_tabs_to_one_run_status(tab, statuses):
+    """명세 C26: 새 탭은 현재 실행 상태 하나씩에 대응한다"""
+    repo = FakeRepository()
+
+    await _service(repo).list_delay_events(actor=ACTOR, tab=tab)
+
+    assert repo.filters[0].run_statuses == statuses
+
+
 async def test_list_defaults_to_first_page():
     repo = FakeRepository(rows=[_row()])
 
@@ -228,6 +254,7 @@ async def test_list_uses_default_origin_and_handles_shipment_without_lines():
 async def test_detail_returns_previous_expected_date_and_runs():
     run = RunHistoryRow(
         analysis_run_id=uuid.uuid7(),
+        run_code="AN-260120-001",
         version_no=1,
         status="READY_FOR_REVIEW",
         is_latest=True,
@@ -236,6 +263,7 @@ async def test_detail_returns_previous_expected_date_and_runs():
         parent_analysis_run_id=None,
         completed_status="READY_FOR_REVIEW",
         result_class="READY_ORDER_RISK",
+        failure_code=None,
         stale_detected_at=None,
         stale_primary_reason=None,
         started_at=datetime(2026, 1, 20, tzinfo=UTC),
