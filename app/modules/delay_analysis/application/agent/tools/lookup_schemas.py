@@ -8,6 +8,8 @@ from app.modules.delay_analysis.application.agent.tools.common import (
     ToolDate,
     ToolId,
     ToolModel,
+    UniqueCodes,
+    UniqueDates,
     UtcTimestamp,
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import SalesBasisType
@@ -168,10 +170,10 @@ class SalesHistory(ToolModel):
     basis_days: Literal[28]
     demand_totals: list[DemandTotal]
     event_days: StrictInt = Field(ge=0)
-    event_names: list[StrictStr]
+    event_names: UniqueCodes  # 행사 이름(엔진 window_overlap 이 중복 제거)
     calendar_version: StrictStr
     calendar_sha256: Sha256Hex
-    actual_known_days: list[ToolDate]
+    actual_known_days: UniqueDates
     actual_demand: list[ActualDemand]
 
 

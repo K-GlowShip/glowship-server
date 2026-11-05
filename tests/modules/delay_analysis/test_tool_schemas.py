@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import CheckConstraint, text
 
 import app.core.model_registry  # noqa: F401  (모든 모델 등록)
@@ -24,6 +24,9 @@ from app.modules.delay_analysis.application.agent.tools.common import (
     TOOL_NUMBERS,
     RegionCode,
     ToolModel,
+    UniqueCodes,
+    UniqueDates,
+    _require_unique,
 )
 from app.modules.delay_analysis.infrastructure import analysis_enums as E
 from app.modules.delay_analysis.infrastructure.stored_json_schemas import SkuResults
@@ -464,6 +467,8 @@ NON_ENUM_CODES = {
     "BUSINESS_DAY",  # operating_lead_times.day_basis
     "CALENDAR_DAY",
     "REQUIRED_DATA_INVALID",  # 입력 검증 보류 사유(엔진 Hold, GLOW-100)
+    "COMPUTED_OUTCOME_ROWS",  # 엔진 검증기 bundle_verify.py 의 검사 이름(6절)
+    "ORDER_COUNT_MISMATCH",
 }
 
 
@@ -822,6 +827,63 @@ def test_precheck_rules():
     ):
         with pytest.raises(ValidationError):
             OS.OptionFeasibility.model_validate({"options": options})
+
+
+# --- 코드·날짜 값 배열은 중복 없음 (계약 1절, #26 리뷰) ----------------------------------------
+UNIQUE_LIST_FIELDS = [
+    (I.AtRiskOrders, "delay_induced_sku_codes"),
+    (I.CalculateInventoryImpactInput, "delay_induced_sku_codes"),
+    (I.InventoryImpact, "impacted_sku_codes"),
+    (I.InventoryImpact, "watch_sku_codes"),
+    (OS.OptionPrecheck, "eligible_sku_codes"),
+    (L.SalesHistory, "event_names"),
+    (L.SalesHistory, "actual_known_days"),
+]
+
+
+def _requires_unique(model: type[BaseModel], field: str) -> bool:
+    return any(
+        getattr(m, "func", None) is _require_unique
+        for m in model.model_fields[field].metadata
+    )
+
+
+@pytest.mark.parametrize(("model", "field"), UNIQUE_LIST_FIELDS)
+def test_value_lists_require_unique(model, field):
+    assert _requires_unique(model, field)
+
+
+def test_unique_field_check_catches_plain_list():
+    assert not _requires_unique(I.AtRiskOrders, "risks")
+
+
+def test_value_lists_reject_duplicates():
+    I.AtRiskOrders.model_validate(_risks(codes=["SKU-1"]))
+    bad = [
+        (I.AtRiskOrders, _risks(codes=["SKU-1", "SKU-1"])),
+        (I.InventoryImpact, _impact(impacted_sku_codes=["SKU-1", "SKU-1"])),
+        (I.InventoryImpact, _impact(watch_sku_codes=["SKU-2", "SKU-2"])),
+        (
+            OS.OptionPrecheck,
+            _precheck(
+                "KR_AIR_REPLENISH",
+                "NO_SUPPLY",
+                "NO_KR_ELIGIBLE_STOCK",
+                eligible=["SKU-1", "SKU-1"],
+            ),
+        ),
+    ]
+    for model, body in bad:
+        with pytest.raises(ValidationError, match="중복 값이 있습니다"):
+            model.model_validate(body)
+    TypeAdapter(UniqueCodes).validate_python(["A", "B"])
+    TypeAdapter(UniqueDates).validate_python(["2026-01-01", "2026-01-02"])
+    with pytest.raises(ValidationError, match="중복 값이 있습니다"):
+        TypeAdapter(UniqueCodes).validate_python(["A", "B", "A"])
+    with pytest.raises(
+        ValidationError, match="중복 값이 있습니다"
+    ):  # 문자열과 date 가 같은 날
+        TypeAdapter(UniqueDates).validate_python(["2026-01-01", date(2026, 1, 1)])
 
 
 SKU_RESULTS = {
