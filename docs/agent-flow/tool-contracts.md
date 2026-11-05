@@ -33,7 +33,7 @@
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
 | 배열 | 아래 표마다 적은 정렬 키로 오름차순입니다. 엔진은 SKU를 SKU 코드로 묶어 다루므로, 이 문서도 SKU 배열은 `sku_code` 순으로 둡니다 |
 | 코드값 | DDL CHECK와 같은 값입니다. 서버는 `app/modules/delay_analysis/infrastructure/analysis_enums.py`의 열거형을 씁니다 |
-| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다 |
+| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다. 다만 코드·날짜 값 배열(T4 `event_names`·`actual_known_days`, T6 입력 `delay_induced_sku_codes`, T6 `impacted_sku_codes`·`watch_sku_codes`, T7 `delay_induced_sku_codes`, T9 `eligible_sku_codes`)은 엔진이 집합에서 만들므로 같은 값이 두 번 있으면 모델이 거부합니다(`common.UniqueCodes`·`UniqueDates`) |
 | 날짜 판정 | 엔진은 시각 값(`promised_delivery_at`, `ordered_at`)을 앞 10자리(UTC 날짜)로 잘라 날짜끼리 비교합니다(`common.d`). 도구도 같은 방식으로 판정합니다 |
 | 평균 수요 | 일평균을 소수로 넘기지 않고, **기간 합계(정수)와 일수**를 넘깁니다. 엔진은 합계 ÷ 28을 부동소수로 계산해 바로 쓰므로, 반올림한 평균을 넘기면 정수화 경계에서 결과가 달라질 수 있습니다 |
 | 이름 | agentflow 4절의 도구 이름(가칭)을 정식 이름으로 씁니다. 새 이름을 만들지 않아 문서·코드가 바뀌는 곳을 줄입니다 |
@@ -178,7 +178,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `simulation_horizon_end` | date | 아니오 | 시뮬레이션 구간 끝 = max(E, 약속일들) + 14일 | `h_end` |
 | `expected_plan_simulation` | 객체(엔진 연결에서 정함, 9절 Q12) | — | E 시뮬레이션 결과(주문별 확보일, 일별 보호량). T10의 `KEEP_PLAN`·다른 권역 출고가 씀 | `simE` |
 
-저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인).
+저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인). 날짜 끝이 아닌 약속 시각이 들어오는 원천이 생기면 갈리므로, 입력 검증(GLOW-100)에서 이런 주문이 있으면 실행을 보류로 막을지 정합니다(엔진에는 없는 검사라 그 작업에서 결정, #26 리뷰).
 
 ### 4.2 T6 `calculate_inventory_impact` — 예측 층·영향 집합·결과 분류
 
@@ -293,6 +293,8 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 
 이 표는 집계 NULL 규칙 G-1~G-3과 같은 결과를 냅니다(명세 4.5 "대응안 집계 규칙"). 계산 완료 `NOT_FEASIBLE`(공급 없음 포함)은 집계가 0을 포함한 숫자이고, 위험 주문마다 `NOT_RECOVERED` 결과가 있습니다.
 
+**도구 구현에서 입력과 맞춰 볼 것(모델 하나로는 볼 수 없음):** 엔진 검증기(`bundle_verify.py`)와 같이, `FEASIBLE`·`NOT_FEASIBLE` 대응안의 `outcomes` 행 수 = T7 위험 주문 상세 행 수(`COMPUTED_OUTCOME_ROWS`), 집계가 있는 `NEEDS_CHECK` 아닌 대응안의 `fully_recovered_orders + not_recovered_orders` = 서로 다른 위험 주문 수(`ORDER_COUNT_MISMATCH`). T10 도구가 입력 `at_risk_orders`와 대조합니다(#26 리뷰).
+
 ### 6.1 사유 코드 — 대응안별 집합과 고르는 규칙
 
 엔진 `options.py`(`evaluate`·`_no_supply_outcomes`·`_order_reason`·`_other_region`)에서 옮겼습니다. D-02 4.1(데이터 팀 리뷰 문서, 공유 묶음에 없음)의 우선순위는 엔진의 `options.PRIORITY` 목록과 같아서, 아래 표만으로 구현·검증할 수 있게 닫았습니다.
@@ -345,6 +347,8 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `is_recommended` | boolean | 아니오 | 순위 1 | `is_recommended` |
 
 순위 규칙(B-5, `options._rank`): `KEEP_PLAN` 외 `FEASIBLE` 대응안을 지연 유발 회복 주문 수 내림차순 → 확정 감소 합 내림차순 → 공급일 오름차순 → 고정 순서(출항 전 항공 → 한국 창고 항공 → 다른 권역)로 정렬하고, `KEEP_PLAN`을 맨 뒤에 둡니다. DB가 실행당 추천 1건(`response_options_is_recommended_uq`), 순위 중복 없음(`response_options_rank_uq`), 추천 = 순위 1(`response_options_ck16`), 추천은 `FEASIBLE`만(`response_options_ck4`)을 보장합니다.
+
+T11 출력에는 `feasibility_status`가 없어서 모델은 "순위는 `FEASIBLE`만"(`response_options_ck15`)·"추천은 `FEASIBLE`만"(ck4)을 볼 수 없습니다. 출력에 넣지 않고 **T11 도구 구현이 입력(T10 `options[]`)과 맞춰 봅니다**: `FEASIBLE`이면 순위가 있고 아니면 `null`, `KEEP_PLAN`(늘 `FEASIBLE`)은 맨 뒤 순위, 추천은 순위 1(#26 리뷰).
 
 비교표(agentflow 4절 "동일 기준 비교표")는 따로 만들지 않습니다. T10 `options[]`와 이 순위를 합친 것이 분석 실행 상세 응답의 `responseOptions`입니다.
 
