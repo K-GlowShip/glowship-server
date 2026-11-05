@@ -88,7 +88,8 @@ class ShipmentListItemResponse(CamelModel):
     is_delayed: bool = Field(
         description=(
             "지연 여부 = delayDays > 0. 기준값은 입고 전이면 예상 입고일, 입고 완료면 실제 입고일이고 "
-            "그 값이 계획 3PL 입고일보다 늦으면 true (서비스 플로우 1절의 감지·사후 평가 구분)"
+            "그 값이 계획 3PL 입고일보다 늦으면 true (서비스 플로우 1절의 감지·사후 평가 구분). "
+            "대시보드 지연 선적(명세 4.4 C22, 열린 에피소드만)과 다른 기준이라 입고 완료 선적의 지연 입고도 true"
         ),
         examples=[False],
     )
