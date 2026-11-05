@@ -5,8 +5,14 @@ from app.core.database import get_db
 from app.modules.inventory.application.inventory_list_service import (
     InventoryListService,
 )
+from app.modules.inventory.application.inventory_status_service import (
+    InventoryStatusService,
+)
 from app.modules.inventory.infrastructure.repository.inventory_repository import (
     InventoryRepository,
+)
+from app.modules.inventory.infrastructure.repository.inventory_status_repository import (
+    InventoryStatusRepository,
 )
 
 """
@@ -26,3 +32,9 @@ def get_inventory_list_service(
     repo: InventoryRepository = Depends(get_inventory_repository),
 ) -> InventoryListService:
     return InventoryListService(repo=repo)
+
+
+def get_inventory_status_service(
+    db: AsyncSession = Depends(get_db),
+) -> InventoryStatusService:
+    return InventoryStatusService(repo=InventoryStatusRepository(db))

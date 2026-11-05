@@ -51,8 +51,15 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
+from app.modules.delay_analysis.application.detection.episode_service import (
+    EpisodeDetectionService,
+    EpisodeOutcome,
+)
 from app.modules.delay_analysis.application.stale.stale_service import (
     StaleJudgmentService,
+)
+from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repository import (
+    DelayEventWriteRepository,
 )
 
 """
@@ -63,7 +70,9 @@ from app.modules.delay_analysis.application.stale.stale_service import (
          오래 남은 RUNNING(작업이 죽은 경우)도 시간과 관계없이 막습니다. 정리(FAILED 전환·fencing)는 후속 운영 작업입니다.
       2. 한 트랜잭션에서: 고객사 잠금(L1) → 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부, record_validation)
          → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용 → 거부 사유를 검증 이슈로 기록
-         → 변경 기록 → 적용 순번 → 수집 완료 기록 → STALE 판정(judge_after_sync) → 커밋.
+         → 변경 기록 → 적용 순번 → 수집 완료 기록 → (SHIPMENT 만) 지연 에피소드 판정·시작 저장(detect_after_sync)
+         → 에피소드 종료(close_episodes)
+         → STALE 판정(judge_after_sync) → 커밋. 지연 감지가 STALE 판정보다 먼저다 (docs/analysis/delay-detection.md 3절).
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
          FAILED 기록이 또 실패해도 원래 예외를 올리고, 기록 실패는 그 예외의 note 로 붙입니다.
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
@@ -77,7 +86,8 @@ from app.modules.delay_analysis.application.stale.stale_service import (
         (user_id=None), 워커 역할의 app_context_allowed 는 고객사가 ACTIVE 인지만 봅니다. 앱 역할(glowship_v4_app)은
         ACTIVE 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고
         INSERT 가 고유 제약 위반으로 실패합니다 (마이그레이션 0001 app_context_allowed).
-        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 모두 포함합니다.
+        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 포함합니다. 다만 지연 에피소드 종료(delay_events 의
+        closed_at·close_reason UPDATE)는 아직 없고, 두 열만 주기로 정해 별도 리비전(개발자 3)으로 넣습니다 (ERD 설명 4절).
       - 세션: 이 서비스 전용 세션을 넘깁니다. 서비스가 직접 commit·rollback 하므로(RUNNING 기록, 적용, FAILED 기록)
         요청 세션(get_db)을 공유하면 안 됩니다.
       - 지금 앱 연결은 설정의 postgres_user 하나뿐이고 워커 역할 연결은 아직 없습니다. 수동 수집 API 25
@@ -100,6 +110,8 @@ class IngestResult:
     change_record_count: int
     rejections: tuple[Rejection, ...]
     staled_run_ids: tuple[uuid.UUID, ...]
+    # SHIPMENT 수집의 지연 에피소드 판정 (시작·후속·종료). AUTO 실행 생성 연결이 쓴다. 다른 원천은 ()
+    episode_outcomes: tuple[EpisodeOutcome, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,11 +128,16 @@ class DataIngestService:
         db: AsyncSession,
         repo: IngestRepository,
         stale_service: StaleJudgmentService,
+        episode_service: EpisodeDetectionService | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self.db = db
         self.repo = repo
         self.stale_service = stale_service
+        # 같은 세션·트랜잭션에서 돌아야 하므로 기본값은 이 세션으로 만든다 (테스트는 대역을 넘길 수 있음)
+        self.episode_service = episode_service or EpisodeDetectionService(
+            DelayEventWriteRepository(db)
+        )
         self.now = now
 
     async def ingest(
@@ -171,6 +188,14 @@ class DataIngestService:
             await self.repo.complete_run(
                 company_id, run_id, counts, applied_seq, finished_at
             )
+            episodes = (
+                await self.episode_service.detect_after_sync(company_id, run_id)
+                if source_domain == SourceDomain.SHIPMENT
+                else []
+            )
+            # GLOW-18 자리: AUTO 실행 생성·이전 실행 STALE(mark_runs_stale)은 여기, 에피소드를 닫기 전에 한다.
+            # 닫힌 에피소드의 실행은 동결이라 mark_runs_stale 이 건너뛰기 때문이다 (episode_service 설명).
+            await self.episode_service.close_episodes(company_id, episodes)
             staled = await self.stale_service.judge_after_sync(
                 company_id, applied_seq, self.now()
             )
@@ -196,6 +221,7 @@ class DataIngestService:
             change_record_count=len(applied.records),
             rejections=rejections,
             staled_run_ids=tuple(run.analysis_run_id for run in staled),
+            episode_outcomes=tuple(episodes),
         )
 
     async def _apply(

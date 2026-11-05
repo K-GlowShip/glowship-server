@@ -193,6 +193,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | --- | --- |
 | 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급 |
 | 로그아웃 | `cookies.py`의 이름·Path 상수로 두 쿠키를 삭제 |
+| ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
 | 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 별도 결정 |
 | 서버 간 호출 | 로그인 토큰이 아니라 별도 자격(서비스 토큰·API 키)으로 다룸 |
 

@@ -49,7 +49,7 @@ app/
 └── modules/                       # 도메인 모듈
     ├── user/
     │   ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
-    │   ├── presentation/          # API 라우터(회원가입·로그인, 고객사 계정 생성), 요청·응답 스키마
+    │   ├── presentation/          # API 라우터(회원가입·로그인, 내 계정 조회, 고객사 계정 생성), 요청·응답 스키마
     │   ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
     │   └── infrastructure/        # ORM 모델, enum, Repository
     ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)
@@ -109,6 +109,16 @@ DB의 고객사 범위 테이블에는 RLS 정책이 걸려 있고, 정책과 `S
 - `users` 테이블은 앱 DB 역할에 INSERT 권한이 없어, 고객사 계정 생성은 DB 함수 `app_admin_create_client_user()`로만 합니다.
   이 함수는 요청자가 해당 고객사에 배정되고 `can_manage_client_accounts`가 참인 ACTIVE ADMIN일 때만 실행됩니다.
   `POST /api/v1/admin/users`가 이 경로를 사용합니다.
+
+### 데이터 접근 원칙
+
+세부 기준과 예외는 [docs/backend/data-access.md](docs/backend/data-access.md)에 있습니다.
+
+- 한 행을 읽고 바꾸는 처리는 ORM 엔터티, 여러 행을 한 번에 넣거나 바꾸는 처리는 ORM 모델을 쓴 SQLAlchemy 식으로 합니다.
+- 화면용 목록·집계 조회와 PostgreSQL 기능(RLS 설정·잠금·`SECURITY DEFINER` 함수)은 `bindparam`으로 타입을 정한 직접 SQL(`text()`)로 합니다.
+- `relationship()`은 쓰지 않고, 연관 데이터는 쿼리에서 `(company_id, id)`로 JOIN합니다.
+- DB 접근은 각 모듈의 `infrastructure/repository/`에서만 하고, 쿼리마다 `company_id` 조건을 직접 겁니다.
+- 커밋은 요청 단위 세션(`get_db`)이 합니다. 리포지토리·서비스는 `flush()`까지만 합니다(예외: 수집 적재 서비스).
 
 ### 에러 응답
 
