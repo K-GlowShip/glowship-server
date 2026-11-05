@@ -173,6 +173,30 @@ async def test_stale_stop_and_node_error_are_traced():
     )
 
 
+async def test_node_error_keeps_only_error_type_not_message():
+    # PR #42 리뷰: 오류 메시지는 칸 이름 필터를 거치지 않는 자유 문장이라 접속 문자열·비밀번호가 섞일 수 있다
+    state = _state()
+    secret = "postgresql+asyncpg://glowship:s3cret@localhost:5432/db password=hunter2 Bearer abc.def"
+
+    class Broken:
+        async def get_status(self, analysis_run_id):
+            raise RuntimeError(secret)
+
+    sink = MemorySink()
+    tracer = RunTracer(state["analysis_run_id"], state["company_id"], [sink])
+    with pytest.raises(RuntimeError):
+        await _run(state, tracer, reader=Broken())
+    tracer.close()
+
+    errors = [e for e in sink.events if e.kind in ("NODE_ERROR", "RUN_ERROR")]
+    assert errors and all(e.error_code == "RuntimeError" for e in errors)
+    assert all("message" not in e.summary for e in errors)
+    dumped = json.dumps([e.to_json_dict() for e in sink.events])
+    assert (
+        "s3cret" not in dumped and "hunter2" not in dumped and "abc.def" not in dumped
+    )
+
+
 # --- 재시도·설명 시도 연결 --------------------------------------------------------------
 
 
@@ -298,6 +322,55 @@ async def test_slow_sink_does_not_block_analysis():
     assert len(slow.events) == len(tracer.events)  # 나중에라도 다 씀
 
 
+async def test_aclose_does_not_block_the_event_loop_but_close_does():
+    # PR #42 리뷰: 동기 close() 를 async 코드에서 부르면 쓰기가 밀렸을 때 루프 전체가 멈춘다
+    slow = SlowSink(0.2)
+    tracer = RunTracer(uuid.uuid4(), uuid.uuid4(), [slow])
+    for i in range(6):  # 약 1.2초치 쓰기가 밀려 있음
+        tracer.emit("ROUTE", f"r{i}", "OK")
+    ticks = 0
+    stop = False
+
+    async def ticker():
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    task = asyncio.create_task(ticker())
+    await asyncio.sleep(0)
+    assert await tracer.aclose(timeout=0.4) is False  # 다 못 썼지만 루프는 돌았음
+    during_aclose = ticks
+    tracer.close(timeout=0.4)  # 음성: 같은 일을 동기로 하면 그동안 다른 작업이 멈춤
+    during_close = ticks - during_aclose
+    stop = True
+    await task
+
+    assert during_aclose >= 15  # 0.4초 동안 10ms 마다
+    assert during_close <= 2
+    deadline = time.time() + 10
+    while len(slow.events) < 6 and time.time() < deadline:
+        await asyncio.sleep(0.05)
+    assert len(slow.events) == 6  # 기다림을 끝내도 쓰기는 뒤에서 끝남
+
+
+def test_explanation_attempts_with_unexpected_shape_does_not_raise():
+    # PR #42 리뷰(비차단): 모양이 달라도 예외를 올리지 않는다
+    sink = MemorySink()
+    tracer = RunTracer(uuid.uuid4(), uuid.uuid4(), [sink])
+
+    tracer.explanation_attempts(
+        [{"retry_no": 1, "codes": None}]
+    )  # codes 가 비어 있음 → OK 로 남김
+    tracer.explanation_attempts(
+        [{"retry_no": 2, "codes": [["ONLY_CODE"]]}]
+    )  # 풀 수 없는 모양
+    tracer.close()
+
+    assert [(e.attempt, e.status) for e in sink.events] == [(1, "OK")]
+    assert tracer.sink_failures == 1
+
+
 def test_emit_never_raises_even_if_masking_breaks(monkeypatch):
     tracer = RunTracer(uuid.uuid4(), uuid.uuid4(), [MemorySink()])
     monkeypatch.setattr(
@@ -325,6 +398,43 @@ def test_masker_hides_order_codes_and_emails_consistently_within_a_run():
     assert (
         other_run.text("A-ORD-20260613-0040") != again
     )  # 실행이 다르면 다름(되돌리기 어려움)
+
+
+@pytest.mark.parametrize(
+    ("text_in", "secret"),
+    [
+        (
+            "주문 A-ORD-20260613-0040이 중복되었습니다",
+            "A-ORD-20260613-0040",
+        ),  # 조사가 바로 붙음(PR #42 리뷰)
+        ("주문A-ORD-20260613-0040 지연", "A-ORD-20260613-0040"),  # 앞에 공백 없음
+        (
+            "같은 응답 안에 주문 B-ORD-99999999-9999이 중복되었습니다",
+            "B-ORD-99999999-9999",
+        ),  # overlay 실제 문장
+        ("주문 B-ORD-ERR-0001 오류", "B-ORD-ERR-0001"),  # 날짜·번호 형식 밖의 키
+        (
+            "담당 lead@a-beauty.example로 보냄",
+            "lead@a-beauty.example",
+        ),  # 이메일 뒤 조사
+    ],
+)
+def test_masker_hides_codes_followed_by_korean_text(text_in, secret):
+    masked = TraceMasker().text(text_in)
+
+    # 일부만 가리고 끝자리(-0040 등)를 남기는 경우까지 잡는다(정규식이 뒤로 물러나 앞부분만 맞는 일이 있음)
+    assert secret not in masked and secret[-5:] not in masked
+    assert "ORD#" in masked or "[EMAIL]" in masked
+
+
+def test_masker_keeps_version_and_location_codes():
+    masker = TraceMasker()
+
+    assert masker.text("explain_ready_v1@1.0.0") == "explain_ready_v1@1.0.0"
+    assert (
+        masker.text("VALUE_MISMATCH@risk_summary#s1")
+        == "VALUE_MISMATCH@risk_summary#s1"
+    )
 
 
 def test_masker_removes_secret_and_prompt_keys_and_limits_size():
