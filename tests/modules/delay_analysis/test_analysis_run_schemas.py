@@ -122,7 +122,6 @@ def _option(**over) -> dict:
         "option_type": "OTHER_REGION_FULFILL",
         "feasibility_status": "FEASIBLE",
         "reason_code": None,
-        "reason": None,
         "required_quantity": 7,
         "securable_quantity": 7,
         "reduction_committed_total": 6,
@@ -149,7 +148,11 @@ def _outcome(**over) -> dict:
         "secured_quantity": 2,
         "recovered_quantity": 2,
         "expected_delivery_at": NOW,
-        "source_warehouse_id": DONOR_WAREHOUSE_ID,
+        "source_warehouse": {
+            "warehouse_id": DONOR_WAREHOUSE_ID,
+            "warehouse_code": "US-EAST-NJ",
+            "region_code": "US_EAST",
+        },
         "supply_source": "OTHER_REGION_WAREHOUSE",
     }
     body.update(over)
@@ -177,7 +180,7 @@ def _ready_run() -> dict:
         "finished_at": NOW,
         "stale_detected_at": None,
         "stale_primary_reason": None,
-        "stale_reason_codes": None,
+        "stale_reason_codes": [],
         "target": {
             "delay_event_id": uuid.uuid7(),
             "episode_no": 1,
@@ -256,7 +259,7 @@ def _ready_run() -> dict:
                 "promised_delivery_at": NOW,
                 "baseline_expected_delivery_at": None,
                 "expected_delivery_at": datetime(2026, 2, 15, tzinfo=UTC),
-                "expected_beyond_horizon": False,
+                "is_beyond_horizon": False,
                 "risk_reason": "재고 부족으로 약속 배송일 초과",
                 "lines": [
                     {
@@ -280,7 +283,7 @@ def _ready_run() -> dict:
         "failed_step": None,
         "failure_code": None,
         "attempt_count": None,
-        "retry_exhausted": None,
+        "is_retry_exhausted": None,
         "failure_message": None,
         "drafts": [],
         "final_decision": None,
@@ -303,7 +306,7 @@ def test_top_level_fields_follow_spec_camel_case():
         "statusReason", "triggerType", "triggerReason", "requestedBy", "requestReason", "requestedAt", "startedAt",
         "finishedAt", "staleDetectedAt", "stalePrimaryReason", "staleReasonCodes", "explanation",
         "explanationValidationStatus", "explanationGeneratedAt", "modelName", "promptVersion", "failedStep",
-        "failureCode", "attemptCount", "retryExhausted", "failureMessage", "drafts", "finalDecision",
+        "failureCode", "attemptCount", "isRetryExhausted", "failureMessage", "drafts", "finalDecision",
     }  # fmt: skip
     groups = {
         "target",
@@ -463,7 +466,6 @@ def test_needs_check_option_allows_null_aggregates():
     body = _option(
         feasibility_status="NEEDS_CHECK",
         reason_code="DONOR_NO_NEXT_INBOUND",
-        reason="공여 창고의 다음 입고 없음",
         securable_quantity=None,
         reduction_committed_total=None,
         expected_delivery_date=None,
@@ -524,7 +526,7 @@ def test_on_hold_run_has_failure_summary_and_empty_results():
         failed_step="VALIDATING",
         failure_code="REQUIRED_DATA_INVALID",
         attempt_count=1,
-        retry_exhausted=False,
+        is_retry_exhausted=False,
         failure_message="필수 자료 검증 오류",
     )
     body["input_basis"]["base_date"] = None
@@ -576,3 +578,117 @@ def test_average_daily_sales_is_json_number():
     got = _dump(_ready_run())["inventoryImpacts"][0]["averageDailySales"]
 
     assert isinstance(got, float) and got == 1.25
+
+
+# --- 스키마 후속 (GLOW-115: 명세 4.5·응답 본문 규칙 5.2 맞춤) ------------------------------------
+
+
+USER_ID = uuid.uuid7()
+
+
+def _user() -> dict:
+    return {"user_id": USER_ID, "display_name": "김팀장", "role_code": "CLIENT_LEAD"}
+
+
+def test_option_has_no_reason_field():
+    """response_options.reason 은 응답에 넣지 않는다. 화면 문구는 reasonCode 라벨로 만든다(명세 4.5 "응답에 넣지 않는 것")"""
+    option = _dump(_ready_run())["responseOptions"][0]
+
+    assert "reason" not in option and "reasonCode" in option
+
+
+def test_flags_use_is_prefix():
+    """불리언은 is 접두(응답 본문 규칙 이름 규칙): isBeyondHorizon, isRetryExhausted"""
+    got = _dump(_ready_run())
+
+    assert "isRetryExhausted" in got and "retryExhausted" not in got
+    order = got["atRiskOrders"][0]
+    assert order["isBeyondHorizon"] is False and "expectedBeyondHorizon" not in order
+
+
+def test_stale_reason_codes_is_empty_list_when_not_stale():
+    """STALE 이 아니면 staleReasonCodes 는 null 이 아니라 [] 이다(명세 4.5 STALE 칸)"""
+    assert _dump(_ready_run())["staleReasonCodes"] == []
+
+    body = copy.deepcopy(_ready_run())
+    body["stale_reason_codes"] = None
+    with pytest.raises(ValidationError):
+        AnalysisRunDetailResponse.model_validate(body)
+
+
+def test_outcome_source_warehouse_is_warehouse_summary():
+    """공급 창고는 ID 가 아니라 창고 요약 객체(sourceWarehouse)다. 공급 창고가 없으면 null(명세 4.5 주문별 결과, 규칙 5.2)"""
+    outcome = _dump(_ready_run())["responseOptions"][0]["outcomes"][0]
+
+    assert outcome["sourceWarehouse"] == {
+        "warehouseId": str(DONOR_WAREHOUSE_ID),
+        "warehouseCode": "US-EAST-NJ",
+        "regionCode": "US_EAST",
+    }
+    assert "sourceWarehouseId" not in outcome
+    assert (
+        OptionOrderOutcome.model_validate(
+            _outcome(source_warehouse=None)
+        ).source_warehouse
+        is None
+    )
+
+
+def test_decision_history_uses_user_and_option_summaries():
+    """판단 이력: author·decidedBy 는 사용자 요약, responseOption 은 대응안 요약(명세 4.5 판단 이력, 규칙 5.2)"""
+    body = copy.deepcopy(_ready_run())
+    body.update(
+        status="FINALIZED",
+        drafts=[
+            {
+                "member_draft_id": uuid.uuid7(),
+                "author": _user() | {"role_code": "CLIENT_MEMBER"},
+                "response_option": {
+                    "response_option_id": OPTION_ID,
+                    "option_type": "OTHER_REGION_FULFILL",
+                },
+                "opinion_text": "다른 권역 출고가 좋겠습니다.",
+                "created_at": NOW,
+            },
+            {
+                "member_draft_id": uuid.uuid7(),
+                "author": _user() | {"role_code": "CLIENT_MEMBER"},
+                "response_option": None,
+                "opinion_text": "의견만 남깁니다.",
+                "created_at": NOW,
+            },
+        ],
+        final_decision={
+            "final_decision_id": uuid.uuid7(),
+            "decided_by": _user(),
+            "response_option": {
+                "response_option_id": OPTION_ID,
+                "option_type": "OTHER_REGION_FULFILL",
+            },
+            "reason_text": "회복 주문이 가장 많음",
+            "decided_at": NOW,
+            "checked_seq": 130,
+        },
+    )
+
+    got = _dump(body)
+
+    draft = got["drafts"][0]
+    assert set(draft) == {
+        "memberDraftId",
+        "author",
+        "responseOption",
+        "opinionText",
+        "createdAt",
+    }
+    assert set(draft["author"]) == {"userId", "displayName", "roleCode"}
+    assert draft["responseOption"] == {
+        "responseOptionId": str(OPTION_ID),
+        "optionType": "OTHER_REGION_FULFILL",
+    }
+    assert got["drafts"][1]["responseOption"] is None
+    decision = got["finalDecision"]
+    assert set(decision) == {
+        "finalDecisionId", "decidedBy", "responseOption", "reasonText", "decidedAt", "checkedSeq",
+    }  # fmt: skip
+    assert decision["decidedBy"]["roleCode"] == "CLIENT_LEAD"

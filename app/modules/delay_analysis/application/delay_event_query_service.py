@@ -145,7 +145,7 @@ class DelayEventQueryService:
         items = [
             DelayEventListItem(
                 row=row,
-                shipment=_summarize(row, lines_by_shipment[row.shipment_id]),
+                shipment=summarize_shipment(row, lines_by_shipment[row.shipment_id]),
                 delay_days=calculate_delay_days(
                     row.planned_3pl_inbound_date, row.expected_3pl_inbound_date
                 ),
@@ -173,7 +173,7 @@ class DelayEventQueryService:
         )
         return DelayEventDetail(
             row=row,
-            shipment=_summarize(row, lines),
+            shipment=summarize_shipment(row, lines),
             delay_days=calculate_delay_days(
                 row.planned_3pl_inbound_date, row.expected_3pl_inbound_date
             ),
@@ -202,7 +202,10 @@ def _group_lines(
     return grouped
 
 
-def _summarize(row: DelayEventRow, lines: list[ShipmentLineRow]) -> ShipmentDisplay:
+def summarize_shipment(
+    row: DelayEventRow, lines: list[ShipmentLineRow]
+) -> ShipmentDisplay:
+    """선적 표시값(D13). 지연 조회(4.4)와 분석 실행 상세(4.5) 대상이 같은 함수를 씁니다."""
     quantities = [
         ShipmentLineQuantity(
             line_no=line.line_no,

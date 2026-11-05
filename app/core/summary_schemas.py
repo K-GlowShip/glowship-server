@@ -37,3 +37,18 @@ class RunSummary(CamelModel):
     result_class: str | None = Field(
         description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
     )
+
+
+class UserSummary(CamelModel):
+    """사용자 요약. 키 이름은 역할 이름만 쓴다(예: author, decidedBy, 응답 본문 규칙 5.2)"""
+
+    user_id: uuid.UUID
+    display_name: str
+    role_code: str = Field(description="CLIENT_MEMBER·CLIENT_LEAD·ADMIN")
+
+
+class ResponseOptionSummary(CamelModel):
+    response_option_id: uuid.UUID
+    option_type: str = Field(
+        description="KEEP_PLAN·PRE_DEPARTURE_AIR·KR_AIR_REPLENISH·OTHER_REGION_FULFILL"
+    )

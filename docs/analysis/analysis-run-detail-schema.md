@@ -1,9 +1,9 @@
 # 분석 실행 상세 응답 스키마
 
 `GET /api/v1/analysis-runs/{runId}`(API 명세 v6.2 4.5절)의 응답 모양을 Pydantic 모델로 정의한 내용과, **왜 이렇게 만들었는지**를 설명합니다.
-이번 작업 범위는 응답 스키마와 코드값 열거형까지입니다. 라우터·서비스·DB 조회는 아직 없습니다(6절). 서버의 분석 표는 마이그레이션 `0005`에서 v6.2 DDL과 같아졌고(`analysis_runs`와 분석 결과 표 4개, ORM 모델 포함), 조회는 다음 작업에서 이 스키마에 연결합니다.
+1~10절은 응답 스키마와 코드값 열거형을 만든 작업(GLOW-93, PR #8·#16)의 기록입니다. 라우터·서비스·DB 조회와 스키마 후속(GLOW-115)은 **11절**에 있고, 1~10절 중 GLOW-115로 바뀐 줄은 그 자리에서 고쳤습니다.
 
-작업 중 실패한 것과 그 원인은 8절에 빠짐없이 남겼습니다.
+작업 중 실패한 것과 그 원인은 8절(GLOW-93)과 11.5절(GLOW-115)에 빠짐없이 남겼습니다.
 
 ## 1. 근거 자료
 
@@ -31,8 +31,8 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 │   ├── skuResults: SkuResults            ← 저장 JSON, snake_case 그대로 (sku_results.v1)
 │   └── outcomes[]: OptionOrderOutcome    대응안별 주문 상세 결과
 ├── explanation: Explanation              ← 저장 JSON, snake_case 그대로 (explanation.v1)
-├── drafts[]: MemberDraftSummary
-└── finalDecision: FinalDecisionSummary
+├── drafts[]: MemberDraftSummary          작성자 author(사용자 요약)·responseOption(대응안 요약)
+└── finalDecision: FinalDecisionSummary   선택자 decidedBy(사용자 요약)·responseOption(대응안 요약)
 ```
 
 | 파일 | 내용 |
@@ -60,7 +60,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `impact_source`만 키가 없어도 됨 | 기본값 `None` | 계약 v3 0.1절: v1·v2 엔진 산출물에는 키가 없고 "기록 없음"으로 읽음. 다른 키는 "키 생략 금지"(계약 0절) |
 | 위험 주문을 주문으로 묶음 | `AtRiskOrder.lines[]` | 명세 D21: `at_risk_orders`는 주문 상세 1행. 화면 "위험 주문 N건"은 주문 수 |
 | 기준일은 `date \| None` | `inputBasis.baseDate` | `analysis_runs`에 열이 없고 `dependency_scope.base_date`에만 있음. `ON_HOLD`·`FAILED`는 `dependency_scope`가 NULL(DDL ck36). 진행 중에 STALE이 된 실행도 의존 범위를 저장하기 전이라 NULL(5절) |
-| `runCode`는 `str \| None` | | 명세 D14: v6.2에도 `run_code` 열이 없음. 열이 생기기 전까지 null |
+| `runCode`는 `str \| None` | | 명세 D14: v6.2에도 `run_code` 열이 없음. 열이 생기기 전까지 null. `0006`(PR #21) 뒤로는 열이 NOT NULL이라 항상 값이 있음(2026 H1 21건 확인, 11절) |
 | 응답에서 뺀 DB 열 | `analysis_runs.dependency_scope`·`decision_signature`·`decision_signature_sha256`, `inventory_impact_results.raw_*_shortage_quantity` | 명세 4.5 "응답에 넣지 않는 것"(428줄): 서버 내부 STALE 판정·검증용. 단, `explanation.v1` 안의 `decision_signature_hash`·`prompt_template_sha256`은 계약의 필수 메타데이터라 그대로 나감. 명세 4.5 AI 설명 표(482줄)가 이 메타데이터를 "표시하지 않음"(화면에 표시하지 않음)으로 두고, D20이 설명을 저장된 그대로 내리게 함. 판정 서명 본문(`decision_signature`)과 의존 범위는 나가지 않음(8절 F9) |
 | 대상의 선적·창고·대표 상품은 요약 객체 | `shipment`(`ShipmentSummary`), `warehouse`(`WarehouseSummary`), `representativeSku`(`SkuSummary \| None`) | 명세 4.5 대상 칸, 응답 본문 규칙 5.2. 지연 목록·상세(4.4)와 같은 모델(`app/core/summary_schemas.py`)과 같은 계산 함수(D13, `delay_display`)를 써서 두 화면의 값과 모양이 같음. 상세가 없는 선적은 대표 상품이 null. 단계·입고일·지연 일수도 지연 목록처럼 선적의 현재 값(8절 F16) |
 | `stage`·`sourceDomain`은 `str` | 열거형을 만들지 않음 | 선적·수집 코드값은 다른 영역(B) 모듈이 소유. 이 모듈에서 따로 정의하면 두 곳을 맞춰야 함 |
@@ -80,7 +80,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `AtRiskOrder.orderId`, `AtRiskOrderLine.skuCode` | 주문 묶음의 식별자, 화면 표시용 SKU 코드 |
 | `InventoryImpact.skuCode`·`productName`·`warehouseCode` | 명세는 "SKU·창고별"로만 적음. 화면에 ID만으로는 표시할 수 없음 |
 | `DataVersion.dataSyncRunId`·`finishedAt` | "사용한 수집 목록"의 내용 |
-| `drafts[].memberDraftId`·`displayName`, `finalDecision.finalDecisionId`·`displayName` | 명세의 "작성자"·"선택자"를 화면에 이름으로 표시 |
+| `drafts[].memberDraftId`, `finalDecision.finalDecisionId` | 판단 이력 행의 식별자. 작성자·선택자는 GLOW-115부터 명세 키 `author`·`decidedBy`(사용자 요약 `{userId, displayName, roleCode}`)로 줌(11절) |
 
 ## 4. 저장 JSON과 응답의 경계
 
@@ -105,7 +105,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 
 ## 5. 상태별로 비는 값
 
-명세 4.5 "결과 분류와 상태별로 보이는 내용"을 따릅니다. 모델은 아래 경우를 모두 받아들이도록 null·빈 목록을 허용합니다. 어떤 상태에 무엇을 채울지는 서비스(조회 구현)가 정합니다.
+명세 4.5 "결과 분류와 상태별로 보이는 내용"을 따릅니다. 모델은 아래 경우를 모두 받아들이도록 null·빈 목록을 허용합니다. 조회 서비스(GLOW-115)는 저장된 행을 그대로 읽고 따로 비우거나 만들지 않습니다. 비는 묶음은 저장기가 행을 만들지 않은 결과이고, 실제 DB 21건이 이 표와 맞는지는 시험으로 확인합니다(11절). 표의 `stale*` "null"은 `staleDetectedAt`·`stalePrimaryReason`이고, `staleReasonCodes`는 STALE이 아니면 `[]`입니다(명세 4.5, GLOW-115).
 
 | 상태 | 결과 목록 | `explanation` | 실패 요약 | `stale*` |
 | --- | --- | --- | --- | --- |
@@ -122,9 +122,10 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 
 | 항목 | 상태 |
 | --- | --- |
-| 라우터·서비스·DB 조회 | 없음. 분석 표 5개와 ORM 모델은 Alembic `0005`에서 v6.2 DDL과 같아짐(`0003`은 STALE 사유 4열·`dependency_scope`만, `0005`가 실행 사유·완료 상태·결과 분류·판정 서명과 결과 표 4개). 조회 구현 작업에서 연결 |
-| ORM 행 → 응답 변환 | 없음. 위험 주문을 주문으로 묶는 것, `dependency_scope.base_date` 읽기, 대상 묶음의 route·대표 상품·지연 일수(D13, 지연 목록과 같은 `delay_display` 함수)는 조회 구현에서 함 |
-| `runCode` | null. `run_code` 열 추가(D14, Alembic `0006`) 뒤에 채움 |
+| ~~라우터·서비스·DB 조회~~ | GLOW-115에서 만듦(11절) |
+| ~~ORM 행 → 응답 변환~~ | GLOW-115에서 만듦(11절) |
+| ~~`runCode`~~ | `0006` 뒤로 값이 있음 |
+| `dataWarnings[]` 실제 값 | 아직 항상 `[]`. 입력 확정 때의 수집 상태를 남기는 일은 백그라운드 실행·저장 작업에서 함(GLOW-115 Jira "팀원 참고사항") |
 | 공통 camelCase 변환의 `3pl` 표기 | 이 스키마만 별칭으로 고침. 같은 필드를 쓰는 다른 API(지연 목록·선적)도 같은 문제가 있어 공통 베이스 담당과 공유 필요 |
 
 ## 7. 검증
@@ -205,3 +206,83 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | `app/modules/delay_analysis/presentation/analysis_run_schemas.py` | 응답 모델 |
 | `app/core/schemas.py` | `CamelModel` 공통 베이스 (A 영역, 이번에 수정하지 않음) |
 | `tests/modules/delay_analysis/test_analysis_run_schemas.py` | 단위 테스트 |
+
+## 11. 조회 API 구현과 스키마 후속 (GLOW-115)
+
+`GET /api/v1/analysis-runs/{runId}`를 만들었습니다. 저장된 실행·결과 행을 읽어 위 스키마로 돌려줍니다. 근거는 Jira GLOW-115 설명, 명세 v6.2 4.5(`glowship-plan` `dec7685`, README 해시 5개 일치), 응답 본문 규칙 5.2입니다. 기준 브랜치는 develop `8717165`입니다.
+
+### 11.1 만든 것
+
+| 파일 | 내용 |
+| --- | --- |
+| `presentation/analysis_run_api_router.py` | 라우터. Client(팀원·팀장)만. 없는 실행·다른 고객사 실행은 같은 `404 ANALYSIS_RUN_NOT_FOUND`(명세 6절 `{리소스}_NOT_FOUND`) |
+| `application/analysis_run_detail_service.py` | 고객사 범위·RLS 설정, 대상 계산(D13), `dataBasisAt` 계산. 저장된 결과를 그대로 묶어 돌려줌 |
+| `infrastructure/repository/analysis_run_detail_repository.py` | 읽기 전용 SQL 8개(실행, 사용한 수집, 재고 영향, 위험 주문 줄, 대응안, 주문별 결과, 초안, 최종 선택). 모두 `company_id` 조건 |
+| `application/exception/analysis_run_query_exceptions.py` | `ANALYSIS_RUN_NOT_FOUND` |
+| `presentation/analysis_run_schemas.py` | 스키마 후속(11.2)과 저장 행 → 응답 변환(`AnalysisRunDetailResponse.of`) |
+| `app/core/summary_schemas.py` | 사용자 요약 `UserSummary {userId, displayName, roleCode}`, 대응안 요약 `ResponseOptionSummary {responseOptionId, optionType}`(응답 본문 규칙 5.2 표) |
+| `application/delay_event_query_service.py` | `_summarize`를 `summarize_shipment`로 공개. 지연 조회(4.4)와 이 API의 대상이 같은 함수를 씀(D13) |
+
+### 11.2 스키마 후속 (Jira "응답 스키마 후속")
+
+| 바꾼 것 | 전 | 후 | 근거 |
+| --- | --- | --- | --- |
+| 대응안 사유 문구 | `reason` 있음 | 뺌 | 명세 4.5 "응답에 넣지 않는 것": 저장기가 `reason_code`와 같은 값을 넣고, 화면 문구는 `reasonCode` 라벨로 만듦 |
+| horizon 밖 여부 | `expectedBeyondHorizon` | `isBeyondHorizon` | 명세 4.5 위험 주문 칸 |
+| 재시도 소진 | `retryExhausted` | `isRetryExhausted` | 명세 4.5 실패 요약 칸 |
+| 공급 창고 | `sourceWarehouseId` | `sourceWarehouse`(창고 요약, 없으면 null) | 명세 4.5 주문별 결과 칸, 규칙 5.2 |
+| 초안 작성자·대응안 | `userId`·`displayName`·`responseOptionId` | `author`(사용자 요약)·`responseOption`(대응안 요약, 의견만이면 null) | 명세 4.5 판단 이력 칸, 규칙 5.2 키 이름(사용자는 역할 이름만) |
+| 최종 선택자·대응안 | `userId`·`displayName`·`responseOptionId` | `decidedBy`·`responseOption` | 같음 |
+| STALE 사유 배열 | STALE이 아니면 null | STALE이 아니면 `[]`(null 거부) | 명세 4.5 STALE 칸 |
+| 소수 둘째 자리 | — | 바꿀 필드 없음 | 응답의 소수 필드는 `averageDailySales` 하나이고, 이 필드는 규칙 2.2.1 예외(저장값 6자리, 명세 C29)라 그대로 둠. 원값(`raw_*`)은 응답에 없음 |
+
+**바꾸지 않은 것(사용자 결정 11-05):** 재고 영향·위험 주문 줄의 SKU·창고는 지금처럼 낱개 필드(`skuId`·`skuCode`·`warehouseCode` 등)로 둡니다. 명세 4.5 표와 머지된 스키마가 이 모양이고 Jira 후속 목록에 없습니다. 규칙 5번(연관 대상은 요약 객체)과는 다르므로 바꾸려면 따로 정합니다.
+
+### 11.3 왜 이렇게 만들었나
+
+| 결정 | 이유 |
+| --- | --- |
+| 저장된 행을 그대로 읽고 상태별로 따로 비우지 않음 | Jira: "이 작업은 저장된 결과 읽기". 비는 묶음은 저장기가 행을 만들지 않은 결과임. 서비스가 상태를 보고 지우면 저장값과 응답이 어긋날 수 있음. 대신 실제 DB 21건이 명세 상태 표와 맞는지 시험으로 확인(11.4) |
+| 대상은 지연 조회 저장소(`find_delay_event`·`find_shipment_lines`)와 `summarize_shipment` 재사용 | 명세 4.5 "4.4 지연 목록과 같은 계산 함수(D13)". 따로 쓰면 두 화면의 경로·대표 상품·지연 일수가 어긋날 수 있음(8절 F16과 같은 원인을 피함) |
+| 위험 주문의 주문 단위 값은 그 주문의 첫 줄(가장 작은 줄 번호)에서 읽음 | `at_risk_orders`는 줄마다 귀속·약속·예상 납품·사유를 가짐. 2026 H1 주문 3건(모두 여러 줄)은 줄끼리 값이 같음(11-05 SQL 확인). DDL이 보장하지는 않음(7절 한계와 같음) |
+| 대응안 순서는 고정 순서(KEEP → 출항 전 항공 → 한국 창고 항공 → 다른 권역) | 설명의 `option_explanations[]`와 같은 순서(명세 4.5 AI 설명 표). 추천 순위는 `recommendationRank`로 따로 있음 |
+| `dataBasisAt` = 사용한 수집 중 `finished_at`이 가장 이른 것, 끝나지 않은 수집은 뺌 | 명세 4.5 입력 기준 칸 "사용한 수집 중 가장 오래된 수집 시각" |
+| `dataWarnings`는 `[]` | Jira "팀원 참고사항": 실제 값은 백그라운드 실행·저장 작업 뒤 |
+| `sku_results` 모델(`SkuResultItem` 등)은 건드리지 않음 | PR #26(GLOW-112, 개발 2)이 이 모델을 `infrastructure/stored_json_schemas.py`로 옮김. 겹침을 줄이려고 그 구역은 그대로 두고, #26 머지 뒤 develop을 병합하기로 함(사용자 결정 11-05) |
+
+**알려 둘 점:** 저장된 `sku_results` 항목에 `impact_source` 키가 없으면(v1·v2 엔진 산출물) 응답에는 `"impact_source": null`이 붙습니다(`SkuResultItem` 기본값 `None`). D20 "저장된 그대로"와 엄밀히는 다릅니다. 2026 H1 저장값 856항목은 모두 키가 있어 실제 응답은 저장값과 같습니다(11.4 실제 DB 시험). 이 모델은 #26이 옮기는 구역이라 이번에는 고치지 않았습니다.
+
+### 11.4 검증
+
+| 검사 | 방법 | 결과 |
+| --- | --- | --- |
+| 저장값 일치(인수 조건) | `test_analysis_run_detail_sql.py`: DB 실행 21건을 모두 응답으로 만들고, 서비스와 따로 쓴 SQL로 읽은 값과 비교(실행·STALE·실패 요약 16필드, 대상, 입력 기준, 재고 영향, 위험 주문 줄, 대응안·`skuResults`·주문별 결과, 초안·최종 선택, 설명 JSON 전체) | 통과 |
+| 상태 표 | 같은 파일: `NO_DELAY`·`ON_HOLD`·도구 실패 `FAILED`는 결과 묶음이 비고, 완료 판정이 `READY_FOR_REVIEW`·`NO_RISK`면 재고 영향·기준일이 있음, STALE 사유, 설명 실패 | 통과. 21건 = STALE 14·FINALIZED 2·FAILED 2(도구 실패 1·설명 실패 1)·NO_DELAY 1·NO_RISK 1·ON_HOLD 1 |
+| DB에 없는 상태 | `test_analysis_run_api.py`: `READY_FOR_REVIEW`(STALE 아님), 진행 중(`ANALYZING_IMPACT`), 여러 줄 주문 묶기, 대응안별 결과 붙이기 | 통과 |
+| 권한 | 같은 파일: 팀원·팀장 200, ADMIN·OWNER 403, 쿠키 없음 401, 없는 실행 404, UUID 아님 422 | 통과 |
+| 다른 고객사 | 실제 DB: 21건마다 다른 고객사로 서비스 404, 저장소 조회 8개가 모두 빈 결과 | 통과 |
+| 실제 서버 | 8003 서버에 21건 GET(시험용 토큰, 조회만) | 21건 모두 200, 다른 고객사 404 `ANALYSIS_RUN_NOT_FOUND`, ADMIN 403 |
+| 시험이 틀린 것을 잡는지(변이 시험) | 코드 한 곳을 망가뜨리고 실제 DB 시험 실행 후 원본 복구(바이트 비교): M1 실행 조회 고객사 조건 제거, M2 주문 줄 첫 줄만, M3 STALE 사유 기본값을 다른 값으로, M4 공급 창고 조인 끊기, M5 부족 수량에 기준선 값, M6 위험 주문 조회 고객사 조건 제거 | 처음엔 M1·M6을 못 잡음(11.5 G1·G2). 시험을 고친 뒤 6건 모두 잡음 |
+| 린트·전체 시험 | `uv run --locked ruff check .`·`ruff format --check .`, `uvx --python 3.12 ruff@latest check .`·`format --check .`, `uv run --locked pytest` | 통과. 전체 727건(develop `8717165` 703건 + 새 24건), 건너뜀 0 |
+
+**검증의 한계**
+- 실제 DB에 `READY_FOR_REVIEW`(STALE 아님)·진행 중 실행·`READY_ORDER_RISK`·`DELAY_INDUCED` 위험 주문이 없어 이 경우는 직접 만든 행으로만 확인했습니다.
+- 위험 주문은 2026 H1 전체에 주문 3건(한 실행)뿐입니다.
+
+### 11.5 작업 중 실패와 원인
+
+| # | 실패 | 원인 | 조치 |
+| --- | --- | --- | --- |
+| G1 | 실제 DB 시험이 처음부터 모두 통과했는데, 실행 조회의 고객사 조건을 지워도(M1) 통과함 | 다른 고객사 404를 서비스 결과로만 봄. 실행 조회가 다른 고객사 실행을 돌려줘도 뒤이은 지연 조회(고객사 조건 있음)가 None이라 결국 404가 남 | 저장소 조회 각각을 다른 고객사로 불러 비는지 따로 확인 |
+| G2 | G1을 고친 뒤에도 위험 주문 조회의 고객사 조건을 지운 변이(M6)를 못 잡음 | "결과 행이 다 있는 실행 하나"를 골랐는데, 그 조건(최종 선택 + 주문별 결과)에 맞는 실행이 DB에 0건이라 위험 주문이 없는 실행으로 시험함 | 실행 21건 모두를 돌고, 각 조회가 자기 고객사로는 행을 돌려주는 실행이 하나 이상 있는지도 확인 |
+| G3 | 새 단위 시험 1건 실패: 응답 `skuResults`에 `impact_source: null`이 붙음 | 시험 입력에 `impact_source` 키를 넣지 않음. 모델 기본값이 null을 붙이는 동작은 원래 있던 것(11.3 "알려 둘 점") | 실제 데이터 856항목에 키가 모두 있음을 확인하고 시험 입력을 실제 데이터처럼 고침. 동작은 #26 구역이라 보고만 함 |
+| G4 | 8003 서버가 `summary_schemas.py` 변경 뒤 "Reloading..."에서 멈추고, 옛 프로세스가 새 경로 없이 계속 응답함 | Windows에서 `uvicorn --reload`의 재시작이 끝나지 않음 | 8003만 내리고 `--reload` 없이 다시 띄움. OpenAPI에 새 경로가 있는지 확인한 뒤 실제 서버 검사 |
+| G5 | 첫 `ruff check`에서 import 순서 2건 | 스키마 파일에 저장소 import를 스크립트로 넣으면서 정렬하지 않음 | `ruff check --fix` 뒤 고정 버전·최신(3.12) 둘 다 통과 확인 |
+
+### 11.6 시험 (GLOW-115에서 더한 것)
+
+| 파일 | 시험 | 확인 내용 |
+| --- | --- | --- |
+| `test_analysis_run_schemas.py` | `test_option_has_no_reason_field`, `test_flags_use_is_prefix`, `test_stale_reason_codes_is_empty_list_when_not_stale`, `test_outcome_source_warehouse_is_warehouse_summary`, `test_decision_history_uses_user_and_option_summaries` | 11.2 후속 필드 모양. 기존 시험 입력도 새 필드 이름으로 고침 |
+| `test_analysis_run_api.py`(DB 없음) | 응답 변환 8건, 라우터 5개 함수(매개변수 포함 7건) | 11.4 "DB에 없는 상태"·"권한" |
+| `test_analysis_run_detail_sql.py`(실제 DB, 읽기 전용·롤백) | `test_every_run_matches_stored_values`, `test_result_rows_match_stored_rows`, `test_status_table_empty_bundles`, `test_other_company_and_missing_run_are_same_404` | 11.4 "저장값 일치"·"상태 표"·"다른 고객사". DB에 접속할 수 없거나 head가 아니면 건너뜀(`db_session`) |

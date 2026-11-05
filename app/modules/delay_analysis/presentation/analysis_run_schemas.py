@@ -14,7 +14,17 @@ from pydantic import (
 )
 
 from app.core.schemas import CamelModel
-from app.core.summary_schemas import ShipmentSummary, SkuSummary, WarehouseSummary
+from app.core.summary_schemas import (
+    ResponseOptionSummary,
+    ShipmentSummary,
+    SkuSummary,
+    UserSummary,
+    WarehouseSummary,
+)
+from app.modules.delay_analysis.application.analysis_run_detail_service import (
+    AnalysisRunDetail,
+    AnalysisTargetDetail,
+)
 from app.modules.delay_analysis.infrastructure.analysis_enums import (
     AnalysisRunStatus,
     CalculationStatus,
@@ -41,6 +51,12 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
     TriggerReason,
     TriggerType,
     WaitCause,
+)
+from app.modules.delay_analysis.infrastructure.repository.analysis_run_detail_repository import (
+    AtRiskLineRow,
+    FinalDecisionRow,
+    OptionOutcomeRow,
+    ResponseOptionRow,
 )
 
 """
@@ -295,7 +311,9 @@ class AtRiskOrder(CamelModel):
     promised_delivery_at: datetime
     baseline_expected_delivery_at: datetime | None
     expected_delivery_at: datetime
-    expected_beyond_horizon: bool
+    is_beyond_horizon: bool = Field(
+        description="예상 납품이 계산 범위(horizon) 밖인지 (at_risk_orders.expected_beyond_horizon)"
+    )
     risk_reason: str
     lines: list[AtRiskOrderLine]
 
@@ -310,7 +328,9 @@ class OptionOrderOutcome(CamelModel):
     secured_quantity: int
     recovered_quantity: int
     expected_delivery_at: datetime | None
-    source_warehouse_id: uuid.UUID | None
+    source_warehouse: WarehouseSummary | None = Field(
+        description="공급 창고 요약. 공급 창고가 없으면 null"
+    )
     supply_source: SupplySource | None
 
 
@@ -319,13 +339,13 @@ class ResponseOption(CamelModel):
     대응안 비교 1행 (response_options)
       - 주문 집계(fully·delayInduced·itemSecuredBlocked·notRecovered)는 판정 불가·사전 조건 실패면 null(집계 NULL 규칙 G-1~G-3).
       - 화면 "위험 주문"(남은 위험) = notRecoveredOrders. 비용 필드는 없다(U1).
+      - response_options.reason 은 넣지 않는다. 저장기가 reason_code 와 같은 값을 넣고, 화면 문구는 reasonCode 라벨로 만든다(명세 4.5).
     """
 
     response_option_id: uuid.UUID
     option_type: OptionType
     feasibility_status: FeasibilityStatus
     reason_code: OptionReasonCode | None
-    reason: str | None
     required_quantity: int
     securable_quantity: int | None
     reduction_committed_total: int | None
@@ -341,19 +361,23 @@ class ResponseOption(CamelModel):
 
 
 class MemberDraftSummary(CamelModel):
+    """팀원 의견·선택 초안 (member_drafts). 작성자·대응안은 요약 객체(응답 본문 규칙 5.2)"""
+
     member_draft_id: uuid.UUID
-    user_id: uuid.UUID
-    display_name: str
-    response_option_id: uuid.UUID | None
+    author: UserSummary
+    response_option: ResponseOptionSummary | None = Field(
+        description="초안이 고른 대응안. 의견만 남겼으면 null"
+    )
     opinion_text: str | None
     created_at: datetime
 
 
 class FinalDecisionSummary(CamelModel):
+    """팀장 최종 선택 (final_decisions). 선택한 사람·대응안은 요약 객체(응답 본문 규칙 5.2)"""
+
     final_decision_id: uuid.UUID
-    user_id: uuid.UUID
-    display_name: str
-    response_option_id: uuid.UUID
+    decided_by: UserSummary
+    response_option: ResponseOptionSummary
     reason_text: str
     decided_at: datetime
     checked_seq: int
@@ -382,10 +406,10 @@ class AnalysisRunDetailResponse(CamelModel):
     started_at: datetime
     finished_at: datetime | None
 
-    # STALE (status = STALE 일 때만 값이 있다, D23)
+    # STALE (status = STALE 일 때만 값이 있다, D23). STALE 이 아니면 staleReasonCodes 는 null 이 아니라 [] (명세 4.5)
     stale_detected_at: datetime | None
     stale_primary_reason: StaleReason | None
-    stale_reason_codes: list[StaleReasonCode] | None
+    stale_reason_codes: list[StaleReasonCode]
 
     target: AnalysisTarget
     input_basis: InputBasis
@@ -406,9 +430,228 @@ class AnalysisRunDetailResponse(CamelModel):
     failed_step: FailedStep | None
     failure_code: str | None
     attempt_count: int | None
-    retry_exhausted: bool | None
+    is_retry_exhausted: bool | None = Field(
+        description="재시도를 모두 썼는지 (analysis_runs.retry_exhausted)"
+    )
     failure_message: str | None
 
     # 판단 이력
     drafts: list[MemberDraftSummary]
     final_decision: FinalDecisionSummary | None
+
+    @classmethod
+    def of(cls, detail: AnalysisRunDetail) -> AnalysisRunDetailResponse:
+        run = detail.run
+        return cls(
+            run_id=run.analysis_run_id,
+            run_code=run.run_code,
+            version_no=run.version_no,
+            parent_run_id=run.parent_analysis_run_id,
+            is_latest=run.is_latest,
+            status=run.status,
+            completed_status=run.completed_status,
+            result_class=run.result_class,
+            status_reason=run.status_reason,
+            trigger_type=run.trigger_type,
+            trigger_reason=run.trigger_reason,
+            requested_by=run.requested_by_user_id,
+            request_reason=run.request_reason,
+            requested_at=run.requested_at,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            stale_detected_at=run.stale_detected_at,
+            stale_primary_reason=run.stale_primary_reason,
+            stale_reason_codes=run.stale_reason_codes or [],
+            target=_target(detail.target),
+            input_basis=InputBasis(
+                input_seq=run.input_seq,
+                base_date=run.base_date,
+                operating_rule_set_id=run.operating_rule_set_id,
+                operating_rule_version_no=run.operating_rule_version_no,
+                calculation_contract_version=run.calculation_contract_version,
+                allocation_rule_version=run.allocation_rule_version,
+                data_versions=[
+                    DataVersion(
+                        data_sync_run_id=v.data_sync_run_id,
+                        source_domain=v.source_domain,
+                        finished_at=v.finished_at,
+                    )
+                    for v in detail.data_versions
+                ],
+                data_basis_at=detail.data_basis_at,
+                data_warnings=[],
+            ),
+            inventory_impacts=[
+                InventoryImpact.model_validate(row, from_attributes=True)
+                for row in detail.inventory_impacts
+            ],
+            at_risk_orders=_group_at_risk_orders(detail.at_risk_lines),
+            response_options=_response_options(
+                detail.response_options, detail.option_outcomes
+            ),
+            explanation=Explanation.model_validate(run.final_explanation_json)
+            if run.final_explanation_json is not None
+            else None,
+            explanation_validation_status=run.explanation_validation_status,
+            explanation_generated_at=run.explanation_generated_at,
+            model_name=run.model_name,
+            prompt_version=run.prompt_version,
+            failed_step=run.failed_step,
+            failure_code=run.failure_code,
+            attempt_count=run.attempt_count,
+            is_retry_exhausted=run.retry_exhausted,
+            failure_message=run.failure_message,
+            drafts=[
+                MemberDraftSummary(
+                    member_draft_id=d.member_draft_id,
+                    author=UserSummary(
+                        user_id=d.user_id,
+                        display_name=d.display_name,
+                        role_code=d.role_code,
+                    ),
+                    response_option=ResponseOptionSummary(
+                        response_option_id=d.response_option_id,
+                        option_type=d.option_type,
+                    )
+                    if d.response_option_id is not None
+                    else None,
+                    opinion_text=d.opinion_text,
+                    created_at=d.created_at,
+                )
+                for d in detail.member_drafts
+            ],
+            final_decision=_final_decision(detail.final_decision),
+        )
+
+
+# --- 저장 행 → 응답 변환 -----------------------------------------------------------------------
+
+
+def _target(target: AnalysisTargetDetail) -> AnalysisTarget:
+    """지연 목록·상세(4.4)와 같은 요약 객체·표시값 (D13)"""
+    row = target.row
+    line = target.shipment.representative_line
+    return AnalysisTarget(
+        delay_event_id=row.delay_event_id,
+        episode_no=row.episode_no,
+        shipment=ShipmentSummary(
+            shipment_id=row.shipment_id, shipment_code=row.shipment_code
+        ),
+        warehouse=WarehouseSummary(
+            warehouse_id=row.warehouse_id,
+            warehouse_code=row.warehouse_code,
+            region_code=row.region_code,
+        ),
+        representative_sku=SkuSummary(
+            sku_id=line.sku_id, sku_code=line.sku_code, product_name=line.product_name
+        )
+        if line
+        else None,
+        route=target.shipment.route,
+        stage=row.stage,
+        planned_3pl_inbound_date=row.planned_3pl_inbound_date,
+        expected_3pl_inbound_date=row.expected_3pl_inbound_date,
+        delay_days=target.delay_days,
+    )
+
+
+def _group_at_risk_orders(lines: list[AtRiskLineRow]) -> list[AtRiskOrder]:
+    """
+    at_risk_orders 는 주문 상세 1줄이 1행이다. 주문별로 묶고 상세는 lines[] 에 넣는다(D21, U12).
+    주문 단위 값(귀속·약속·예상 납품·horizon 밖 여부·사유)은 저장기가 주문의 모든 줄에 같게 넣는다(2026 H1 데이터 확인).
+    저장 순서(주문 코드·줄 번호)대로 받으므로, 주문 단위 값은 그 주문의 첫 줄(가장 작은 줄 번호)에서 읽는다.
+    """
+    orders: dict[uuid.UUID, AtRiskOrder] = {}
+    for line in lines:
+        order = orders.get(line.order_id)
+        if order is None:
+            order = orders[line.order_id] = AtRiskOrder(
+                order_id=line.order_id,
+                order_code=line.order_code,
+                risk_attribution=line.risk_attribution,
+                promised_delivery_at=line.promised_delivery_at,
+                baseline_expected_delivery_at=line.baseline_expected_delivery_at,
+                expected_delivery_at=line.expected_delivery_at,
+                is_beyond_horizon=line.expected_beyond_horizon,
+                risk_reason=line.risk_reason,
+                lines=[],
+            )
+        order.lines.append(
+            AtRiskOrderLine(
+                at_risk_order_id=line.at_risk_order_id,
+                order_line_id=line.order_line_id,
+                line_no=line.line_no,
+                sku_id=line.sku_id,
+                sku_code=line.sku_code,
+                open_quantity=line.open_quantity,
+                wait_cause=line.wait_cause,
+            )
+        )
+    return list(orders.values())
+
+
+def _response_options(
+    options: list[ResponseOptionRow], outcomes: list[OptionOutcomeRow]
+) -> list[ResponseOption]:
+    """대응안마다 저장된 주문 상세 결과(outcomes[])를 붙인다. 공급 창고는 창고 요약 객체로 바꾼다."""
+    by_option: dict[uuid.UUID, list[OptionOrderOutcome]] = {
+        o.response_option_id: [] for o in options
+    }
+    for x in outcomes:
+        by_option[x.response_option_id].append(
+            OptionOrderOutcome(
+                at_risk_order_id=x.at_risk_order_id,
+                outcome=x.outcome,
+                not_recovered_reason=x.not_recovered_reason,
+                line_securement_status=x.line_securement_status,
+                secured_quantity=x.secured_quantity,
+                recovered_quantity=x.recovered_quantity,
+                expected_delivery_at=x.expected_delivery_at,
+                source_warehouse=WarehouseSummary(
+                    warehouse_id=x.source_warehouse_id,
+                    warehouse_code=x.source_warehouse_code,
+                    region_code=x.source_region_code,
+                )
+                if x.source_warehouse_id is not None
+                else None,
+                supply_source=x.supply_source,
+            )
+        )
+    return [
+        ResponseOption(
+            response_option_id=o.response_option_id,
+            option_type=o.option_type,
+            feasibility_status=o.feasibility_status,
+            reason_code=o.reason_code,
+            required_quantity=o.required_quantity,
+            securable_quantity=o.securable_quantity,
+            reduction_committed_total=o.reduction_committed_total,
+            expected_delivery_date=o.expected_delivery_date,
+            fully_recovered_orders=o.fully_recovered_orders,
+            delay_induced_recovered_orders=o.delay_induced_recovered_orders,
+            item_secured_blocked_orders=o.item_secured_blocked_orders,
+            not_recovered_orders=o.not_recovered_orders,
+            recommendation_rank=o.recommendation_rank,
+            is_recommended=o.is_recommended,
+            sku_results=SkuResults.model_validate(o.sku_results),
+            outcomes=by_option[o.response_option_id],
+        )
+        for o in options
+    ]
+
+
+def _final_decision(row: FinalDecisionRow | None) -> FinalDecisionSummary | None:
+    if row is None:
+        return None
+    return FinalDecisionSummary(
+        final_decision_id=row.final_decision_id,
+        decided_by=UserSummary(
+            user_id=row.user_id, display_name=row.display_name, role_code=row.role_code
+        ),
+        response_option=ResponseOptionSummary(
+            response_option_id=row.response_option_id, option_type=row.option_type
+        ),
+        reason_text=row.reason_text,
+        decided_at=row.decided_at,
+        checked_seq=row.checked_seq,
+    )
