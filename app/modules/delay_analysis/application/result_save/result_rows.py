@@ -31,6 +31,7 @@ from app.modules.order.infrastructure.order_enums import OrderLineStatus
       - 에이전트가 돌려준 도구 출력(T6·T7·T10·T11)과 실행 기준값을 받아 결과 표 4개의 행과
         analysis_runs 에서 바꿀 열을 만든다. DB 를 읽지 않는 순수 함수다(저장은 result_save_service).
       - 열 규칙은 데이터 팀 엔진 storage.py rows_for(61~134행)와 같다. 열마다 근거 행을 적었다.
+      - 새 행 ID 는 UUIDv7(app/core/orm.py 테이블 식별자 기본값과 같음). 엔진은 overlay 재현용으로 uuid5 를 쓴다.
       - 계약 Q11("T6·T7 출력에 없는 저장 열은 결과 저장에서 더한다"): 가용·확정 수요·평균 판매는
         run_basis_from_tools 가 T2·T4·T5 출력에서 엔진 정의 그대로 계산한다.
 """
@@ -252,7 +253,7 @@ def build_result_rows(
         rows.inventory_impact_results.append(
             {
                 **common,
-                "inventory_impact_result_id": uuid.uuid4(),
+                "inventory_impact_result_id": uuid.uuid7(),
                 "sku_id": uuid.UUID(item.sku_id),
                 "warehouse_id": basis.destination_warehouse_id,
                 "sku_scope": item.sku_scope,
@@ -294,7 +295,7 @@ def build_result_rows(
             f" > 약속 {promised.date().isoformat()}"
         )
         for line in risk.lines:
-            row_id = uuid.uuid4()
+            row_id = uuid.uuid7()
             risk_id[line.order_line_id] = row_id
             rows.at_risk_orders.append(
                 {
@@ -318,7 +319,7 @@ def build_result_rows(
         return rows
     ranks = {r.option_type: r for r in result.option_ranking.options}
     for option in result.option_outcomes.options:  # storage.py 112~134행
-        option_id = uuid.uuid4()
+        option_id = uuid.uuid7()
         rank = ranks[option.option_type]
         rows.response_options.append(
             {
@@ -351,7 +352,7 @@ def build_result_rows(
             rows.option_order_outcomes.append(
                 {
                     **common,
-                    "option_order_outcome_id": uuid.uuid4(),
+                    "option_order_outcome_id": uuid.uuid7(),
                     "response_option_id": option_id,
                     "at_risk_order_id": at_risk_id,
                     "outcome": outcome.outcome,

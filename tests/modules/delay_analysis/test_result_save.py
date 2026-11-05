@@ -16,6 +16,7 @@ from app.modules.delay_analysis.application.agent.tools import (
 )
 from app.modules.delay_analysis.application.result_save.result_rows import (
     AnalysisResult,
+    Explanation,
     ResultSaveInputError,
     RunBasis,
     SkuSupplement,
@@ -467,6 +468,8 @@ async def _result_from_db(db, run_id) -> AnalysisResult:
         basis=basis, inventory_impact=impact, at_risk_orders=at_risk, option_outcomes=outcomes, option_ranking=ranking,
         dependency_scope=run.dependency_scope, decision_signature=run.decision_signature,
         decision_signature_sha256=run.decision_signature_sha256,
+        explanation=Explanation(run.model_name, run.prompt_version, run.final_explanation_json, run.explanation_generated_at)
+        if run.final_explanation_json is not None else None,
     )  # fmt: skip
 
 
@@ -495,6 +498,16 @@ async def test_overlay_results_round_trip(db_write_session):
             assert after[part] == before[part], f"{run_id} {part} 이 원래 행과 다름"
         for part in counts:
             counts[part] += len(after[part])
+        for entity, key in (
+            (InventoryImpactResult, "inventory_impact_result_id"),
+            (AtRiskOrder, "at_risk_order_id"),
+            (ResponseOption, "response_option_id"),
+            (OptionOrderOutcome, "option_order_outcome_id"),
+        ):
+            ids = [getattr(r, key) for r in await _rows(db, entity, run_id)]
+            assert all(i.version == 7 for i in ids), (
+                f"{key} 가 UUIDv7 이 아님"
+            )  # app/core/orm.py 기본값과 같은 규칙
         finished = await db.scalar(
             select(AnalysisRun.finished_at).where(AnalysisRun.analysis_run_id == run_id)
         )
@@ -543,3 +556,103 @@ async def test_stale_run_is_not_overwritten(db_write_session):
         assert await _rows(db, entity, run_id) == [], (
             f"{entity.__tablename__} 에 행이 생김"
         )
+
+
+# --- 6. 설명 필수와 완료 뒤 재판정 (#38 리뷰) -------------------------------------------------------
+
+
+def test_ready_needs_explanation_and_no_risk_has_none():
+    import asyncio
+
+    ready = _impact("READY_FOR_REVIEW", "FORECAST_ONLY_READY")
+    explanation = Explanation(
+        "mock/m",
+        "p@1",
+        {"schema_version": "explanation.v1"},
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    for result in (
+        _result(inventory_impact=ready),
+        _result(explanation=explanation),
+    ):  # READY 설명 없음 / NO_RISK 설명 있음
+        with pytest.raises(ResultSaveInputError):
+            asyncio.run(
+                save_analysis_result(
+                    None,
+                    company_id=uuid.uuid4(),
+                    analysis_run_id=uuid.uuid4(),
+                    result=result,
+                )
+            )
+
+
+# 최신 버전이면서 입력 순번 뒤 관련 변경으로 STALE 이 된 실행 (overlay: 에피소드는 모두 닫혀 있음)
+_RECHECK_RUN = text(
+    """
+    SELECT r.analysis_run_id, r.company_id, r.delay_event_id, r.input_seq, r.stale_detected_seq
+      FROM analysis_runs r
+     WHERE r.is_latest AND r.status = 'STALE' AND r.completed_status = 'READY_FOR_REVIEW' AND r.stale_detected_seq IS NOT NULL
+     ORDER BY r.stale_detected_seq, r.analysis_run_id
+     LIMIT 1
+    """
+)
+_REOPEN = "UPDATE delay_events SET closed_at = NULL, close_reason = NULL WHERE delay_event_id = :event_id"
+
+
+class _SameSignature:
+    """2차 재계산이 '서명 그대로'라고 답하는 가짜 재계산기"""
+
+    async def signature_changed(self, run, changes):
+        return False
+
+
+async def _recheck_case(db):
+    row = (await db.execute(_RECHECK_RUN)).first()
+    if row is None:
+        pytest.skip("재판정할 실행이 없는 DB 라 건너뜀")
+    run_id, company_id, event_id, input_seq, stale_seq = row
+    result = await _result_from_db(db, run_id)
+    await _clear(db, run_id)
+    await db.execute(
+        text(_REOPEN), {"event_id": event_id}
+    )  # 열린 에피소드여야 재판정 대상(닫히면 동결)
+    db.expire_all()
+    return run_id, company_id, input_seq, stale_seq, result
+
+
+async def test_change_after_input_seq_makes_saved_result_stale(db_write_session):
+    """분석하는 동안(입력 순번 뒤) 의존 범위에 걸린 변경이 있으면, 저장 직후 재판정으로 STALE (Q-13a)"""
+    db = db_write_session
+    run_id, company_id, input_seq, stale_seq, result = await _recheck_case(db)
+    outcome = await save_analysis_result(
+        db, company_id=company_id, analysis_run_id=run_id, result=result
+    )
+    assert (outcome.saved, outcome.status) == (True, "STALE")
+    run = await db.scalar(
+        select(AnalysisRun)
+        .where(AnalysisRun.analysis_run_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+    assert (run.status, run.completed_status) == (
+        "STALE",
+        "READY_FOR_REVIEW",
+    )  # 결과는 보존, ck25
+    assert (
+        input_seq < run.stale_detected_seq <= stale_seq
+    )  # 재계산기가 없으면 1차에 처음 걸린 수집
+    assert run.stale_detected_at == run.finished_at  # 같은 트랜잭션의 같은 DB 시각
+    assert len(await _rows(db, InventoryImpactResult, run_id)) > 0
+
+
+async def test_recheck_keeps_result_when_signature_is_same(db_write_session):
+    """2차 재계산이 서명 그대로면 STALE 로 바꾸지 않는다 (재계산기 주입)"""
+    db = db_write_session
+    run_id, company_id, *_, result = await _recheck_case(db)
+    outcome = await save_analysis_result(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        result=result,
+        recalculator=_SameSignature(),
+    )
+    assert (outcome.saved, outcome.status) == (True, "READY_FOR_REVIEW")
