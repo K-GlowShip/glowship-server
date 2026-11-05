@@ -61,7 +61,7 @@ app/
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
     ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개 + 분석 에이전트(application/agent)
     └── decision/                  # member_drafts, final_decisions
-migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열, 0006: 표시용 실행 ID run_code)
+migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열, 0006: 표시용 실행 ID run_code, 0007: 워커의 delay_events 종료 열 UPDATE 권한)
 scripts/
 └── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 ```
@@ -201,7 +201,7 @@ uv run uvicorn app.main:app --reload
 - 스키마 기준: v6.2 DDL `erd_glowship_postgres_v6_2_analysis_ddl.sql` (27개 테이블). 빈 DB에 마이그레이션 `0001`(v5 스키마 + RLS)부터 `0005`까지 적용하면 v6.2 DDL과 같은 모양이 되고, `0006`이 DDL에 없는 `analysis_runs.run_code`(명세 D14)를 더합니다. 단, `users`는 `created_at`·`updated_at` 컬럼과 `varchar(50·80·50)` 길이(`display_name`은 0002에서 30→50)를 유지합니다.
 - 테이블은 서버 기동 시 만들지 않고 **Alembic 마이그레이션으로만** 생성·변경합니다 (`migrations/versions/`).
 - ORM 모델은 각 모듈의 `infrastructure/`에 있고, `app/core/model_registry.py`에 등록해야 autogenerate 대상이 됩니다.
-- 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
+- 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 워커 역할은 `delay_events`를 조회·추가만 하고, `0007`이 지연 에피소드 종료에 필요한 `closed_at`·`close_reason` 두 열의 UPDATE만 더 줍니다(GLOW-117, ERD 설명 4절 결정). v6.2 DDL로 만든 DB에도 `0007`로 이 권한이 생깁니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
 
 v6.2 DDL로 만든 DB(팀 공통 개발 DB)의 마이그레이션:
 
