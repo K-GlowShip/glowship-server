@@ -28,6 +28,17 @@ class SkuSummary(CamelModel):
     product_name: str
 
 
+class UserSummary(CamelModel):
+    """사용자 요약 (작성자·선택자 등 역할 이름으로 담는다: author, decidedBy). 이메일은 넣지 않는다."""
+
+    user_id: uuid.UUID
+    display_name: str
+    role_code: str = Field(
+        description="OWNER·ADMIN·CLIENT_MEMBER(팀원)·CLIENT_LEAD(팀장)",
+        examples=["CLIENT_LEAD"],
+    )
+
+
 class RunSummary(CamelModel):
     run_id: uuid.UUID
     run_code: str | None = Field(
