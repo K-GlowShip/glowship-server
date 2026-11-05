@@ -110,6 +110,16 @@ DB의 고객사 범위 테이블에는 RLS 정책이 걸려 있고, 정책과 `S
   이 함수는 요청자가 해당 고객사에 배정되고 `can_manage_client_accounts`가 참인 ACTIVE ADMIN일 때만 실행됩니다.
   `POST /api/v1/admin/users`가 이 경로를 사용합니다.
 
+### 데이터 접근 원칙
+
+세부 기준과 예외는 [docs/backend/data-access.md](docs/backend/data-access.md)에 있습니다.
+
+- 한 행을 읽고 바꾸는 처리는 ORM 엔터티, 여러 행을 한 번에 넣거나 바꾸는 처리는 ORM 모델을 쓴 SQLAlchemy 식으로 합니다.
+- 화면용 목록·집계 조회와 PostgreSQL 기능(RLS 설정·잠금·`SECURITY DEFINER` 함수)은 `bindparam`으로 타입을 정한 직접 SQL(`text()`)로 합니다.
+- `relationship()`은 쓰지 않고, 연관 데이터는 쿼리에서 `(company_id, id)`로 JOIN합니다.
+- DB 접근은 각 모듈의 `infrastructure/repository/`에서만 하고, 쿼리마다 `company_id` 조건을 직접 겁니다.
+- 커밋은 요청 단위 세션(`get_db`)이 합니다. 리포지토리·서비스는 `flush()`까지만 합니다(예외: 수집 적재 서비스).
+
 ### 에러 응답
 
 모든 에러 응답은 아래 형식으로 통일합니다.
