@@ -1,7 +1,8 @@
+import os
 import secrets
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -26,8 +27,14 @@ from app.modules.data_sync.infrastructure.repository.ingest_repository import (
       - RLS 정책은 app_context_allowed(current_user) 로 역할 이름을 비교한다(0001). 로컬 개발 DB 는 superuser 라
         RLS 를 우회하므로, 시험 안에서 워커 역할에 속한 임시 로그인 계정을 만들어 그 계정으로 붙는다.
       - 임시 계정은 시험이 끝나면 지운다. 수집 실행 INSERT 는 트랜잭션 안에서만 하고 롤백한다(DB 는 그대로).
+      - 역할은 DB 가 아니라 클러스터(컨테이너) 전체 객체라 같은 컨테이너의 다른 DB 에도 보인다(PR #40 rouiv 리뷰).
+        시험이 강제로 끊겨 계정이 남아도 쓸 수 없게 비밀번호를 10분 뒤 만료(VALID UNTIL)로 만들고,
+        다음 실행 시작 때 남은 임시 계정(tmp_worker_login_*)을 먼저 지운다.
       - superuser 가 아니어서 계정을 만들 수 없거나 DB 에 붙을 수 없으면 건너뛴다(CI 등).
+        로그인 계정을 만들고 싶지 않은 환경이면 SKIP_DB_ROLE_TESTS=1 로 건너뛴다.
 """
+
+TMP_ROLE_PREFIX = "tmp_worker_login_"
 
 
 def _admin_engine() -> AsyncEngine:
@@ -41,9 +48,14 @@ def _admin_engine() -> AsyncEngine:
 
 @pytest.fixture
 async def worker_login() -> AsyncGenerator[tuple[str, str]]:
-    """워커 역할에 속한 임시 로그인 계정 (이름, 비밀번호). 끝나면 지운다"""
-    name = f"tmp_worker_login_{uuid.uuid4().hex[:12]}"
+    """워커 역할에 속한 임시 로그인 계정 (이름, 비밀번호). 10분 뒤 비밀번호 만료, 끝나면 지운다"""
+    if os.environ.get("SKIP_DB_ROLE_TESTS") == "1":
+        pytest.skip("SKIP_DB_ROLE_TESTS=1 이라 임시 로그인 계정 시험을 건너뜀")
+    name = f"{TMP_ROLE_PREFIX}{uuid.uuid4().hex[:12]}"
     password = secrets.token_hex(16)
+    valid_until = (datetime.now(UTC) + timedelta(minutes=10)).strftime(
+        "%Y-%m-%d %H:%M:%S+00"
+    )
     admin = _admin_engine()
     try:
         async with admin.connect() as conn:
@@ -58,7 +70,19 @@ async def worker_login() -> AsyncGenerator[tuple[str, str]]:
                 {"r": WORKER_DB_ROLE},
             ):
                 pytest.skip("워커 역할이 없는 DB 라 건너뜀")
-            await conn.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
+            # 지난 실행이 강제로 끊겨 남은 임시 계정을 먼저 지운다
+            leftovers = await conn.scalars(
+                text("SELECT rolname FROM pg_roles WHERE starts_with(rolname, :p)"),
+                {"p": TMP_ROLE_PREFIX},
+            )
+            for leftover in list(leftovers):
+                await conn.execute(text(f'DROP ROLE IF EXISTS "{leftover}"'))
+            await conn.execute(
+                text(
+                    f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"
+                    f" VALID UNTIL '{valid_until}'"
+                )
+            )
     except (OSError, SQLAlchemyError) as error:
         await admin.dispose()
         pytest.skip(f"DB 에 접속할 수 없어 건너뜀: {type(error).__name__}")
