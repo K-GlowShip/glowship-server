@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # 비우면(VIRTUAL_CLOCK_START=) 서버의 지금 시각을 쓴다. 실제 원천을 붙이는 환경에서만 비운다.
     virtual_clock_start: datetime | None = datetime(2026, 7, 2, tzinfo=UTC)
 
+    # 가상 TMS 시나리오 파일 (GLOW-49, infrastructure/virtual_tms.py). 수동 수집(API 25) SHIPMENT 가 이 파일에서 응답을 읽는다.
+    # 비우면 원천 응답이 없는 것으로 보고 0건 수집을 남긴다. 요청마다 다시 읽으므로 파일을 고쳐도 재시작이 필요 없다.
+    virtual_tms_scenario_path: Path | None = None
+
     # Analysis engine
     # 데이터 팀 분석 엔진 폴더(glowship_engine·synth2025_v5 의 부모). 엔진 코드는 저장소에 넣지 않고 이 경로에서
     # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
@@ -66,6 +70,13 @@ class Settings(BaseSettings):
     def _blank_engine_dir_is_unset(cls, value: object) -> object:
         # `GLOWSHIP_ENGINE_DIR=` 처럼 값을 비워 두면 Path("") 가 현재 폴더(".")가 되어 설정된 것으로 보인다.
         # 빈 값·공백은 설정하지 않은 것(None)으로 본다.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("virtual_tms_scenario_path", mode="before")
+    @classmethod
+    def _blank_scenario_path_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
