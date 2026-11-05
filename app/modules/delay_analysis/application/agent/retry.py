@@ -89,6 +89,8 @@ class FailureSummary:
     analysis_runs 실패 요약 5컬럼 + 그때의 상태
       - FAILED·ON_HOLD 일 때만 만든다(ck10·ck11: 5개가 모두 차거나 모두 빔).
       - 만들 때 DDL 규칙을 먼저 확인한다(ck12·ck13·ck14·ck26). 어긋나면 ValueError.
+      - columns() 는 실행을 실패·보류로 끝낼 때 analysis_runs 에서 바꿔야 하는 열을 모두 돌려준다.
+        진행 중 행에 이 값을 덮어쓰면 analysis_runs CHECK 42개를 모두 통과한다(시험으로 확인).
     """
 
     status: AnalysisOutcome
@@ -125,9 +127,19 @@ class FailureSummary:
             )  # API 명세 4.5, 정답 E9 v1
 
     def columns(self) -> dict[str, Any]:
-        """서비스가 analysis_runs 에 그대로 넣는 값(상태 포함)"""
+        """
+        실행을 실패·보류로 끝낼 때 analysis_runs 에서 바꿔야 하는 열(서비스가 그대로 넣는다)
+          - completed_status = status (ck23)
+          - result_class·dependency_scope = NULL (ck21: 결과 분류는 READY_FOR_REVIEW·NO_RISK 때만,
+            ck36: FAILED·ON_HOLD 는 의존 범위 없음. 엔진도 실패 때 scope=None)
+          - decision_signature 는 바꾸지 않는다(ck37·ck40 이 FAILED·ON_HOLD 에 값을 막지 않음)
+          - 설명 실패면 설명 검증 FAILED, 최종 설명·생성 시각 NULL (ck26·ck6·ck7)
+        """
         values: dict[str, Any] = {
             "status": self.status.value,
+            "completed_status": self.status.value,
+            "result_class": None,
+            "dependency_scope": None,
             "failed_step": self.failed_step.value,
             "failure_code": self.failure_code,
             "attempt_count": self.attempt_count,
@@ -135,9 +147,10 @@ class FailureSummary:
             "failure_message": self.failure_message,
         }
         if self.failure_code == EXPLANATION_GENERATION_FAILED:
-            # ck26: 설명 검증 FAILED, 최종 설명 없음 (계산 결과 표는 저장됨, 추천 없음)
+            # ck26: 설명 검증 FAILED, 최종 설명 없음 (계산 결과 표는 저장됨, 추천 없음). ck7: 생성 시각도 없음
             values["explanation_validation_status"] = "FAILED"
             values["final_explanation_json"] = None
+            values["explanation_generated_at"] = None
         return values
 
 
@@ -174,16 +187,17 @@ def _tool_message(tool_name: str, code: str, attempts: int) -> str:
 
 
 # --- 실패 요약 만들기 ---------------------------------------------------------------------
-def hold_summary(code: str, message: str) -> FailureSummary:
+def hold_summary(code: str, message: str, attempt_count: int = 1) -> FailureSummary:
     """
     필수 자료 부족·검증 오류 보류. message 는 판정한 쪽의 문구를 그대로 쓴다
     (예: data_sync BlockingIssue.failure_message "차단 검증 오류 <코드> <키>", 정답 E9 v1).
+    attempt_count 는 마지막 도구의 최종 시도 횟수다(agentflow 7.1). 일시 오류 뒤 보류되면 2·3 이 된다.
     """
     return FailureSummary(
         status=AnalysisOutcome.ON_HOLD,
         failed_step=AnalysisStep.VALIDATING,
         failure_code=code,
-        attempt_count=1,
+        attempt_count=attempt_count,
         retry_exhausted=False,
         failure_message=message,
     )
@@ -233,7 +247,7 @@ async def call_with_retry[T](
           · 재시도할 오류가 3회 이어짐 → FAILED, 시도 3, 소진 true
           · 재시도하지 않는 오류 → 그 시도 번호, 소진 false (권한 FAILED, 필수 자료 ON_HOLD)
       - timeout_seconds: 시도마다의 시간 제한. 넘으면 시간 초과로 보고 재시도한다.
-      - backoff_seconds[i]: i+1 번째 실패 뒤 다시 부르기 전 기다리는 시간.
+      - backoff_seconds[i]: i+1 번째 실패 뒤 다시 부르기 전 기다리는 시간. 모자라면 마지막 값, 비었으면 기다리지 않는다.
       - on_attempt: 시도마다 부른다(추적 연결용). 여기서 난 오류는 분석을 멈추지 않는다.
     """
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -251,7 +265,10 @@ async def call_with_retry[T](
             will_retry = retryable and attempt < MAX_ATTEMPTS
             _record(on_attempt, tool_name, step, attempt, code, started, will_retry)
             if will_retry:
-                await sleep(backoff_seconds[min(attempt - 1, len(backoff_seconds) - 1)])
+                if backoff_seconds:
+                    await sleep(
+                        backoff_seconds[min(attempt - 1, len(backoff_seconds) - 1)]
+                    )
                 continue
             raise ToolFailure(
                 _stop_summary(tool_name, step, code, attempt, error, retryable)
@@ -271,7 +288,7 @@ def _stop_summary(
 ) -> FailureSummary:
     if code in HOLD_CODES:
         message = error.message if isinstance(error, ToolError) else str(error)
-        return hold_summary(code, message)
+        return hold_summary(code, message, attempt)
     return FailureSummary(
         status=AnalysisOutcome.FAILED,
         failed_step=step,
