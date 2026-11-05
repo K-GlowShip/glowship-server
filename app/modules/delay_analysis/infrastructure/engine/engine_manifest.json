@@ -1,0 +1,222 @@
+{
+  "schema_version": "glowship_engine_manifest.v1",
+  "note": "데이터 팀 엔진 원본의 파일 목록과 SHA-256. 코드는 저장소에 넣지 않고 GLOWSHIP_ENGINE_DIR 의 원본을 이 목록으로 대조해 불러온다(docs/analysis/engine-local-path.md). 목록에 없는 파일은 보지 않는다. options.py 와 tests/test_q9_donor_reason.py 는 glowship-plan tools/glowship_engine 의 Q9 수정판이다(공유 묶음 SHA256SUMS.tsv 의 options.py 974577bc… 는 수정 전).",
+  "engine_dir_layout": "GLOWSHIP_ENGINE_DIR/glowship_engine/…, GLOWSHIP_ENGINE_DIR/synth2025_v5/… (공유 묶음 04_적재검증도구 에 glowship-plan tools/synth2025_v5 를 복사한 모양)",
+  "sources": {
+    "glowship_engine": "공유 묶음 00_필수_최신DB_전체재적재/04_적재검증도구/glowship_engine (overlay v1_run1 manifest 에 해시 기록)",
+    "synth2025_v5": "K-GlowShip/glowship-plan main 838092b tools/synth2025_v5",
+    "glowship_engine_q9": "K-GlowShip/glowship-plan main 11b902e tools/glowship_engine (options.py 수정판, test_q9_donor_reason.py)"
+  },
+  "files": [
+    {
+      "path": "glowship_engine/__init__.py",
+      "sha256": "9cd79d2cf040bf02ae00800a943c0f336beac4d02bdc1794ede8c1c29e3441ec",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/calendar_config.py",
+      "sha256": "458385167c63bfc8852484d7b16e006122b07d4df783f225e5c7242cd8dc1fda",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/common.py",
+      "sha256": "514d6a7d9901f5c600c2f6b682f5cd5908760647e5a576d62510c78d1703252e",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/config/event_calendar_2026h1_v1.json",
+      "sha256": "07bcdd9593c2a07512c173aaf387b5c4a4f6a0ad2b2154560c3be2d58d1cf2c2",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/core.py",
+      "sha256": "8a88f18285cbdb3eecf88867c5ca6494194028ad38be2b3c95130d341e1b972e",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/__init__.py",
+      "sha256": "21eadc9d2292519be080f0e637e6fb191898a935413fc7a35f6488489cbb2bf4",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/adapter.py",
+      "sha256": "0ac75a816b05847081aa909f42534d54f5ae96ca17ef2909718db6f96a776740",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets.py",
+      "sha256": "898251e9b0ecd9d6e4d5a42b835947262b09873b4d510707900f1194f98ad360",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/forbidden_expressions/ko-v1.json",
+      "sha256": "219ab399ed3cedf85a10fb04eb1fba7bb4dbdd9ed3ce8e526e7037975c08a53e",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/forbidden_expressions/ko-v2.json",
+      "sha256": "3c13c9642bd1b8462c5ea3039379b7f58abb3feeef0080cf4775834fa43f3012",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/labels/ko-v1.json",
+      "sha256": "670f6515af1a8da5ad356e0b25380b8aafc3aefd987cbca6dbbed3b67418ffbb",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/model_configs/mock-template-v1.json",
+      "sha256": "3d41b9b357a3c49a2ce610f0e5f2cd1bab44bb9403cb5643ece9f85d787db15a",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/prompts/explain_ready_v1/1.0.0.md",
+      "sha256": "bd6d6cb9061375175fd03821c30974999bd0a298bde44dd95bbef4825cdb75dc",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/registry.json",
+      "sha256": "2e8503b1a84aef22ed4762a8ffc0f04b818acd5d95ecb1e76171738ba8a2cbe7",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/registry_v2.json",
+      "sha256": "a2fcfb4ba2700b843920d4b9ff2be9d93d35568df9aafbe7c4e134ea0d367f5d",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/schemas/explanation.v1.schema.json",
+      "sha256": "119e1bb6730ae58d38abce3fcdb1e3ac0cb659aaa674b3d93a389bf9a652e0ac",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/generator.py",
+      "sha256": "b195749e3c4bd7146dad72fa00ec2bf8ef4eb3aad64c74f65d447eccf7c24e1b",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/input_doc.py",
+      "sha256": "7145392c887660c3e2e2a6867814b53a957e01f50f21ecdcb69b36326269e8af",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/mock.py",
+      "sha256": "3025226af9b6528894a49c2bddb1017883336ba6a144d161cc46f63ff9526001",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/schema.py",
+      "sha256": "4194cb28e8f1e4c52c10f93a2a1f10753e72bd7b223780a743a9e9888b34ca1f",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/textcheck.py",
+      "sha256": "b13ca9e6956e71ae6d24f5ed9e791acfff6bfa32321ea7b89995f383b45c7b6b",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/validator.py",
+      "sha256": "5937cce382883273f94e503cf2f5f6f874e337ead2a8d9f710671e328685ec11",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/options.py",
+      "sha256": "f66e319c6bddbfb9dceb9365f134a260a9e0e67a51bec15d25795b2a455e45d6",
+      "recorded_in": "glowship-plan 11b902e tools/glowship_engine/options.py (Q9 수정판, PR #19 리뷰)"
+    },
+    {
+      "path": "glowship_engine/pipeline.py",
+      "sha256": "7511644c74db73ea20e2a08022f181b112600cf5e4ea7a7eeb7f904cef4fa5d7",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/recheck.py",
+      "sha256": "3e47d4e618c6c5f5d845c7c12cb459beec82170f9dc3beee4910d76f6a4b92d8",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/snapshot.py",
+      "sha256": "77984a2b20f91ec009e2a5d755458732f34dfef70b5024394b347cf11f321a3f",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/stale.py",
+      "sha256": "dfff9f0b370e93ed8dcc91a57a44582edd7714b44c6dfbaab12ea995e23c6459",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/storage.py",
+      "sha256": "eac0832da3040a3e234c97766962870d29943b1dea65d118c359c14ea9ab5222",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/store.py",
+      "sha256": "35de234770a4ba33120f26cbb8c9d565c232c40da23bdcbbee6d708aa11d7338",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/testdb.py",
+      "sha256": "2c9987b0090ddcbda732286583cb84b36407b6c52acc5c0395506f6a45f1116e",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/fixture_gs05.py",
+      "sha256": "d934fd247a319bc883221d35d0a14fc9d3d9e4352b502201769975e5eab7eefe",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/fixture_u6_donor.py",
+      "sha256": "ec3fbdeb52cf50485fa8fa19161794ef70b86a6624b8070d0d0a6394383ae40f",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/fixtures/forbidden_ko_v1_cases.json",
+      "sha256": "c73c0955292fe5754fd1e68899077d408f1c979b6cf596d6548c60ed1c83db25",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/fixtures/forbidden_ko_v2_boundary_cases.json",
+      "sha256": "89106a7e33815e5bba61b0534b0877c4a243f20933187d8aaa97d1667877c92b",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/test_engine.py",
+      "sha256": "f0d4a16f1b62f25136c4a290947191bc8ee8b5c8a28c52c59bc3de337b6eb49a",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/test_explain.py",
+      "sha256": "3298ce18910ca2eb132470d852623cb7230fe5957caa441b2f4f91ddcfbd503e",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/test_forbidden_boundary.py",
+      "sha256": "1f4f9ef3e0be6a92442b5c53db4ada8aa2c8d42a087b8c29c56bd90bdfd6d0fd",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/test_q9_donor_reason.py",
+      "sha256": "0a616a2f16a725e1ebce856c15da02582c1a567f706d3501eea05a54a0e839ee",
+      "recorded_in": "glowship-plan 11b902e tools/glowship_engine/tests/test_q9_donor_reason.py (Q9 시험)"
+    },
+    {
+      "path": "synth2025_v5/allocation_core.py",
+      "sha256": "fcb08cf8dd2e370500207241b41b7be77e8d7ebe6cf194481f708c7d6449fce0",
+      "recorded_in": "glowship-plan README.md (838092b) + overlay manifest"
+    },
+    {
+      "path": "synth2025_v5/tests/golden_cases.py",
+      "sha256": "5910456da0e85a15a241747d551b1a689d76dda4c8763d68e199c70be85ede98",
+      "recorded_in": "glowship-plan README.md (838092b)"
+    },
+    {
+      "path": "synth2025_v5/tests/run_g2.py",
+      "sha256": "ceb50e9f1527d312eb1fb6c55c1ee4d01843fba29b6db2bac6d8fde9f1f7f249",
+      "recorded_in": "glowship-plan README.md (838092b)"
+    }
+  ]
+}
