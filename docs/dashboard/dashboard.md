@@ -5,7 +5,7 @@
 
 ## 1. 기준 시각 T (명세 C22)
 
-- **T = 고객사의 마지막 적재 수집 완료 시각**입니다. `status`가 `SUCCEEDED`·`PARTIAL_SUCCESS`인 `data_sync_runs`의 `finished_at` 최댓값이고, 응답 `lastSyncedAt`입니다. `GET /data-sync-runs/latest`의 `lastSyncedAt`과 같은 기준입니다.
+- **T = 고객사의 마지막 적재 수집 완료 시각**입니다. `status`가 `SUCCEEDED`·`PARTIAL_SUCCESS`인 `data_sync_runs` 중 적용 순번(`applied_seq`)이 가장 큰 수집의 `finished_at`이고, 응답 `lastSyncedAt`입니다(명세 C32). `finished_at` 최댓값이 아니라 순번으로 고르는 것은 serviceflow 5.2절 "왜 시각이 아니라 순번인가"를 따릅니다. `GET /data-sync-runs/latest`의 `lastSyncedAt`과 같은 기준입니다.
 - **기준일 = T의 UTC 날짜**입니다. 서버의 지금 시각이 아닙니다. 2026 H1 합성 데이터는 2026-07-01 00:04:30Z 수집에서 멈춰 있어서, 지금 시각을 쓰면 "최근 30일" 값이 모두 비게 됩니다.
 - 적재된 수집이 없으면 `lastSyncedAt`은 `null`이고, 건수는 0, 비율·비교값은 `null`, 입고 추이 `points`는 `[]`입니다.
 - 두 API 모두 조회할 때 계산하고 저장하지 않습니다.
@@ -18,7 +18,7 @@ sequenceDiagram
 
     W->>S: GET /api/v1/dashboard/summary (access_token 쿠키)
     S->>S: get_tenant_context: 토큰의 company_id 확인 (없으면 403)
-    S->>DB: 기준 시각 T = max(finished_at) of SUCCEEDED·PARTIAL_SUCCESS
+    S->>DB: 기준 시각 T = SUCCEEDED·PARTIAL_SUCCESS 중 applied_seq 최대 수집의 finished_at
     Note over S: T 없으면 0·null 로 바로 응답
     S->>DB: 현재 KPI 4개 + 비교값(T−7일 진행 선적, T−1일 지연 선적, 직전 30일 입고율)
     S-->>W: 200 {lastSyncedAt, inTransitShipmentCount, weekOverWeek, ...}

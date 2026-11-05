@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
     대시보드 집계 조회 (API 명세 v6.2 4.4 GET /dashboard/summary·/inbound-trend, 홈 대시보드 SCR-002)
       - 대시보드 값은 조회할 때 계산하고 저장하지 않는다.
       - 기준 시각 T 는 고객사의 마지막 수집 완료 시각이다 (명세 C22). 서버의 지금 시각이 아니다.
-        적재된 수집(SUCCEEDED·PARTIAL_SUCCESS)의 finished_at 최댓값이고, GET /data-sync-runs/latest 의 lastSyncedAt 과 같은 기준이다.
+        적재된 수집(SUCCEEDED·PARTIAL_SUCCESS) 중 적용 순번(applied_seq)이 가장 큰 수집의 finished_at 이고,
+        GET /data-sync-runs/latest 의 lastSyncedAt 과 같은 기준이다 (명세 C32: 시각이 아니라 순번으로 고름, serviceflow 5.2절).
       - 입고 추이는 날짜별 선적 수다: 계획 = planned_3pl_inbound_date, 실제 = actual_3pl_inbound_date.
         0건인 날은 여기서 돌려주지 않고 서비스가 채운다.
       - 요약 KPI 의 현재 값 (명세 4.4 표, C22):
@@ -36,10 +37,12 @@ _UUID = UUID(as_uuid=True)
 
 _BASIS_AT = text(
     """
-    SELECT max(finished_at)
+    SELECT finished_at
       FROM data_sync_runs
      WHERE company_id = :company_id
        AND status IN ('SUCCEEDED', 'PARTIAL_SUCCESS')
+     ORDER BY applied_seq DESC
+     LIMIT 1
     """
 ).bindparams(bindparam("company_id", type_=_UUID))
 

@@ -96,3 +96,39 @@ async def test_창고를_거르면_그_창고의_선적만_센다(db_session):
             tenant, days=InboundTrendDays.QUARTER, warehouse_id=warehouse_id
         )
         assert sum(p.planned_count for p in result.points) == planned
+
+
+async def test_기준_시각은_완료_시각이_아니라_적용_순번이_가장_큰_수집으로_고른다(
+    db_write_session,
+):
+    """C32: 적용 순번이 더 작은 수집의 완료 시각이 더 늦어도 T 는 순번 최대 수집의 finished_at 이다 (롤백)."""
+    db = db_write_session
+    company_id = await _company(db, "A_BEAUTY")
+    if company_id is None:
+        return  # 확정 데이터가 없는 DB
+    applied = (
+        await db.execute(
+            text(
+                "SELECT data_sync_run_id, finished_at FROM data_sync_runs"
+                " WHERE company_id = :company_id AND applied_seq IS NOT NULL"
+                " ORDER BY applied_seq DESC LIMIT 2"
+            ),
+            {"company_id": company_id},
+        )
+    ).all()
+    (_, last_finished_at), (earlier_run_id, _) = applied
+    await db.execute(
+        text(
+            "UPDATE data_sync_runs SET finished_at = :late"
+            " WHERE company_id = :company_id AND data_sync_run_id = :run_id"
+        ),
+        {
+            "late": datetime(2026, 7, 2, tzinfo=UTC),
+            "company_id": company_id,
+            "run_id": earlier_run_id,
+        },
+    )
+
+    basis_at = await DashboardRepository(db).find_basis_at(company_id)
+
+    assert basis_at == last_finished_at
