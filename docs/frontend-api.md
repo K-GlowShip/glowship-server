@@ -30,7 +30,7 @@
 | `shipment` | `{ shipmentId, shipmentCode }` |
 | `warehouse` | `{ warehouseId, warehouseCode, regionCode }` |
 | `representativeSku` | `{ skuId, skuCode, productName }` 또는 `null`(선적 상세 없음) |
-| `currentRun` · `run` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27, 2026-11-05 추가) |
+| `currentRun` · `run` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27) |
 | `decidedBy` | `{ userId, displayName, roleCode }` (사용자 요약. `author`처럼 역할 이름으로 담음) |
 | `responseOption` | `{ responseOptionId, optionType }` 또는 `null`(의견만 쓴 초안) |
 
