@@ -49,7 +49,7 @@ app/
 └── modules/                       # 도메인 모듈
     ├── user/
     │   ├── dependencies.py        # 의존성 조립 (DB 세션 → Repository → Service)
-    │   ├── presentation/          # API 라우터(회원가입·로그인, 고객사 계정 생성), 요청·응답 스키마
+    │   ├── presentation/          # API 라우터(회원가입·로그인, 내 계정 조회, 고객사 계정 생성), 요청·응답 스키마
     │   ├── application/           # 서비스(비즈니스 로직), 비밀번호 정책, 도메인 예외
     │   └── infrastructure/        # ORM 모델, enum, Repository
     ├── company/                   # companies, admin_assignments (Repository·예외·dependencies 있음, API 없음)

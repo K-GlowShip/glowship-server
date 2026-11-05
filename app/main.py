@@ -30,6 +30,7 @@ from app.modules.user.presentation.auth_api_router import router as auth_router
 from app.modules.user.presentation.client_account_api_router import (
     router as client_account_router,
 )
+from app.modules.user.presentation.me_api_router import router as me_router
 
 # 테이블 생성·변경은 Alembic 마이그레이션(make db-migrate)으로만 수행합니다.
 app = FastAPI()
@@ -42,6 +43,7 @@ include_exception_handlers(app)
 
 # Routers
 app.include_router(auth_router)
+app.include_router(me_router)
 app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)

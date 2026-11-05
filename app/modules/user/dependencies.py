@@ -15,6 +15,7 @@ from app.modules.company.infrastructure.repository.company_repository import (
 )
 from app.modules.user.application.auth_service import AuthService
 from app.modules.user.application.client_account_service import ClientAccountService
+from app.modules.user.application.me_service import MeService
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
 
 """
@@ -48,3 +49,11 @@ def get_client_account_service(
         company_repo=company_repo,
         admin_assignment_repo=admin_assignment_repo,
     )
+
+
+def get_me_service(
+    db: AsyncSession = Depends(get_db),
+    user_repo: UserRepository = Depends(get_user_repository),
+    company_repo: CompanyRepository = Depends(get_company_repository),
+) -> MeService:
+    return MeService(db=db, user_repo=user_repo, company_repo=company_repo)
