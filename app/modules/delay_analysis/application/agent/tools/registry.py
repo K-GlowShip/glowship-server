@@ -84,7 +84,8 @@ class ToolRegistry(Mapping[ToolName, ToolSpec]):
             raise ValueError(f"등록되지 않은 도구: {[m.value for m in missing]}")
 
 
-def _code_error(name: str, step: AnalysisStep, attempt: int, why: str) -> ToolFailure:
+def code_error(name: str, step: AnalysisStep, attempt: int, why: str) -> ToolFailure:
+    """재시도 없이 멈추는 코드 오류(FAILED·UNEXPECTED_TOOL_ERROR). 노드가 도구 출력의 연결 오류를 알릴 때도 쓴다."""
     return ToolFailure(
         FailureSummary(
             status=AnalysisOutcome.FAILED,
@@ -112,7 +113,7 @@ async def call_tool(
     """
     spec = registry.get(name)
     if spec is None:  # AIR-001: 등록되지 않은 도구는 부르지 않는다
-        raise _code_error(str(name), step, 1, "등록되지 않은 도구")
+        raise code_error(str(name), step, 1, "등록되지 않은 도구")
 
     async def attempt() -> BaseModel:
         if spec.input_model is None:
@@ -139,7 +140,7 @@ async def call_tool(
         if (
             summary.status is AnalysisOutcome.ON_HOLD
         ):  # 결정 1: 도구 단계의 보류는 코드 오류
-            raise _code_error(
+            raise code_error(
                 name.value,
                 step,
                 summary.attempt_count,

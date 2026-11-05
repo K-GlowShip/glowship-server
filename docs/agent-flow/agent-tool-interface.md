@@ -2,8 +2,9 @@
 
 노드가 도구를 부르는 방식과, 도구 함수가 지켜야 할 모양을 정합니다. 도구를 만드는 쪽(조회·재고 영향 = 개발 1, 대응안 T9~T11 = A, 결과 검증 T12·설명 = 개발 3)과 노드에서 부르는 쪽(개발 2)이 이 문서를 기준으로 맞춥니다.
 
-- 코드: `app/modules/delay_analysis/application/agent/tools/context.py`(`ToolContext`), `registry.py`(`ToolSpec`·`ToolRegistry`·`call_tool`·`pure_tool`)
-- 시험: `tests/modules/delay_analysis/test_tool_registry.py`
+- 코드: `app/modules/delay_analysis/application/agent/tools/context.py`(`ToolContext`), `registry.py`(`ToolSpec`·`ToolRegistry`·`call_tool`·`pure_tool`·`code_error`), `agent/runtime.py`(실행 도구 묶음 `AnalysisRuntime`, 5.2절), 노드 `agent/nodes/*`
+- 시험: `tests/modules/delay_analysis/test_tool_registry.py`(등록표), `test_analysis_graph.py`(그래프 흐름, 가짜 묶음 `agent/fake_runtime.py`)
+- 그래프 동작: [지연 분석 에이전트 그래프](delay-analysis-graph.md)
 - 도구 입출력 모델: `docs/agent-flow/tool-contracts.md`(계약 10), `agent/tools/*_schemas.py`
 - 상태: 2026-11-05 세 개발 세션 합의(인터페이스 초안 1~5판) + 최종 분담안 v2(22시, T9~T11은 A). 결정 4·5는 대기(6절).
 
@@ -28,11 +29,11 @@
    1) judge_no_delay(session, run)          NoDelay 면 종료 → save_no_delay   (엔진 저장소를 읽기 전, 엔진 하네스 순서)
    2) build_engine_input(session, run)      EngineHold 면 ON_HOLD(VALIDATING) 종료 → save_analysis_failure
    3) ctx.engine = EngineInput               실행마다 한 번(저장소 읽기 고객사당 약 9.5초, 개발 1 LRU)
- coordinator: T1
+ coordinator: T1                                  (재고 영향 뒤 T6 이 NO_RISK 면 decision_of 뒤 NO_RISK 종료)
  inventory_impact: T2·T3·T4·T5·T8 → T7 → T6       (부르는 순서는 계약 Q3)
- response_options: T9 → T10                     (NO_RISK 면 대응안 없이 decision_of 뒤 종료)
- compare: T11 → decision_of(ctx.engine)          (의존 범위·판정 서명)
- explain: generate_explanation(ctx, now=…)       (최대 3회는 함수 안. 실패면 validate 없이 종료)
+ response_options: T2·T8 다시 조회 → T9 → T10     (설계 agentflow 5.3. 재사용 안은 tools/might_better_way/dev2.md 1번)
+ compare: T11 → 엔진 대조 → decision_of(ctx.engine) (대조가 다르면 FAILED. 의존 범위·판정 서명)
+ explain: explain(ctx, now)                      (최대 3회는 함수 안. 실패면 validate 없이 종료)
  validate: T12                                   (최종 설명을 한 번 더 확인)
 서비스: 결과 저장 → 커밋
 ```
@@ -41,6 +42,7 @@
 - **엔진 계산은 실행마다 한 번입니다.** 엔진 `pipeline.analyze(snap)`(64~79행)이 예측 층·주문 층·영향 집합·결과 분류·대응안 평가·추천·판정 서명·의존 범위를 함께 냅니다. 조회·재고 영향 도구(T1~T8)와 설명은 그 결과(`ctx.engine.snap`·`ctx.engine.analysis`)에서 옮기기만 합니다.
 - **대응안 T9~T11은 A의 함수가 계약 입력으로 계산합니다**(최종 분담안 v2). 판정 서명은 엔진 결과로 만들어지므로, 노드는 T10·T11 출력이 `ctx.engine.analysis["options"]`(상태·사유·순위·추천)와 같은지 확인하고 다르면 FAILED로 멈춥니다(GLOW-129, 서명과 화면 값이 어긋나지 않게).
 - STALE 확인 경계는 조정 에이전트 진입·설명 진입입니다(`graph.with_stale_check`, 조회기는 `config["configurable"]["run_status_reader"]`, GLOW-98).
+- **설명 함수 모양(11-06 확인):** 노드는 `explain(ctx, now)`로 부릅니다. 개발 3의 작업 중 코드 `generate_explanation`은 `(snap, analysis, analysis_run_id, shipment_code, now, adapter, tracer)`를 받고 `ExplanationPassed`·`ExplanationFailed`를 돌려줍니다. 둘을 잇는 작은 함수는 "실제 도구 교체" 때 만듭니다. `shipment_code`는 T1 출력에 없어(계약 3.1) 어디서 읽을지 그때 개발 1·3과 정합니다.
 
 ## 3. `ToolContext`
 
@@ -107,7 +109,14 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 - 멈추면 `ToolFailure`(실패 요약)를 올립니다. 노드는 그 요약을 그대로 서비스에 넘기고, 서비스가 `save_analysis_failure`로 저장합니다.
 - 시험은 등록표를 가짜 도구로 바꿔 끼워 그래프 흐름을 먼저 확인합니다(실제 도구는 머지되는 대로 교체).
 
-### 5.1 추적 연결 (GLOW-124)
+### 5.1 실행 도구 묶음 `AnalysisRuntime` (GLOW-129)
+
+노드는 `config["configurable"]["analysis_runtime"]`의 묶음에서 등록표·분석 준비(`judge_no_delay`·`build_engine_input`)·`decide`(`decision_of`)·`explain`·`final_check_input`(T12 입력)·기준일·입력 순번·추적기를 꺼냅니다. 분석 준비가 엔진 입력을 한 번 담고(`start`), 뒤 노드는 `runtime.call(도구, 입력, step=…)`으로 `call_tool`을 부릅니다. 자세한 것은 [그래프 문서](delay-analysis-graph.md) 5절 "실행 도구 묶음".
+
+- 개발 1·3 함수의 실제 타입을 import하지 않고 모양(Protocol)만 씁니다: `EngineHoldLike(code, message)`, `ExplanationFailedLike(model_name, prompt_version, failure_summary())`.
+- 엔진 대조가 다르거나 최종 확인(T12)에서 떨어지면 노드가 `code_error`로 `FAILED`(`UNEXPECTED_TOOL_ERROR`, `VALIDATING_OUTPUT`)를 올립니다.
+
+### 5.2 추적 연결 (GLOW-124)
 
 | 곳 | 연결 |
 | --- | --- |
@@ -127,6 +136,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 | 5 | 설명 자산·모델 설정 오류(`SystemConfigError`) 때 | 대기. 추천: 서버 시작 때 한 번 확인해 막음(GLOW-127 PR이 `engine_startup.verify_engine_on_startup()`에 한 줄, `GLOWSHIP_ENGINE_DIR` 없으면 건너뜀). 실행 도중이면 FAILED `UNEXPECTED_TOOL_ERROR` |
 
 - 계약 문서 9절의 새 결정 번호: A가 Q13~Q15를 더했으므로 세 개발 세션의 새 결정은 **Q16부터** 씁니다(9절은 개발 2 몫).
+- **확인할 것(개발 3):** 설명 함수가 통과시킨 설명이 최종 확인(T12)에서 떨어지면 지금은 연결 오류 `FAILED`(`UNEXPECTED_TOOL_ERROR`)로 멈춥니다. "3회 실패"(`EXPLANATION_GENERATION_FAILED`)는 DDL ck26이 3회·소진만 허용하고 실제 시도 수와 달라 쓰지 않았습니다. 계산 결과까지 저장할지는 실제 T12를 연결할 때 개발 3과 정합니다.
 - 참고: #43(T9)의 9절 Q13은 "영향 SKU가 T9 입력 `skus[]`에 없으면 `RequiredDataError`로 실행 보류"입니다. 위 결정 1과 달라, 그래프에서는 FAILED로 처리합니다(엔진은 `sku_attr`를 고객사 전체 SKU로 만들어 데이터로는 생기지 않는 입력 연결 오류).
 
 ## 7. 그래프 결과 → 저장
@@ -143,3 +153,4 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 ## 8. 작업 중 실패와 원인
 
 - **음성 시험이 적용되지 않은 채 통과로 보일 뻔함:** "보류 → FAILED 바꿈 빼기" 변경이 ruff가 줄 모양을 바꿔 적용되지 않았는데 시험은 그대로 통과했습니다. 적용 여부를 출력으로 확인해 다시 했고, 그때는 해당 시험이 실패했습니다.
+- **가짜 출력이 다음 도구 입력에서 다시 검사됨(GLOW-129 노드 연결):** Pydantic은 이미 만든 모델을 다른 모델에 넣을 때 모델 뒤 검사(`model_validator(mode="after")`)를 다시 돌립니다. 도구가 내는 출력은 다음 도구 입력에 들어가므로, 도구 출력은 계약 모델의 뒤 검사를 통과해야 합니다(가짜 도구도 마찬가지). 자세한 것은 [그래프 문서](delay-analysis-graph.md) 9절.
