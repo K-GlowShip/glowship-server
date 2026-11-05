@@ -2,7 +2,7 @@
 
 - 코드: `app/modules/delay_analysis/application/agent/retry.py`
 - 시험: `tests/modules/delay_analysis/test_agent_retry.py`
-- 근거: agentflow 7절·7.1절, API 명세 v6.2 4.5(분석 실행 상세의 실패 요약), DDL `analysis_runs_ck10`~`ck14`·`ck26`, 정답 overlay(`analysis_runs` E3 v2·E9 v1·E2 v1), 엔진 `explain/generator.py`·`bundle_verify.py`
+- 근거: agentflow 7절·7.1절, API 명세 v6.2 4.5(분석 실행 상세의 실패 요약), DDL `analysis_runs` CHECK(특히 ck6·ck7·ck10~14·ck21·ck23·ck26·ck36·ck37·ck40), 정답 overlay(`analysis_runs` E3 v2·E9 v1·E2 v1), 엔진 `explain/generator.py`·`bundle_verify.py`
 - 아직 하지 않은 것: 그래프 노드에 끼우기, 실패 요약 저장(실행 종료 기록 서비스), 추적 연결. 이 문서의 함수는 그 작업들이 부릅니다.
 
 ## 1. 무엇을 하나
@@ -11,8 +11,8 @@
 | 도구 부르기 | `call_with_retry(tool_name, step, call, …)` | 최초 1회 + 재시도 최대 2회. 시도마다 시간 제한(`timeout_seconds`)과 대기(`backoff_seconds`, 기본 0.2초·0.5초). 시도마다 `on_attempt`로 기록을 넘깁니다(추적 연결용, 여기서 난 오류는 분석을 멈추지 않음) |
 | 멈출 때 | `ToolFailure(summary)` | 노드는 이것을 받아 실행을 끝냅니다. `summary`는 `FailureSummary` |
 | 실패 요약 | `FailureSummary` | 상태 + 5컬럼(`failed_step`·`failure_code`·`attempt_count`·`retry_exhausted`·`failure_message`). 만들 때 DDL 규칙을 먼저 확인합니다 |
-| 저장할 값 | `FailureSummary.columns()` | 서비스가 `analysis_runs`에 그대로 넣는 값. 설명 실패면 `explanation_validation_status = FAILED`, `final_explanation_json = NULL`도 함께 돌려줍니다(ck26) |
-| 보류 | `hold_summary(code, message)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: `BlockingIssue.failure_message`) |
+| 저장할 값 | `FailureSummary.columns()` | 실행을 실패·보류로 끝낼 때 `analysis_runs`에서 바꿔야 하는 열을 **모두** 돌려줍니다. 서비스가 그대로 넣습니다: 상태와 5컬럼, `completed_status = status`(ck23), `result_class = NULL`(ck21), `dependency_scope = NULL`(ck36). 설명 실패면 `explanation_validation_status = FAILED`, `final_explanation_json = NULL`, `explanation_generated_at = NULL`도 넣습니다(ck26·ck7). `decision_signature`는 바꾸지 않습니다(ck37·ck40이 막지 않음) |
+| 보류 | `hold_summary(code, message, attempt_count=1)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: `BlockingIssue.failure_message`). 시도 횟수는 마지막 도구의 실제 횟수입니다 |
 | 설명 실패 | `explanation_failure(attempt_detail)` | 엔진 생성기가 3회 모두 실패했을 때. 엔진의 시도 기록 문자열을 문구 뒤에 붙입니다 |
 
 ## 2. 오류별 처리
@@ -21,16 +21,19 @@
 | 시간 초과 | `TimeoutError`(시도 시간 제한 포함) | 함 | FAILED / 그 단계 / `TOOL_TIMEOUT_EXHAUSTED` / 3 / true | API 명세 4.5 "FAILED(도구 실패, 예: `TOOL_TIMEOUT_EXHAUSTED`)", 정답 E3 v2, 엔진 `bundle_verify` rt1 |
 | 그 밖의 일시 오류 | 도구가 `TransientToolError` | 함 | FAILED / 그 단계 / `TOOL_TEMPORARY_ERROR_EXHAUSTED` / 3 / true | **제안**(아래 5절) |
 | 권한 오류 | `PermissionDeniedError` | 안 함 | FAILED / 그 단계 / `PERMISSION_DENIED` / 그 시도 / false | agentflow 7.1 |
-| 필수 자료 오류 | `RequiredDataError` | 안 함 | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID`·`MISSING_REQUIRED_DATA` / 1 / false | API 명세 4.5, 정답 E9 v1 |
+| 필수 자료 오류 | `RequiredDataError` | 안 함 | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID`·`MISSING_REQUIRED_DATA` / 그 시도(첫 시도면 1) / false | API 명세 4.5, 정답 E9 v1(첫 시도 보류라 1), agentflow 7.1 |
 | 분류 안 된 예외 | 그 밖의 `Exception` | 안 함 | FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false | **제안**(아래 5절) |
 | 설명 3회 실패 | 엔진 생성기 결과 | 엔진이 함 | FAILED / `VALIDATING_OUTPUT` / `EXPLANATION_GENERATION_FAILED` / 3 / true | DDL ck26, 정답 E2 v1 |
 
-- 일시 오류 뒤에 재시도하지 않는 오류가 나면, 그 시도 번호를 남기고 소진은 false입니다(예: 시간 초과 1회 → 권한 오류 = 시도 2).
+- 일시 오류 뒤에 재시도하지 않는 오류가 나면, 그 시도 번호를 남기고 소진은 false입니다(예: 시간 초과 1회 → 권한 오류 = 시도 2, 시간 초과 1회 → 필수 자료 오류 = ON_HOLD 시도 2).
+- `backoff_seconds`가 모자라면 마지막 값을 쓰고, 비어 있으면 기다리지 않고 재시도합니다.
 - 안쪽 도구 호출이 이미 멈춰 `ToolFailure`가 올라오면 그대로 올립니다(다시 분류하지 않음).
 - `asyncio.CancelledError`(취소)는 잡지 않습니다.
 
 ## 3. DDL 규칙과 같은지
-`FailureSummary`가 만들 때 확인하는 것과 DB 제약이 같습니다. 시험이 모델에 정의된 CHECK 식 원문을 실제 DB에서 SELECT로 판정해 확인합니다(읽기 전용, 저장하지 않음).
+`FailureSummary`가 만들 때 확인하는 것과 DB 제약이 같습니다.
+- **확인 방법:** 엔진 결과 값(결과 분류·의존 범위·판정 서명·최종 설명)이 찬 실제 행(FINALIZED·NO_RISK)에 `columns()`를 덮어씁니다. 그 행을 **모델의 CHECK 42개 전부**로 실제 DB에서 SELECT 판정합니다(읽기 전용, 저장하지 않음).
+- **이 행을 쓰는 이유:** 진행 중 행에 엔진 값이 남아 있는 최악의 경우를 대신합니다. 그래서 끝낼 때 비워야 할 열을 빠뜨리면 시험이 잡습니다.
 
 | 제약 | 규칙 | `FailureSummary` |
 | --- | --- | --- |
@@ -40,6 +43,10 @@
 | ck13 | 시도 1~3 | 밖이면 `ValueError` |
 | ck14 | 소진이면 시도 3 | 어긋나면 `ValueError` |
 | ck26 | 설명 실패는 `FAILED`·`VALIDATING_OUTPUT`·3회·소진·설명 검증 `FAILED`·최종 설명 없음 | 앞 4개를 확인하고, 뒤 2개는 `columns()`가 채움 |
+| ck23 | `FAILED`·`ON_HOLD` 등 결과 상태면 `completed_status = status` | `columns()`가 채움 |
+| ck21 | `result_class`는 `completed_status`가 `READY_FOR_REVIEW`·`NO_RISK`일 때만 | `columns()`가 NULL |
+| ck36 | `FAILED`·`ON_HOLD`는 `dependency_scope` NULL | `columns()`가 NULL |
+| ck7 | 최종 설명 ⇔ 생성 시각 | 설명 실패면 `columns()`가 둘 다 NULL |
 | (API 명세) | `ON_HOLD`는 `VALIDATING`·보류 코드 | 어긋나면 `ValueError` |
 
 ## 4. 결정한 것
@@ -65,14 +72,15 @@
 ## 6. 시험
 | 시험 | 확인하는 것 |
 | --- | --- |
-| 재시도 10건 | 시간 초과 3회 → 소진(정답 E3 v2와 같은 5개), 2회 실패 뒤 성공, 일시 오류 3회, 시도 시간 제한, 권한·필수 자료·분류 안 된 예외는 1회, 일시 → 권한(시도 2), 안쪽 실패 그대로, 기록 훅 장애 무시 |
-| 값 규칙 10건 | 설명 실패의 ck26 열, 보류 코드가 data_sync와 같음, 틀린 값 8가지를 거부 |
-| 실제 DB CHECK 3건 | 모델에 ck10~14·ck26이 있음, 우리가 만드는 요약 7종이 모두 통과, 틀린 행 6가지가 각각 그 제약에 거부되고 실패가 아닌 행은 통과 |
+| 재시도 12건 | 시간 초과 3회 → 소진(정답 E3 v2와 같은 5개), 2회 실패 뒤 성공, 일시 오류 3회, 시도 시간 제한, 권한·필수 자료·분류 안 된 예외는 1회, 일시 → 권한(시도 2), 일시 → 필수 자료(ON_HOLD 시도 2), 빈 `backoff_seconds`, 안쪽 실패 그대로, 기록 훅 장애 무시 |
+| 값 규칙 11건 | 설명 실패·보류의 `columns()` 열, 보류 코드가 data_sync와 같음, 틀린 값 8가지를 거부 |
+| 실제 DB CHECK 4건 | 모델의 CHECK가 42개, 만드는 요약 8종이 FINALIZED·NO_RISK 실제 행 위에서 42개 모두 통과(기준 행 자체도 통과), 열을 빼거나 틀리게 하면 ck23·ck21·ck36·ck7·ck10~14·ck26이 각각 거부 |
 
 **시험이 실패를 잡는지(변이 시험):** 코드를 일부러 바꿔 시험이 실패하는지 확인했습니다. 끝난 뒤 원래대로 돌렸습니다.
 - 최대 시도 3 → 4: 6건 실패
 - ck14 검사 삭제: 1건 실패
 - 안쪽 `ToolFailure` 그대로 올리기 삭제: 1건 실패
+- (리뷰 반영 뒤) 리뷰 전 `columns()`로 되돌림: 5건 실패, 생성 시각 NULL 빼기: 2건, 보류 시도 1 고정: 1건, 빈 `backoff` 처리 빼기: 1건
 
 ## 7. 작업 중 실패와 고친 것
 - **안쪽 실패를 다시 분류하던 문제:** 처음에는 `call_with_retry` 안의 도구가 또 `call_with_retry`를 써서 멈추면, 바깥에서 그 `ToolFailure`를 "분류 안 된 예외"로 다시 바꿨습니다. 시험을 쓰기 전 다시 읽다가 찾았고, 그대로 올리도록 고쳤습니다.
@@ -81,3 +89,8 @@
   - 단계 타입 오류는 `TypeError`로 바꿨습니다(TRY004).
   - 쓰지 않는 `noqa`를 지웠습니다.
   - 기록 훅의 예외를 조용히 버리던 곳에 경고 로그를 남겼습니다(S110).
+- **`columns()`가 그대로 저장되지 않던 문제(PR #28 리뷰, 내 실수):**
+  - 처음에는 "그대로 넣는 값"이라고 적었습니다. 그런데 `completed_status`(ck23)가 빠졌고, `result_class`(ck21)·`dependency_scope`(ck36)를 비우지 않았습니다.
+  - 시험이 ck10~14·ck26만 골라 보고, 빈 가상 행 위에서 판정했기 때문에 잡히지 않았습니다.
+  - 이제 세 열(설명 실패면 `explanation_generated_at`도)을 넣습니다. 시험은 CHECK 42개 전부를 엔진 값이 찬 실제 행 위에서 판정합니다.
+  - 같은 리뷰의 비차단 제안 두 가지도 고쳤습니다: 보류의 실제 시도 횟수, 빈 `backoff_seconds`.
