@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     postgres_db: str
 
     # 수집 적재 전용 워커 DB 계정 (GLOW-13, 수집 서비스 ingest_service "실행 전제")
-    # 수집은 워커 역할(glowship_v4_worker) 권한으로 돌아야 한다. 운영은 그 역할에 속한 로그인 계정을 넣는다.
+    # 수집은 워커 역할(glowship_v4_worker) 권한으로 돌아야 한다. 운영은 그 역할에 속한 로그인 계정을 넣고,
+    # 연결할 때 역할을 워커 역할로 바꾼다(app/core/database.py create_worker_engine, RLS 가 역할 이름을 비교).
     # 둘 다 비우면 위 POSTGRES_USER·PASSWORD 로 붙는다 (로컬 superuser 개발 DB 는 지금처럼 동작).
     # 호스트·포트·DB 이름은 앱 연결과 같다.
     worker_postgres_user: str | None = None

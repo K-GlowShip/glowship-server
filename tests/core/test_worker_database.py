@@ -70,6 +70,32 @@ def test_half_configured_worker_account_fails_at_startup(partial):
         _settings(**partial)
 
 
+def test_worker_engine_pins_worker_role_at_connect(monkeypatch):
+    """RLS 가 역할 이름(current_user)을 비교하므로 연결 단계에서 워커 역할로 바꾼다. 다른 connect_args 는 그대로 둔다"""
+    captured = {}
+
+    def fake_create_async_engine(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(database, "create_async_engine", fake_create_async_engine)
+
+    result = database.create_worker_engine(
+        "postgresql+asyncpg://worker_login:pw@db:5432/glowship",
+        echo=True,
+        connect_args={"timeout": 2},
+    )
+
+    assert result == "engine"
+    assert captured["connect_args"] == {
+        "timeout": 2,
+        "server_settings": {"role": "glowship_v4_worker"},
+    }
+    assert captured["echo"] is True
+    assert database.WORKER_DB_ROLE == "glowship_v4_worker"
+
+
 def test_worker_engine_follows_settings():
     settings = get_settings()
     if settings.uses_separate_worker_account:
