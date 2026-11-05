@@ -3,7 +3,7 @@ from starlette import status
 from app.core.exceptions import BaseErrorCode, BusinessException
 
 """
-    판단(초안·최종 선택) API 오류 코드 (API 명세 v6.2 4.6절, 5절)
+    판단(초안·재분석·최종 선택) API 오류 코드 (API 명세 v6.2 4.6절, 5절)
       - 엔진 거부 사유(recheck.py)와 API 코드의 대응은 4.6 "엔진 거부 사유와 API 오류 코드 대응" 표의 제안 열을 따릅니다(D22).
       - EPISODE_CLOSED·EXPLANATION_NOT_READY 는 그 표에서 새로 두는 코드입니다.
       - 없는 실행·다른 고객사 실행의 404 는 API 17 과 같은 AnalysisRunNotFoundException(delay_analysis)을 씁니다.
@@ -42,6 +42,22 @@ class DecisionErrorCode(BaseErrorCode):
         status.HTTP_409_CONFLICT,
         "RUN_NOT_READY",
         "선택 대기(READY_FOR_REVIEW) 상태의 분석 실행이 아닙니다.",
+    )
+    # 재분석(API 20) 거부: 명세 4.6 POST /analysis-runs/{runId}/reanalysis 오류, 허용 상태는 D10
+    RUN_IN_PROGRESS = (
+        status.HTTP_409_CONFLICT,
+        "RUN_IN_PROGRESS",
+        "분석이 진행 중입니다. 끝난 뒤 다시 요청해 주세요.",
+    )
+    RUN_FINALIZED = (
+        status.HTTP_409_CONFLICT,
+        "RUN_FINALIZED",
+        "이미 최종 선택이 끝난 분석 실행은 재분석할 수 없습니다.",
+    )
+    REANALYSIS_NOT_ALLOWED = (
+        status.HTTP_409_CONFLICT,
+        "REANALYSIS_NOT_ALLOWED",
+        "지연이 해소된(NO_DELAY) 분석 실행은 재분석할 수 없습니다.",
     )
     OPTION_NOT_IN_RUN = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
