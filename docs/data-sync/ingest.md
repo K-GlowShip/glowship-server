@@ -51,6 +51,7 @@ sequenceDiagram
 | `INVENTORY` | WMS | `SourceInventory` | `external_entity_mappings`(`MAPPED`) WMS 코드 |
 
 - 선적은 TMS 응답 그대로입니다(`shipmentNo`·`mode`·`destWh`·`plannedKrRelease`·`stage`·`etaPort`·`eta3pl`·`actual3pl`·`items`). 운송 수단은 `OCEAN`·`AIR`입니다.
+  - TMS 응답 파서 `tms_parser.parse_tms_shipments`가 응답 `data[]`를 `SourceShipment`와 거부로 나눕니다. 상세는 `items[].lineNo`·`sku`·`qty`, 날짜는 `YYYY-MM-DD`이고 `_demo`로 시작하는 필드는 읽지 않습니다. 거부 코드는 `MISSING_REQUIRED`·`INVALID_DATE`, 값은 있으나 타입이 다르면(수량이 문자열 등) `INVALID_FORMAT`(기준선에 없는 이름)입니다. 거부 키는 `shipmentNo`, 없으면 `data[i]`입니다.
 - 원천 삭제는 행을 지우지 않고 상태 `REMOVED_AT_SOURCE`로 옵니다(UPDATE). 응답에서 빠진 행·상세는 삭제로 보지 않습니다.
 - **파서가 보장할 조건**(원천 응답 → 레코드, 적재 서비스는 다시 검사하지 않음):
   1. 선언한 타입 그대로 넘깁니다(날짜 `date`, 일시 `datetime`, 수량 `int`, 참거짓 `bool`).
@@ -181,6 +182,8 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
 | `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 실패 기록도 실패하면 원래 예외 유지, 새 선적 스냅샷, 새 선적 혼합 HS10·빈 상세 거부(`PARTIAL_SUCCESS`), 기존 선적 빈 상세 + 일정 변경(상세 유지), 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부, 거부 → 검증 이슈 `OPEN`(값·재고 키·실패 시 되돌림·4,500건), 해소(정정 적재 → `RESOLVED`, 다시 거부·응답에 없음 → `OPEN`, 원천 유형별, 첫 건 적재 + 중복, 같은 중복 반복 → 첫 이슈 `OPEN` 유지), `OPEN`은 (엔터티 유형, 키, 오류 코드)마다 1건, 매핑 전 재고 이슈의 매핑 뒤 해소 |
+| `test_tms_parser.py` | TMS 응답 파서: 필드 변환, 선택 날짜 생략, 필수값·날짜·타입 거부 위치, 상세 줄 하나로 선적 1건 거부, 값의 의미는 넘김 (DB 없음) |
+| `test_tms_parser_sql.py` | 확정 선적 166건 → TMS 응답 JSON → 파싱 결과가 직접 만든 레코드와 같음, 이름만 바꿔 적재하면 거부 없이 `SUCCEEDED` |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
