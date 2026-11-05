@@ -87,7 +87,7 @@ OWNER·ADMIN 응답 예:
 | 403 | `ACCOUNT_DISABLED` | `users.status`가 `DISABLED`. 로그인과 같은 코드 |
 
 - 비활성 계정을 401이 아니라 403으로 구분하는 이유: 프론트는 401을 받으면 토큰 재발급을 시도합니다. 비활성 계정이 재발급 루프에 빠지지 않도록 로그인과 같은 `ACCOUNT_DISABLED`로 바로 알립니다.
-- `get_current_user`는 DB를 보지 않으므로 다른 보호된 API는 토큰 만료(최대 30분)까지 비활성 계정을 통과시킵니다. 이 API는 DB를 읽어 그 전에 막습니다.
+- `get_current_user`는 DB를 보지 않으므로 다른 보호된 API는 토큰 만료(최대 8시간)까지 비활성 계정을 통과시킵니다. 이 API는 DB를 읽어 그 전에 막습니다.
 
 ### 서비스 로직 (`MeService.get_me`)
 

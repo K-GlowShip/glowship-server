@@ -1,7 +1,7 @@
 # 로그인과 인증 쿠키
 
-`app/modules/user/`의 로그인 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
-토큰 재발급(refresh)과 로그아웃은 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
+`app/modules/user/`의 로그인·로그아웃 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
+토큰 재발급(refresh)과 토큰 폐기는 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
 
 ## 1. 전체 흐름
 
@@ -46,7 +46,7 @@ sequenceDiagram
 
 ```http
 HTTP/1.1 200 OK
-Set-Cookie: access_token=...; HttpOnly; Max-Age=1800; Path=/; SameSite=lax; Secure
+Set-Cookie: access_token=...; HttpOnly; Max-Age=28800; Path=/; SameSite=lax; Secure
 Set-Cookie: refresh_token=...; HttpOnly; Max-Age=604800; Path=/api/v1/auth/refresh; SameSite=lax; Secure
 ```
 
@@ -73,13 +73,52 @@ Base64 해제 → 72바이트 초과면 401 → users.email 조회 → bcrypt �
 - **72바이트 한도**: bcrypt는 72바이트를 넘는 입력에 `ValueError`를 던집니다(bcrypt 5.x). 정책상 비밀번호는 16자 이하이므로 이를 넘는 입력은 조회 없이 `INVALID_CREDENTIALS`로 거절해 500을 막습니다.
 - 토큰 발급은 서비스가 하고(`TokenPair`), 쿠키에 싣는 일은 라우터가 `set_auth_cookies`로 합니다.
 
+## 2-1. 로그아웃 API
+
+`POST /api/v1/auth/logout` — `app/modules/user/presentation/auth_api_router.py`
+
+### 요청
+
+본문·쿼리·경로 변수가 없습니다. **인증을 요구하지 않습니다.** 쿠키가 없거나 만료·위조된 토큰이어도 같은 응답입니다.
+
+### 응답
+
+```http
+HTTP/1.1 204 No Content
+Set-Cookie: access_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path=/; SameSite=lax; Secure
+Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path=/api/v1/auth/refresh; SameSite=lax; Secure
+```
+
+`expires`에는 과거 고정 시각이 아니라 **응답 시각**이 찍힙니다(Starlette `delete_cookie`가 `expires=0`을 넘김. 예: `expires=Thu, 05 Nov 2026 05:00:18 GMT`). `Max-Age=0`이 `Expires`보다 우선이므로 지워지는 동작은 같습니다.
+
+- 서버가 두 쿠키를 발급 때와 **같은 이름·Path·SameSite·HttpOnly**로 `Max-Age=0` 처리해 브라우저가 지우게 합니다(`clear_auth_cookies`). HttpOnly 쿠키는 프론트가 지울 수 없습니다. 브라우저는 이름·도메인·Path가 같은 쿠키만 덮어쓰므로 Path가 다르면 지워지지 않습니다. `tests/core/test_cookies.py`가 발급과 삭제의 쌍을 대조합니다.
+- 브라우저는 refresh 쿠키를 `/api/v1/auth/refresh`에만 보내므로 로그아웃 요청에는 refresh 쿠키가 실려 오지 않습니다. 서버는 토큰 값을 볼 필요 없이 삭제 지시만 내립니다.
+- 프론트는 204를 받으면 로그인 화면으로 이동합니다. 보관하는 토큰 상태가 없으므로 그 밖의 정리는 없습니다.
+
+| 상태 | code | 상황 |
+| --- | --- | --- |
+| 204 | – | 항상. 멱등 |
+| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청(3-1절). 다른 사이트가 사용자를 강제로 로그아웃시키는 것은 **출처 검사만** 막습니다. 로그아웃은 쿠키 없이도 동작하므로 SameSite=Lax는 이 경우 방어가 되지 않습니다(SameSite는 쿠키를 **보내는** 것만 막고, 다른 사이트 폼 POST 응답의 `Set-Cookie`는 브라우저가 적용합니다). 출처 검사 범위를 조정할 때 로그아웃을 빼면 안 됩니다 |
+
+### 왜 인증을 요구하지 않는가
+
+- 로그아웃은 "이 브라우저의 세션을 끝낸다"는 뜻이고, 세션이 이미 만료되어 실패하는 로그아웃은 사용자에게 의미가 없습니다. 항상 성공해야 버튼이 꼬이지 않습니다.
+- access 토큰이 만료된 상태에서 401을 돌려주면 프론트가 재발급을 시도한 뒤 다시 로그아웃하는 우회 경로가 생깁니다.
+- 인증 없이도 서버 상태는 바뀌지 않고, 교차 사이트 요청은 출처 검사가 막습니다. 명세 v6.2는 이 결정에 맞춰 로그아웃을 인증 예외로 고쳤습니다(C35: 2절 인증 예외에 로그아웃 추가, 3절 2번 권한 "없음").
+
+### 한계 (무상태 로그아웃)
+
+- 서버는 토큰을 기록하지 않습니다. **로그아웃 전에 복사된 토큰은 만료까지 유효합니다**: access 최대 8시간(개발 단계 프론트와 합의한 값), refresh 최대 7일.
+- 같은 쿠키 값을 다시 보내면 `GET /me`는 여전히 200입니다. 즉시 무효화가 필요하면 refresh `jti` 폐기 목록이 필요하며, 재발급 API 구현 때 저장소와 함께 정합니다(7절).
+- 폐기 목록을 넣으려면 로그아웃이 refresh `jti`를 읽어야 하는데, refresh 쿠키는 Path가 `/api/v1/auth/refresh`로 좁혀져 로그아웃 요청에 실려 오지 않습니다. 따라서 그때는 **쿠키 Path 조정**(예: `/api/v1/auth`로 넓혀 인증 엔드포인트에만 실리게)이 함께 필요합니다(7절).
+
 ## 3. 쿠키
 
-`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급·로그아웃도 같은 값을 써야 합니다.
+`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급·로그아웃(`clear_auth_cookies`)도 같은 값을 씁니다.
 
 | 쿠키 | Path | Max-Age | 속성 |
 | --- | --- | --- | --- |
-| `access_token` | `/` | 1800초 (`ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly; SameSite=Lax; Secure(설정)` |
+| `access_token` | `/` | 28800초 (`ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly; SameSite=Lax; Secure(설정)` |
 | `refresh_token` | `/api/v1/auth/refresh` | 604800초 (`REFRESH_TOKEN_EXPIRE_DAYS`) | 동일 |
 
 - refresh 쿠키는 Path를 재발급 엔드포인트로 좁혀 다른 요청에는 실리지 않습니다. 따라서 재발급 API는 **반드시** `/api/v1/auth/refresh`에 있어야 합니다.
@@ -168,7 +207,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | 쿠키 없음, 서명 불일치, 만료, refresh 토큰을 access로 사용, 클레임 구성 불일치 | 401 `UNAUTHENTICATED` (사유를 구분하지 않음). 프론트는 이 코드를 받으면 재발급을 시도 |
 | 역할 불일치 | 403 `FORBIDDEN` |
 
-- `get_current_user`는 DB를 조회하지 않습니다. 계정 비활성화·역할 변경은 access 토큰 만료(최대 30분)까지 반영되지 않으며, 즉시 차단이 필요한 API는 해당 엔드포인트에서 DB를 재조회해야 합니다.
+- `get_current_user`는 DB를 조회하지 않습니다. 계정 비활성화·역할 변경은 access 토큰 만료(최대 8시간)까지 반영되지 않으며, 즉시 차단이 필요한 API는 해당 엔드포인트에서 DB를 재조회해야 합니다.
 - `CurrentUser.role_code`는 문자열이지만 `UserRoleCode`는 `str` Enum이므로 `current_user.role_code == UserRoleCode.ADMIN` 비교가 그대로 동작합니다.
 - 쿠키 인증 방식은 OpenAPI `securitySchemes`(`APIKeyCookie`)에 기록됩니다. Swagger UI에서 `/auth/login`을 호출하면 브라우저가 쿠키를 보관하므로 이어서 보호된 API를 바로 호출할 수 있습니다.
 
@@ -180,7 +219,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | --- | --- | --- |
 | `JWT_SECRET_KEY` | 없음 (**필수**) | 32자 이상. 짧으면 기동 시 pydantic 검증 오류. 생성: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `JWT_ALGORITHM` | `HS256` | 서명 알고리즘 |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | access 토큰·쿠키 수명 |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | access 토큰·쿠키 수명 (8시간, 개발 단계 프론트와 합의한 값) |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | refresh 토큰·쿠키 수명 |
 | `COOKIE_SECURE` | 없음 | 생략 시 `APP_ENV=local`만 `false`, 그 외 `true`. 로컬 HTTP에서 Safari는 `Secure` 쿠키를 버리기 때문 |
 | `CORS_ORIGINS` | `[]` | CORS 와 출처 검사가 함께 쓰는 허용 오리진 목록. 프론트 오리진과, Swagger 를 쓸 경우 API 자신의 오리진 포함 |
@@ -192,20 +231,20 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | 기능 | 비워 둔 자리 |
 | --- | --- |
 | 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급 |
-| 로그아웃 | `cookies.py`의 이름·Path 상수로 두 쿠키를 삭제 |
+| ~~로그아웃~~ | 구현됨. `POST /api/v1/auth/logout`이 `clear_auth_cookies`로 두 쿠키를 만료시킨다 (2-1절) |
 | ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
-| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 별도 결정 |
+| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태(2-1절 한계)이고 refresh 쿠키가 로그아웃 요청에 실려 오지 않으므로, 폐기 목록을 넣을 때는 `REFRESH_TOKEN_COOKIE_PATH`를 `/api/v1/auth`로 넓히는 것(인증 엔드포인트에만 실림. `cookies.py` 상수 한 곳이면 발급·삭제가 함께 따라가고, 명세 D4·C31의 Path 문구도 같이 고침)을 함께 정한다. 재발급 API 전에 바꾸는 편이 안전하다. Path가 다르면 브라우저가 별개 쿠키로 취급해 이미 로그인한 사용자에게 옛 Path 쿠키가 7일간 남으므로, 전환 기간에는 로그아웃에서 옛·새 Path를 모두 삭제한다. 명세 4.1 `POST /auth/refresh`에도 메모(C35) |
 | 서버 간 호출 | 로그인 토큰이 아니라 별도 자격(서비스 토큰·API 키)으로 다룸 |
 
 ## 8. 관련 파일
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login`·`/auth/logout` 엔드포인트, 쿠키 응답 |
 | `app/modules/user/application/auth_service.py` | `login` 비즈니스 로직, `TokenPair` |
 | `app/modules/user/application/exception/user_exceptions.py` | `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED` |
 | `app/core/security/jwt.py` | 토큰 발급·검증, `JwtConfig`, `TokenType`, `TokenError` |
-| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies` |
+| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies`, `clear_auth_cookies` |
 | `app/core/security/auth.py` | `CurrentUser`, `get_current_user`, `require_roles` |
 | `app/core/security/hashing.py` | bcrypt 해싱·검증, `DUMMY_PASSWORD_HASH`, 72바이트 한도 |
 | `app/core/exceptions.py` | `UNAUTHENTICATED`, `FORBIDDEN`, `INVALID_ORIGIN` 공통 에러 코드 |
