@@ -48,3 +48,6 @@ class RunSummary(CamelModel):
     result_class: str | None = Field(
         description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
     )
+    failure_code: str | None = Field(
+        description="실패 코드. ON_HOLD·FAILED 일 때만 값이 있고 그 밖은 null (analysis_runs.failure_code, 명세 C27)"
+    )

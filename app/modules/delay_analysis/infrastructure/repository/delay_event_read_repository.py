@@ -43,6 +43,7 @@ _BASE = f"""
              LIMIT 1) AS origin_region_code,
            r.analysis_run_id AS run_id, r.status AS run_status,
            r.result_class AS run_result_class,
+           r.failure_code AS run_failure_code,
            EXISTS (SELECT 1 FROM final_decisions f
                     WHERE f.company_id = r.company_id
                       AND f.analysis_run_id = r.analysis_run_id) AS has_final_decision,
@@ -199,6 +200,8 @@ class DelayEventRow:
     run_result_class: str | None
     has_final_decision: bool
     at_risk_order_count: int | None
+    # ON_HOLD·FAILED 일 때만 값 (명세 C27). 뒤에 더한 열이라 기본값을 두어 기존 생성 코드와 호환한다.
+    run_failure_code: str | None = None
 
 
 @dataclass(frozen=True)

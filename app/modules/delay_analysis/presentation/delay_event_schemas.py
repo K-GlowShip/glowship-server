@@ -137,6 +137,7 @@ class DelayEventListItemResponse(_DelayEventBase):
                 run_code=None,
                 status=row.run_status,
                 result_class=row.run_result_class,
+                failure_code=row.run_failure_code,
             )
             if row.run_id
             else None,

@@ -197,6 +197,7 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
         "runCode": None,
         "status": "READY_FOR_REVIEW",
         "resultClass": "READY_ORDER_RISK",
+        "failureCode": None,
     }
     assert "runStatus" not in item
     assert item["atRiskOrderCount"] == 4
