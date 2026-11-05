@@ -28,6 +28,7 @@ sequenceDiagram
     S-->>C: IngestResult (건수·적용 순번·거부 사유·STALE 된 실행)
 ```
 
+- **나눠 부르기(API 25용):** `ingest()`는 `start()`(실행 중 확인 → `RUNNING` 기록·커밋, 결과 `StartedRun`)와 `apply()`(적용 → 완료 기록)를 이어 부릅니다. 수동 수집 API 25는 `start()`를 요청 안에서 불러 실행 ID와 409를 바로 응답하고, 원천 응답 받기와 `apply()`는 백그라운드에서 합니다. 그 사이에 실패해 `apply()`를 못 부르면 `fail()`로 `FAILED`를 남겨야 다음 수집이 막히지 않습니다. `apply()` 안의 실패도 같은 `fail()`을 씁니다.
 - 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 `FAILED`(적용 순번 없음)로 남긴 뒤 예외를 다시 올립니다. `FAILED` 기록이 또 실패해도(연결 끊김, 이미 `RUNNING` 아님 등) **원래 예외**를 올리고, 기록 실패는 그 예외의 note 로 붙입니다. 이때 수집은 `RUNNING`으로 남을 수 있습니다(7절 정리 작업).
 - **같은 고객사·원천의 수집은 한 번에 하나만 돕니다.** 시작할 때 L1 안에서 `RUNNING` 수집이 있으면 시작 시각과 관계없이 `SyncInProgressException`(409 `SYNC_IN_PROGRESS`, 명세 4.3)으로 거부합니다. 그래서 늦게 잠금을 얻은 수집이 먼저 적용된 최신 값을 과거 값으로 덮어쓰지 않습니다.
 - **오래 남은 `RUNNING`(작업이 죽은 경우)도 막습니다.** 시간이 지났다고 무시하지 않습니다. 살아 있는 긴 수집과 새 수집이 둘 다 적용되는 역전을 막기 위해서입니다. 정리 절차는 7절(후속 운영 작업)입니다.
@@ -186,6 +187,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_tms_parser.py` | TMS 응답 파서: 필드 변환, 선택 날짜 생략, 필수값·날짜·타입 거부 위치, 상세 줄 하나로 선적 1건 거부, 값의 의미는 넘김 (DB 없음) |
 | `test_tms_parser_sql.py` | 확정 선적 166건 → TMS 응답 JSON → 파싱 결과가 직접 만든 레코드와 같음, 이름만 바꿔 적재하면 거부 없이 `SUCCEEDED` |
 | `test_virtual_tms.py` | 가상 TMS 시나리오: 고객사별 `after < fetched_at ≤ until` 응답, 같은 선적은 마지막 관측만, 시간대 다른 시각 비교, 파서 통과, 잘못된 시나리오 파일은 설정 오류 (DB 없음) |
+| `test_ingest_start_apply_sql.py` | 나눠 부르기: `start` 뒤 `RUNNING`·실행 ID, 같은 원천 두 번째 `start`는 409(다른 원천은 허용), `apply`로 완료 뒤 다시 시작 가능, 원천 응답 전 실패는 `fail`로 `FAILED`, 기록 실패 시 원래 예외에 note |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
