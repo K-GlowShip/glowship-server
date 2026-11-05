@@ -19,7 +19,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
 """
     지연 에피소드 저장 서비스 (할 일 9 지연 감지, GLOW-16, docs/analysis/delay-detection.md 3·4절)
       - SHIPMENT 수집이 일정 스냅샷을 남긴 같은 트랜잭션 안에서, 수집 완료 기록 뒤·STALE 판정 전에 부른다.
-      - 초기 적재(고객사의 첫 SHIPMENT 수집, 결정 1-10)면 아무것도 하지 않는다. 그 수집의 스냅샷은 기준 스냅샷이고
+      - 초기 적재(고객사의 첫 SHIPMENT 수집, 결정 1-10)면 아무것도 하지 않는다. 선적을 0건 적재한 수집은 세지 않는다. 그 수집의 스냅샷은 기준 스냅샷이고
         다음 수집부터 직전 스냅샷으로 쓰인다.
       - 판정과 종료를 나눈다. 호출 순서: detect_after_sync → (AUTO 실행 생성·이전 실행 STALE, GLOW-18) → close_episodes.
           detect_after_sync: 스냅샷마다 decide_episode 로 판정한다. START 만 바로 저장하고

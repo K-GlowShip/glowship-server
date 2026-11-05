@@ -58,7 +58,7 @@ detect_after_sync (판정, 시작만 저장)
 
 | 단계 | 하는 일 |
 | --- | --- |
-| 초기 적재 확인 | 이 수집 말고 적재된(`SUCCEEDED`·`PARTIAL_SUCCESS`) SHIPMENT 수집이 없으면 초기 적재라 아무것도 하지 않음(아래 "초기 적재 예외") |
+| 초기 적재 확인 | 이 수집 말고 선적을 1건 이상 적재한(`SUCCEEDED`·`PARTIAL_SUCCESS`, `loaded_record_count > 0`) SHIPMENT 수집이 없으면 초기 적재라 아무것도 하지 않음(아래 "초기 적재 예외") |
 | 판정 재료 | 이 수집이 남긴 스냅샷마다 선적의 계획 3PL 입고일, 직전 스냅샷(같은 선적의 다른 스냅샷 중 관측 시각이 가장 늦은 것), 선적의 마지막 에피소드 번호와 열린 에피소드 |
 | `START` | `delay_events` 한 행: `episode_no` = 마지막 번호 + 1, `dedupe_key` = `{shipment_id}:EP{n}`(ck6), 감지·직전 스냅샷, 단계·계획·예상 입고일, `detected_at` = 스냅샷 `observed_at` |
 | `CLOSE_RECEIVED`·`CLOSE_RECOVERED` | 판정에서는 저장하지 않고 결과로 돌려줌. `close_episodes`가 열린 에피소드의 `closed_at` = 스냅샷 `observed_at`, `close_reason` = `RECEIVED`·`RECOVERED`를 기록. 열린 행만 고치므로 한 번만 기록됨 |
@@ -68,7 +68,8 @@ detect_after_sync (판정, 시작만 저장)
 - 데이터 접근 방식(`docs/backend/data-access.md`): 읽기는 `LATERAL`·`FILTER`를 쓰는 직접 SQL, 에피소드 한 행 추가는 ORM 엔터티(`db.add` + `flush`), 종료는 열린 행만 고치는 조건부 `update(DelayEvent)` 식입니다.
 - **종료 권한:** 공유 DDL은 워커 역할에 `delay_events` UPDATE를 주지 않습니다(813행). 설계 담당이 2026-11-04에 워커에게 `closed_at`·`close_reason` 두 열만 UPDATE를 주기로 정했고(ERD 설명 4절), 서버 리비전은 개발자 3이 넣습니다. 그 전까지 운영(워커 역할)에서는 종료가 권한 오류이고, 로컬 개발 DB는 슈퍼유저라 동작합니다.
 - **초기 적재 예외(결정 1-10) — 이 절이 이 규칙의 기준입니다.**
-  - **무엇이 초기 적재인가:** 고객사의 **첫 SHIPMENT 수집**(그 전에 적용된 `SHIPMENT` 수집 `SUCCEEDED`·`PARTIAL_SUCCESS`가 없음)입니다. 그 수집이 남긴 일정 스냅샷이 결정 1-10의 기준 스냅샷입니다.
+  - **무엇이 초기 적재인가:** 고객사의 **선적을 처음 적재한 SHIPMENT 수집**(그 전에 선적을 1건 이상 적재한 `SHIPMENT` 수집 `SUCCEEDED`·`PARTIAL_SUCCESS`가 없음)입니다. 그 수집이 남긴 일정 스냅샷이 결정 1-10의 기준 스냅샷입니다.
+  - **0건 수집은 세지 않습니다(`loaded_record_count > 0`).** 연결 시험이나 원천 준비 전 호출로 첫 수집이 선적 0건으로 성공하면 기준 스냅샷이 남지 않습니다. 이 수집을 앞선 수집으로 치면 그다음 수집(실제 초기 데이터)의 지연 선적마다 에피소드가 열리고, GLOW-18 뒤에는 AUTO 실행까지 생깁니다. 결정 1-10이 막으려던 경우라 선적을 실제로 적재한 수집만 셉니다(PR #24 리뷰, 2026-11-05). 확정 데이터의 첫 SHIPMENT 수집은 두 고객사 모두 선적을 적재했으므로(A_BEAUTY 59건) 결과는 같습니다.
   - **누가 가르나:** 이 저장 단계가 가릅니다(`has_prior_applied_shipment_sync`). 초기 적재 수집의 스냅샷은 `decide_episode`에 넣지 않습니다. 그 뒤 수집부터는 이 스냅샷을 직전 스냅샷(`previous`)으로 씁니다.
   - **`decide_episode`는 이 신호를 받지 않습니다.** 순수 판정이라 받은 스냅샷만 봅니다. `previous is None`으로는 가를 수 없습니다(운영 중 새로 들어온 선적의 첫 스냅샷도 직전 스냅샷이 없음, 3절에 따라 에피소드를 엶).
   - 확정 데이터: 두 고객사의 첫 SHIPMENT 수집(2025-12-31)이 남긴 스냅샷이 각 5건이고, 2026 이전 스냅샷 10건과 정확히 같습니다. 그중 이미 지연인 스냅샷은 없어 223건 재현으로는 이 규칙이 검증되지 않으므로, 별도 테스트(`test_ingest_episode_sql.py`: 첫 수집의 지연 스냅샷 → 에피소드 없음, 다음 수집의 지연 → 시작)로 확인합니다.

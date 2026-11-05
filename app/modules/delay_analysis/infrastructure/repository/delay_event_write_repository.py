@@ -30,6 +30,7 @@ _PRIOR_APPLIED_SHIPMENT_SYNC = text(
          WHERE company_id = :company_id
            AND source_domain = 'SHIPMENT'
            AND status IN ('SUCCEEDED', 'PARTIAL_SUCCESS')
+           AND loaded_record_count > 0
            AND data_sync_run_id <> :data_sync_run_id
     )
     """
@@ -128,7 +129,8 @@ class DelayEventWriteRepository:
     async def has_prior_applied_shipment_sync(
         self, company_id: uuid.UUID, data_sync_run_id: uuid.UUID
     ) -> bool:
-        """이 수집 말고 적재된(SUCCEEDED·PARTIAL_SUCCESS) SHIPMENT 수집이 있는가. 없으면 이번이 초기 적재(결정 1-10)."""
+        """이 수집 말고 선적을 1건 이상 적재한(SUCCEEDED·PARTIAL_SUCCESS, loaded_record_count > 0) SHIPMENT 수집이 있는가.
+        없으면 이번이 초기 적재(결정 1-10). 0건 수집은 기준 스냅샷을 남기지 않으므로 앞선 수집으로 치지 않는다."""
         return bool(
             await self.db.scalar(
                 _PRIOR_APPLIED_SHIPMENT_SYNC,

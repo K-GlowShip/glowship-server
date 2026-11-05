@@ -69,6 +69,45 @@ async def test_첫_SHIPMENT_수집만_초기_적재다(db_write_session):
     assert not await repo.has_prior_applied_shipment_sync(UNKNOWN_ID, UNKNOWN_ID)
 
 
+async def test_선적을_0건_적재한_수집은_앞선_수집으로_치지_않는다(db_write_session):
+    """첫 SHIPMENT 수집이 선적 0건으로 성공하면 기준 스냅샷이 없으므로, 그다음 수집이 초기 적재다 (결정 1-10, PR #24 리뷰).
+    롤백 트랜잭션에서 첫 수집을 0건 적재로, 그 뒤 수집(두 번째 제외)을 FAILED 로 바꾼다."""
+    db = db_write_session
+    runs = await _shipment_runs(db, "A_BEAUTY")
+    if len(runs) < 2:
+        return  # 확정 데이터가 없는 DB
+    first, second = runs[0], runs[1]
+    repo = DelayEventWriteRepository(db)
+    await db.execute(
+        text(
+            """
+            UPDATE data_sync_runs
+               SET received_record_count = 0, loaded_record_count = 0, rejected_record_count = 0
+             WHERE company_id = :c AND data_sync_run_id = :first
+            """
+        ),
+        {"c": first.company_id, "first": first.data_sync_run_id},
+    )
+    await db.execute(
+        text(
+            """
+            UPDATE data_sync_runs SET status = 'FAILED', applied_seq = NULL
+             WHERE company_id = :c AND source_domain = 'SHIPMENT'
+               AND data_sync_run_id NOT IN (:first, :second)
+            """
+        ),
+        {
+            "c": first.company_id,
+            "first": first.data_sync_run_id,
+            "second": second.data_sync_run_id,
+        },
+    )
+
+    assert not await repo.has_prior_applied_shipment_sync(
+        first.company_id, second.data_sync_run_id
+    )  # 0건 수집만 앞에 있으면 이번이 초기 적재
+
+
 async def test_이번_수집_스냅샷과_직전_스냅샷을_읽는다(db_session):
     runs = await _shipment_runs(db_session, "A_BEAUTY")
     if not runs:
