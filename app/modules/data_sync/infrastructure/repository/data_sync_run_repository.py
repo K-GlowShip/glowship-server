@@ -74,6 +74,19 @@ _LATEST_BY_DOMAIN = text(
 )
 
 
+# 원천의 마지막 적재 수집 시작 시각 (적용 순번 최대, C32 와 같은 기준). 가상 시각 계산에 쓴다.
+_LAST_APPLIED_STARTED_AT = text(
+    """
+    SELECT started_at
+      FROM data_sync_runs
+     WHERE company_id = :company_id AND source_domain = :source_domain
+       AND status IN ('SUCCEEDED', 'PARTIAL_SUCCESS')
+     ORDER BY applied_seq DESC
+     LIMIT 1
+    """
+).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
+
+
 @dataclass(frozen=True)
 class LatestRunSummary:
     """
@@ -102,6 +115,15 @@ class DataSyncRunRepository:
         self.db = db
 
     # Read
+    async def find_last_applied_started_at(
+        self, company_id: uuid.UUID, source_domain: str
+    ) -> datetime | None:
+        """원천의 마지막 적재 수집(SUCCEEDED·PARTIAL_SUCCESS 중 applied_seq 최대) 시작 시각. 없으면 None"""
+        return await self.db.scalar(
+            _LAST_APPLIED_STARTED_AT,
+            {"company_id": company_id, "source_domain": source_domain},
+        )
+
     async def find_latest_by_domain(
         self, company_id: uuid.UUID, source_domains: Iterable[str]
     ) -> dict[str, LatestRunSummary]:

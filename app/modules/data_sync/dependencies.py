@@ -28,5 +28,7 @@ def get_data_sync_status_service(
     settings: Settings = Depends(get_settings),
 ) -> DataSyncStatusService:
     return DataSyncStatusService(
-        repo=repo, stale_multiplier=settings.sync_stale_multiplier
+        repo=repo,
+        stale_multiplier=settings.sync_stale_multiplier,
+        virtual_clock=settings.virtual_clock_start is not None,
     )

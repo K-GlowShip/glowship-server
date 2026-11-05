@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # 0 이면 판정하지 않는다 (합성데이터처럼 오래된 이력으로 화면을 확인할 때).
     sync_stale_multiplier: int = Field(default=2, ge=0)
 
+    # 가상 시각 (GLOW-13·49 데모, 2026-11-04 결정). 데이터가 2026-06-30 까지이고 마지막 수집이 07-01 이라 데모의 "지금"은 7월 초다.
+    # 값이 있으면 수동 수집(API 25)은 서버의 지금 시각이 아니라 "마지막 적재 SHIPMENT 수집 날짜 + 1일 00:00Z"(처음은 이 값)로
+    # 수집하고, 수집 현황의 동기화 판정도 고객사의 가장 최근 수집 시작 시각을 지금으로 본다 (virtual_clock.py).
+    # 비우면(VIRTUAL_CLOCK_START=) 서버의 지금 시각을 쓴다. 실제 원천을 붙이는 환경에서만 비운다.
+    virtual_clock_start: datetime | None = datetime(2026, 7, 2, tzinfo=UTC)
+
     # Analysis engine
     # 데이터 팀 분석 엔진 폴더(glowship_engine·synth2025_v5 의 부모). 엔진 코드는 저장소에 넣지 않고 이 경로에서
     # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
@@ -62,6 +68,22 @@ class Settings(BaseSettings):
         # 빈 값·공백은 설정하지 않은 것(None)으로 본다.
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("virtual_clock_start", mode="before")
+    @classmethod
+    def _blank_virtual_clock_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("virtual_clock_start")
+    @classmethod
+    def _virtual_clock_needs_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError(
+                "VIRTUAL_CLOCK_START 는 시간대가 있는 시각이어야 합니다 (예: 2026-07-02T00:00:00Z)"
+            )
         return value
 
     @field_validator("worker_postgres_user", "worker_postgres_password", mode="before")

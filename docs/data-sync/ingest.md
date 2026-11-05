@@ -53,6 +53,7 @@ sequenceDiagram
 
 - 선적은 TMS 응답 그대로입니다(`shipmentNo`·`mode`·`destWh`·`plannedKrRelease`·`stage`·`etaPort`·`eta3pl`·`actual3pl`·`items`). 운송 수단은 `OCEAN`·`AIR`입니다.
   - 가상 TMS(`infrastructure/virtual_tms.py`, GLOW-49)는 날짜별 TMS 응답 시나리오 파일(census `shipments_api.json`과 같은 모양: `responses[].fetched_at`·`_demo_company`·`data`)에서 `after < fetched_at ≤ until`인 응답을 모으고, 같은 선적은 마지막 관측 값만 남겨 돌려줍니다. `until`은 7월 초 가상 시각이며 서버의 지금 시각을 넘기지 않습니다. 시나리오 내용은 데이터 설계 몫입니다.
+  - 가상 시각(`application/virtual_clock.py`, 설정 `VIRTUAL_CLOCK_START`, 기본 `2026-07-02T00:00:00Z`): 수동 수집 시각은 서버의 지금(11월)이 아니라 "그 원천의 마지막 적재 수집(`applied_seq` 최대) 시작 날짜 + 1일 00:00Z"이고, 처음은 시작값입니다. 누를 때마다 하루씩 나아갑니다. 가상 TMS 에는 (지난 수집 시작, 이번 수집 시각] 응답을 묻고, 수집 서비스 `now`는 이번 수집 시각으로 고정합니다(수집 시작·완료·스냅샷 관측 시각). 비우면 서버 시각입니다.
   - TMS 응답 파서 `tms_parser.parse_tms_shipments`가 응답 `data[]`를 `SourceShipment`와 거부로 나눕니다. 상세는 `items[].lineNo`·`sku`·`qty`, 날짜는 `YYYY-MM-DD`이고 `_demo`로 시작하는 필드는 읽지 않습니다. 거부 코드는 `MISSING_REQUIRED`·`INVALID_DATE`, 값은 있으나 타입이 다르면(수량이 문자열 등) `INVALID_FORMAT`(기준선에 없는 이름)입니다. 거부 키는 `shipmentNo`, 없으면 `data[i]`입니다.
 - 원천 삭제는 행을 지우지 않고 상태 `REMOVED_AT_SOURCE`로 옵니다(UPDATE). 응답에서 빠진 행·상세는 삭제로 보지 않습니다.
 - **파서가 보장할 조건**(원천 응답 → 레코드, 적재 서비스는 다시 검사하지 않음):
@@ -188,6 +189,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_tms_parser_sql.py` | 확정 선적 166건 → TMS 응답 JSON → 파싱 결과가 직접 만든 레코드와 같음, 이름만 바꿔 적재하면 거부 없이 `SUCCEEDED` |
 | `test_virtual_tms.py` | 가상 TMS 시나리오: 고객사별 `after < fetched_at ≤ until` 응답, 같은 선적은 마지막 관측만, 시간대 다른 시각 비교, 파서 통과, 잘못된 시나리오 파일은 설정 오류 (DB 없음) |
 | `test_ingest_start_apply_sql.py` | 나눠 부르기: `start` 뒤 `RUNNING`·실행 ID, 같은 원천 두 번째 `start`는 409(다른 원천은 허용), `apply`로 완료 뒤 다시 시작 가능, 원천 응답 전 실패는 `fail`로 `FAILED`, 기록 실패 시 원래 예외에 note |
+| `test_virtual_clock.py`·`test_virtual_clock_sql.py` | 가상 시각: 마지막 적재 수집 날짜 + 1일 00:00Z(UTC 날짜 기준, 시작값보다 이르지 않음), 시작값 비우면 서버 시각, 설정 기본값·빈 값·시간대 필수, 확정 DB 첫 수동 수집 = 07-02 00:00Z |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.

@@ -50,6 +50,7 @@ class DataSyncStatusService:
         repo: DataSyncRunRepository,
         stale_multiplier: int,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        virtual_clock: bool = False,
     ):
         """
         Args:
@@ -57,10 +58,15 @@ class DataSyncStatusService:
             stale_multiplier: 수집 멈춤 판정 배수. 마지막 실행 시작이 수집 주기 × 배수보다 오래되면 동기화 안 됨으로 본다.
                 0 이면 멈춤 판정을 하지 않는다 (Settings.sync_stale_multiplier).
             clock: 현재 시각(UTC). 테스트에서 시각을 고정하기 위한 주입점
+            virtual_clock: True 면 지금 = 이 고객사의 가장 최근 수집 시작 시각(원천 무관, 수집 이력이 없으면 clock).
+                데모는 데이터가 7월 초에 멈춰 있어 서버 시각(11월)으로 판정하면 모든 원천이 멈춘 것으로 보인다.
+                가장 최근에 수집한 원천은 동기화됨, 그보다 주기 × 배수 넘게 뒤처진 원천은 동기화 안 됨이 된다
+                (Settings.virtual_clock_start 가 있을 때, virtual_clock.py).
         """
         self.repo = repo
         self.stale_multiplier = stale_multiplier
         self.clock = clock
+        self.virtual_clock = virtual_clock
 
     async def get_latest_statuses(
         self, tenant: TenantContext
@@ -70,11 +76,17 @@ class DataSyncStatusService:
             tenant.company_id,
             [spec.source_domain.value for spec in DATA_SOURCES],
         )
-        now = self.clock()
+        now = self._now(summaries.values())
         return [
             self._build_status(spec, summaries.get(spec.source_domain.value), now)
             for spec in DATA_SOURCES
         ]
+
+    def _now(self, summaries) -> datetime:
+        started = [summary.started_at for summary in summaries]
+        if self.virtual_clock and started:
+            return max(started)
+        return self.clock()
 
     def _build_status(
         self, spec: DataSourceSpec, summary: LatestRunSummary | None, now: datetime

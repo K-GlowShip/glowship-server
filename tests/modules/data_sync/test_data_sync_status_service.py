@@ -223,3 +223,50 @@ async def test_배수가_0이어도_실패는_동기화_안_됨이다():
     )
 
     assert status.is_synced is False
+
+
+# --- 가상 시각 (데모, Settings.virtual_clock_start) ------------------------------------
+
+
+def _summary_started_at(started_at: datetime) -> LatestRunSummary:
+    return _summary(started_ago=NOW - started_at, synced_ago=NOW - started_at)
+
+
+async def test_가상_시각이면_가장_최근_수집_시작을_지금으로_본다():
+    """서버 시각(11월)이 아니라 고객사의 가장 최근 수집 시작(7월 초)이 지금. 그 원천은 동기화됨,
+    하루 뒤처진 원천은 주기 × 배수를 넘어 동기화 안 됨"""
+    latest = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    summaries = {
+        "SHIPMENT": _summary_started_at(latest),
+        "ORDER": _summary_started_at(datetime(2026, 7, 1, 0, 2, tzinfo=UTC)),
+    }
+    repo = FakeDataSyncRunRepository(summaries=summaries)
+    service = DataSyncStatusService(
+        repo=repo, stale_multiplier=2, clock=lambda: NOW, virtual_clock=True
+    )
+
+    statuses = {s.source_domain: s for s in await service.get_latest_statuses(TENANT)}
+
+    assert statuses[SourceDomain.SHIPMENT].is_synced is True
+    assert statuses[SourceDomain.ORDER].is_synced is False
+
+
+async def test_가상_시각이_아니면_서버_시각으로_판정한다():
+    summaries = {"SHIPMENT": _summary_started_at(datetime(2026, 7, 2, tzinfo=UTC))}
+    repo = FakeDataSyncRunRepository(summaries=summaries)
+    service = DataSyncStatusService(
+        repo=repo, stale_multiplier=2, clock=lambda: NOW, virtual_clock=False
+    )
+
+    statuses = {s.source_domain: s for s in await service.get_latest_statuses(TENANT)}
+
+    assert statuses[SourceDomain.SHIPMENT].is_synced is False
+
+
+async def test_가상_시각이어도_수집_이력이_없으면_모두_동기화_안_됨이다():
+    repo = FakeDataSyncRunRepository(summaries={})
+    service = DataSyncStatusService(
+        repo=repo, stale_multiplier=2, clock=lambda: NOW, virtual_clock=True
+    )
+
+    assert not any(s.is_synced for s in await service.get_latest_statuses(TENANT))
