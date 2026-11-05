@@ -352,9 +352,59 @@ T11 출력에는 `feasibility_status`가 없어서 모델은 "순위는 `FEASIBL
 
 비교표(agentflow 4절 "동일 기준 비교표")는 따로 만들지 않습니다. T10 `options[]`와 이 순위를 합친 것이 분석 실행 상세 응답의 `responseOptions`입니다.
 
-## 8. T12 `validate_agent_output` (C 구현, 2차)
+## 8. T12 `validate_agent_output` (C 구현, GLOW-127)
 
-입력은 T6·T7·T10·T11 출력과 AI 설명(`explanation.v1`), 출력은 `통과`·`설명 재요청`·`실패`와 오류 목록입니다(agentflow 4절). 설명 검증 규칙은 데이터 팀 설명 스키마와 엔진 `explain`을 기준으로 2차에 정합니다.
+AI 설명(`explanation.v1`)이 계산 결과와 맞는지 검증합니다. agentflow 4절의 입력 "T6·T7·T10·T11 출력과 AI 설명"은 **설명 입력 문서**(`explanation_input.v1`) 한 개로 받습니다. 엔진 `explain/input_doc.build`가 T6·T7·T10·T11에 해당하는 계산 결과(`pipeline.analyze`)에서 만드는 문서이고, 모델이 받는 유일한 입력입니다. 검증 규칙은 엔진 `explain/validator.validate`를 그대로 씁니다. 규칙을 서버에서 다시 만들지 않아서, 설명을 생성하는 동안 시도마다 하는 검증(엔진 `generator`)과 판정이 같습니다. 모델은 `application/agent/tools/validation_schemas.py`, 함수는 `output_validation.py`입니다(동기 순수 함수, 개발 2가 등록표에 감쌈). 설명 생성 흐름은 `docs/agent-flow/explanation.md`에 있습니다.
+
+입력
+
+| 필드 | 형식 | NULL | 뜻 |
+| --- | --- | --- | --- |
+| `input_document` | 객체 | 아니오 | 설명 입력 문서. `schema_version`이 `explanation_input.v1`이 아니면 거부합니다 |
+| `output` | text | 아니오 | 모델 출력 원문(JSON 문자열). 검증 뒤 실패 원문은 결과·추적·DB 어디에도 남기지 않습니다 |
+| `canary` | text | 예 | 그 시도의 프롬프트에 넣은 확인값. 출력에 나오면 `LEAKAGE_DETECTED`입니다. 모르면 `null`이고, 그때는 이 검사 하나만 빠집니다 |
+| `expected_metadata` | 객체 | 아니오 | 출력이 가져야 할 메타데이터. **모델 출력에서 읽지 않고** 서버가 아는 값으로 만듭니다(아래 필드) |
+| `expected_metadata.schema_version`·`language` | text · text | 아니오 | `explanation.v1` · `ko` |
+| `expected_metadata.analysis_run_id`·`decision_signature_hash` | 식별자 · sha256 | 아니오 | 입력 문서 `run`의 값과 다르면 거부합니다(연결 오류) |
+| `expected_metadata.model_provider`·`model_id` | text · text | 아니오 | 모델 설정(지금은 `mock`·`mock-template-v1`) |
+| `expected_metadata.prompt_template_id`·`prompt_template_version`·`prompt_template_sha256` | text · text · sha256 | 아니오 | 등록 프롬프트(`explain_ready_v1`·`1.0.0`과 해시) |
+| `expected_metadata.generated_at` | 시각 | 아니오 | 실행이 정한 설명 생성 시각(UTC 초) |
+| `expected_metadata.retry_no` | 정수 | 아니오 | 시도 번호 1~3 |
+
+출력
+
+| 필드 | 형식 | NULL | 뜻 |
+| --- | --- | --- | --- |
+| `status` | text | 아니오 | 아래 판정 |
+| `errors[]` | 배열(`code`, `location`) | 아니오 | 검증기가 낸 순서. `location`은 위치(예: `risk_summary#s1`, `evidence:E3`)이고 원문은 넣지 않습니다 |
+
+판정
+
+| 값 | 조건 |
+| --- | --- |
+| `PASSED` | 오류 없음(agentflow "통과") |
+| `RETRY` | 오류가 있고 `retry_no`가 3보다 작음(agentflow "설명 재요청"). 다음 시도에는 이전 출력 원문이 아니라 사유 코드와 위치만 줍니다 |
+| `FAILED` | 3번째 시도에도 오류(agentflow "실패"). 실행은 `FAILED`·`VALIDATING_OUTPUT`·`EXPLANATION_GENERATION_FAILED`가 되고 계산 결과는 남습니다(#28 `explanation_failure`) |
+
+사유 코드(엔진 `validator` 머리말, R-02′ 1.12)
+
+| 코드 | 뜻 |
+| --- | --- |
+| `SCHEMA_INVALID` | JSON이 아니거나 `explanation.v1` 스키마·필수 근거·메타데이터가 맞지 않음 |
+| `SIGNATURE_HASH_MISMATCH` | 판정 서명 해시가 다름 |
+| `EVIDENCE_UNRESOLVED` | 근거 경로가 입력 문서에 없거나 문장의 근거 표지가 근거 목록에 없음 |
+| `VALUE_MISMATCH` | 근거 값·문장의 수치·날짜·코드·라벨이 입력 문서와 다름 |
+| `UNREFERENCED_VALUE` | 근거 표지 없이 수치·날짜·코드를 씀 |
+| `OPTION_SET_MISMATCH` | 대응안 설명의 종류·순서가 입력 문서와 다름 |
+| `RECOMMENDATION_MISMATCH` | 추천 설명이 추천 대응안과 다름 |
+| `FORBIDDEN_EXPRESSION` | 금지 표현(확정·보장 표현 등, `ko-v2`) |
+| `LENGTH_EXCEEDED` | 문장 수·문장 길이(120자)·본문 길이(1200자) 초과 |
+| `LANGUAGE_INVALID` | 언어가 `ko`가 아님 |
+| `LEAKAGE_DETECTED` | 확인값·이메일 같은 내부 정보 유출 |
+| `MODEL_TIMEOUT` | 모델 시간 초과. 검증기가 아니라 생성기가 시도 기록에 붙입니다 |
+| `MODEL_CALL_ERROR` | 모델 호출 오류. 생성기가 시도 기록에 붙입니다 |
+
+설명 자산(프롬프트·스키마·금지 표현·라벨·모델 설정)이 없거나 등록부 해시와 다르면 T12는 검증 결과가 아니라 `ExplanationAssetError`를 냅니다. 모델 호출 전 시스템 구성 오류라서 설명 시도로 세지 않습니다. 서버 시작 단계에서도 같은 확인을 합니다(`explanation.md` 3절).
 
 ## 9. 결정 사항과 남은 질문
 
