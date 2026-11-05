@@ -269,6 +269,7 @@ uv run pytest
 - 에이전트는 업무 DB에 쓰지 않고 결과만 반환합니다. 저장·STALE 판정은 서비스 책임입니다.
 - 실행 상태 조회기는 `config["configurable"]["run_status_reader"]`로 주입합니다. 주입하지 않으면 STALE 확인을 건너뜁니다.
 - 개발 확인용 `POST /api/v1/dev/agent/dry-run`으로 그래프를 한 번 실행해 거친 노드 순서를 볼 수 있습니다 (`APP_ENV=prod`에서는 등록되지 않음).
+- 계산·설명 검증은 데이터 팀 분석 엔진을 그대로 씁니다. 엔진 코드는 저장소에 넣지 않고, `.env`의 `GLOWSHIP_ENGINE_DIR` 폴더 원본을 해시 목록으로 대조해 불러옵니다. 준비 방법은 `docs/analysis/engine-local-path.md`에 있습니다.
 
 ## 코드 스타일
 
