@@ -241,6 +241,14 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | | K_IMPACTED 전부 공여 창고 다음 입고 없음 | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND` (T10은 SKU 항목만, 집계 `null`) | D |
 | | 그 밖 | `CALCULATE` | D |
 
+구현(`tools/option_feasibility.py`, GLOW-132)에서 정한 처리
+
+- 리드타임 0은 값입니다. 없는 것은 `null`뿐입니다.
+- 영향 SKU가 없으면 `DONOR_NO_NEXT_INBOUND`로 판정하지 않습니다(엔진 `k_imp and all(...)`).
+- `kr_on_hand[]`에 행이 없는 SKU는 보유 0이고, `donor_next_inbound[]`에 행이 없는 SKU는 다음 입고 `null`과 같습니다.
+- `eligible_sku_codes[]`는 `sku_code` 순이고, 한국 재고가 0인 SKU도 넣습니다. 리드타임이 없어 `NEEDS_CHECK`여도 채웁니다(9절 Q14).
+- 영향 SKU가 `skus[]`에 없으면 후보와 상관없이 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 멈춥니다(9절 Q13).
+
 ## 6. T10 `calculate_option_outcomes` — 대응안 결과 (A 구현)
 
 입력: T9 출력과 T1·T2·T3·T4·T5·T8, T6 `items[]`·영향 집합, T7 `risks[]`·`expected_plan_simulation`·`simulation_horizon_end`.
@@ -374,6 +382,8 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장(노드·저장 작업)에서 더하고, 그때 이 문서 4절도 함께 고침 |
 | Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
+| Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132)** | 긴급 항공 가능 여부를 알 수 없으므로 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 실행을 보류함. 엔진은 `KeyError`로 멈춤. 필수 자료 부족은 실행 전체 `ON_HOLD`라는 Q7과 같은 방향 |
+| Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 
 ### 9.1 모델로 옮기며 채운 것
 
