@@ -10,6 +10,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
+from app.modules.delay_analysis.application.agent.retry import (
+    TOOL_TEMPORARY_ERROR_EXHAUSTED,
+    TransientToolError,
+    call_with_retry,
+)
+from app.modules.delay_analysis.application.agent.state import AnalysisStep
 from app.modules.delay_analysis.application.agent.tracing import (
     AUTO_TRACING_ENV,
     RunTracer,
@@ -188,6 +194,38 @@ def test_tool_attempts_from_retry_hook():
     assert [(e.kind, e.attempt, e.status, e.error_code) for e in sink.events] == [
         ("TOOL_ATTEMPT", 1, "RETRY", "TOOL_TIMEOUT"),
         ("TOOL_ATTEMPT", 2, "OK", None),
+    ]
+    assert sink.events[0].summary == {"step": "ANALYZING_IMPACT", "will_retry": True}
+
+
+async def test_real_call_with_retry_feeds_tool_attempts():
+    # GLOW-123(PR #28 머지)의 실제 call_with_retry 에 on_attempt=tracer.tool_attempt 를 넘긴다
+    sink = MemorySink()
+    tracer = RunTracer(uuid.uuid4(), uuid.uuid4(), [sink])
+    calls = {"n": 0}
+
+    async def flaky_tool():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TransientToolError("원천 응답 지연 A-ORD-20260613-0040")
+        return "ok"
+
+    async def no_sleep(seconds):
+        return None
+
+    result = await call_with_retry(
+        "get_sales_history",
+        AnalysisStep.ANALYZING_IMPACT,
+        flaky_tool,
+        sleep=no_sleep,
+        on_attempt=tracer.tool_attempt,
+    )
+    tracer.close()
+
+    assert result == "ok"
+    assert [(e.attempt, e.status, e.error_code) for e in sink.events] == [
+        (1, "RETRY", TOOL_TEMPORARY_ERROR_EXHAUSTED),
+        (2, "OK", None),
     ]
     assert sink.events[0].summary == {"step": "ANALYZING_IMPACT", "will_retry": True}
 
