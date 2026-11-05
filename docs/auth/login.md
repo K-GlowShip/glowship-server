@@ -46,7 +46,7 @@ sequenceDiagram
 
 ```http
 HTTP/1.1 200 OK
-Set-Cookie: access_token=...; HttpOnly; Max-Age=1800; Path=/; SameSite=lax; Secure
+Set-Cookie: access_token=...; HttpOnly; Max-Age=28800; Path=/; SameSite=lax; Secure
 Set-Cookie: refresh_token=...; HttpOnly; Max-Age=604800; Path=/api/v1/auth/refresh; SameSite=lax; Secure
 ```
 
@@ -108,7 +108,7 @@ Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path
 
 ### 한계 (무상태 로그아웃)
 
-- 서버는 토큰을 기록하지 않습니다. **로그아웃 전에 복사된 토큰은 만료까지 유효합니다**: access 최대 30분(재발급 API 머지 때 15분), refresh 최대 7일.
+- 서버는 토큰을 기록하지 않습니다. **로그아웃 전에 복사된 토큰은 만료까지 유효합니다**: access 최대 8시간(개발 단계 프론트와 합의한 값), refresh 최대 7일.
 - 같은 쿠키 값을 다시 보내면 `GET /me`는 여전히 200입니다. 즉시 무효화가 필요하면 refresh `jti` 폐기 목록이 필요하며, 재발급 API 구현 때 저장소와 함께 정합니다(7절).
 - 폐기 목록을 넣으려면 로그아웃이 refresh `jti`를 읽어야 하는데, refresh 쿠키는 Path가 `/api/v1/auth/refresh`로 좁혀져 로그아웃 요청에 실려 오지 않습니다. 따라서 그때는 **쿠키 Path 조정**(예: `/api/v1/auth`로 넓혀 인증 엔드포인트에만 실리게)이 함께 필요합니다(7절).
 
@@ -118,7 +118,7 @@ Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path
 
 | 쿠키 | Path | Max-Age | 속성 |
 | --- | --- | --- | --- |
-| `access_token` | `/` | 1800초 (`ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly; SameSite=Lax; Secure(설정)` |
+| `access_token` | `/` | 28800초 (`ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly; SameSite=Lax; Secure(설정)` |
 | `refresh_token` | `/api/v1/auth/refresh` | 604800초 (`REFRESH_TOKEN_EXPIRE_DAYS`) | 동일 |
 
 - refresh 쿠키는 Path를 재발급 엔드포인트로 좁혀 다른 요청에는 실리지 않습니다. 따라서 재발급 API는 **반드시** `/api/v1/auth/refresh`에 있어야 합니다.
@@ -207,7 +207,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | 쿠키 없음, 서명 불일치, 만료, refresh 토큰을 access로 사용, 클레임 구성 불일치 | 401 `UNAUTHENTICATED` (사유를 구분하지 않음). 프론트는 이 코드를 받으면 재발급을 시도 |
 | 역할 불일치 | 403 `FORBIDDEN` |
 
-- `get_current_user`는 DB를 조회하지 않습니다. 계정 비활성화·역할 변경은 access 토큰 만료(최대 30분)까지 반영되지 않으며, 즉시 차단이 필요한 API는 해당 엔드포인트에서 DB를 재조회해야 합니다.
+- `get_current_user`는 DB를 조회하지 않습니다. 계정 비활성화·역할 변경은 access 토큰 만료(최대 8시간)까지 반영되지 않으며, 즉시 차단이 필요한 API는 해당 엔드포인트에서 DB를 재조회해야 합니다.
 - `CurrentUser.role_code`는 문자열이지만 `UserRoleCode`는 `str` Enum이므로 `current_user.role_code == UserRoleCode.ADMIN` 비교가 그대로 동작합니다.
 - 쿠키 인증 방식은 OpenAPI `securitySchemes`(`APIKeyCookie`)에 기록됩니다. Swagger UI에서 `/auth/login`을 호출하면 브라우저가 쿠키를 보관하므로 이어서 보호된 API를 바로 호출할 수 있습니다.
 
@@ -219,7 +219,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | --- | --- | --- |
 | `JWT_SECRET_KEY` | 없음 (**필수**) | 32자 이상. 짧으면 기동 시 pydantic 검증 오류. 생성: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `JWT_ALGORITHM` | `HS256` | 서명 알고리즘 |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | access 토큰·쿠키 수명 |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | access 토큰·쿠키 수명 (8시간, 개발 단계 프론트와 합의한 값) |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | refresh 토큰·쿠키 수명 |
 | `COOKIE_SECURE` | 없음 | 생략 시 `APP_ENV=local`만 `false`, 그 외 `true`. 로컬 HTTP에서 Safari는 `Secure` 쿠키를 버리기 때문 |
 | `CORS_ORIGINS` | `[]` | CORS 와 출처 검사가 함께 쓰는 허용 오리진 목록. 프론트 오리진과, Swagger 를 쓸 경우 API 자신의 오리진 포함 |

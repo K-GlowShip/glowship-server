@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # 생성 예: python -c "import secrets; print(secrets.token_urlsafe(48))"
     jwt_secret_key: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 480  # 8시간. 개발 단계 프론트와 합의한 값
     refresh_token_expire_days: int = 7
 
     # Cookie
