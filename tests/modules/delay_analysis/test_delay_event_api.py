@@ -56,6 +56,7 @@ ROW = DelayEventRow(
     run_id=RUN_ID,
     run_status="READY_FOR_REVIEW",
     run_result_class="READY_ORDER_RISK",
+    run_failure_code=None,
     has_final_decision=False,
     at_risk_order_count=4,
 )
@@ -128,6 +129,7 @@ class FakeQueryService:
             parent_analysis_run_id=PARENT_RUN_ID,
             completed_status="READY_FOR_REVIEW",
             result_class="FORECAST_ONLY_READY",
+            failure_code=None,
             stale_detected_at=None,
             stale_primary_reason=None,
             started_at=datetime(2026, 1, 20, tzinfo=UTC),
@@ -200,6 +202,7 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
         "runCode": None,
         "status": "READY_FOR_REVIEW",
         "resultClass": "READY_ORDER_RISK",
+        "failureCode": None,
     }
     assert "runStatus" not in item
     assert item["atRiskOrderCount"] == 4
@@ -347,7 +350,73 @@ async def test_detail_returns_schedule_and_run_history(fake_service):
     assert run["triggerReason"] == "USER_REANALYSIS"
     assert run["completedStatus"] == "READY_FOR_REVIEW"
     assert run["resultClass"] == "FORECAST_ONLY_READY"
+    assert run["failureCode"] is None
     assert run["runCode"] is None  # 0006 병합 전
+
+
+# 확정 DB 에 있는 실패 요약 3가지 (명세 C27)
+_FAILED_RUNS = [
+    ("ON_HOLD", "REQUIRED_DATA_INVALID"),
+    ("FAILED", "TOOL_TIMEOUT_EXHAUSTED"),
+    ("FAILED", "EXPLANATION_GENERATION_FAILED"),
+]
+
+
+@pytest.mark.parametrize(("status", "failure_code"), _FAILED_RUNS)
+async def test_list_current_run_has_failure_code(
+    fake_service, monkeypatch, status, failure_code
+):
+    failed = DelayEventListItem(
+        row=replace(
+            ROW,
+            run_status=status,
+            run_result_class=None,
+            run_failure_code=failure_code,
+        ),
+        shipment=SHIPMENT,
+        delay_days=3,
+    )
+
+    async def list_failed(**kwargs):
+        result = await FakeQueryService.list_delay_events(fake_service, **kwargs)
+        return replace(result, items=[failed])
+
+    monkeypatch.setattr(fake_service, "list_delay_events", list_failed)
+
+    [item] = (await _get("/api/v1/delay-events")).json()["items"]
+
+    assert item["currentRun"]["status"] == status
+    assert item["currentRun"]["failureCode"] == failure_code
+
+
+@pytest.mark.parametrize(("status", "failure_code"), _FAILED_RUNS)
+async def test_detail_run_history_has_failure_code(
+    fake_service, monkeypatch, status, failure_code
+):
+    detail = await fake_service.get_delay_event(actor=None, delay_event_id=EVENT_ID)
+    [run] = detail.runs
+    failed = replace(
+        detail,
+        runs=[
+            replace(
+                run,
+                status=status,
+                completed_status=status,
+                result_class=None,
+                failure_code=failure_code,
+            )
+        ],
+    )
+
+    async def get_failed(**kwargs):
+        return failed
+
+    monkeypatch.setattr(fake_service, "get_delay_event", get_failed)
+
+    [body_run] = (await _get(f"/api/v1/delay-events/{EVENT_ID}")).json()["runs"]
+
+    assert body_run["status"] == status
+    assert body_run["failureCode"] == failure_code
 
 
 async def test_detail_of_unknown_event_returns_404(fake_service):

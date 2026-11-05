@@ -140,6 +140,7 @@ class DelayEventListItemResponse(_DelayEventBase):
                 run_code=None,
                 status=row.run_status,
                 result_class=row.run_result_class,
+                failure_code=row.run_failure_code,
             )
             if row.run_id
             else None,
@@ -195,6 +196,9 @@ class AnalysisRunHistoryResponse(CamelModel):
     result_class: str | None = Field(
         description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
     )
+    failure_code: str | None = Field(
+        description="실패 코드 (analysis_runs.failure_code, 명세 C27). ON_HOLD·FAILED 일 때만 값이 있고 그 밖의 상태는 null (DDL ck10·ck11)"
+    )
     stale_detected_at: datetime | None = Field(
         description="STALE 기록 시각. STALE 이 아니면 null"
     )
@@ -231,6 +235,7 @@ class DelayEventDetailResponse(_DelayEventBase):
                     parent_run_id=run.parent_analysis_run_id,
                     completed_status=run.completed_status,
                     result_class=run.result_class,
+                    failure_code=run.failure_code,
                     stale_detected_at=run.stale_detected_at,
                     stale_primary_reason=run.stale_primary_reason,
                     started_at=run.started_at,

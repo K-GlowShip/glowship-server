@@ -63,6 +63,7 @@ def _row(**kwargs) -> DelayEventRow:
         "run_id": uuid.uuid7(),
         "run_status": "READY_FOR_REVIEW",
         "run_result_class": "READY_ORDER_RISK",
+        "run_failure_code": None,
         "has_final_decision": False,
         "at_risk_order_count": 4,
     } | kwargs
@@ -260,6 +261,7 @@ async def test_detail_returns_previous_expected_date_and_runs():
         parent_analysis_run_id=None,
         completed_status="READY_FOR_REVIEW",
         result_class="READY_ORDER_RISK",
+        failure_code=None,
         stale_detected_at=None,
         stale_primary_reason=None,
         started_at=datetime(2026, 1, 20, tzinfo=UTC),
