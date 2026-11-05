@@ -164,9 +164,9 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 | `lead_times.kr_outbound_handling_days` | 정수 | 예 | 한국 창고 출고 처리 | `OUTBOUND_HANDLING`, 한국 창고 | `lt.oh_kr` |
 | `lead_times.kr_air_transit_days` | 정수 | 예 | 한국 → 도착 권역 항공 | `AIR_TRANSIT`, 한국 창고, 도착 권역 | `lt.air_kr` |
 | `lead_times.dest_inbound_handling_days` | 정수 | 예 | 도착 창고 입고 처리 | `INBOUND_HANDLING`, 도착 창고 | `lt.inbound_dest` |
-| `skus[]` | 배열(`sku_code`) `{sku_id, sku_code, emergency_air_eligible}` | 아니오 | 긴급 항공 가능 여부 | `skus.emergency_air_eligible`(boolean) | `sku_attr` |
+| `skus[]` | 배열(`sku_code`) `{sku_id, sku_code, emergency_air_eligible}` | 아니오 | **고객사 SKU 전체**(아래 문단). 긴급 항공 가능 여부 | `skus.emergency_air_eligible`(boolean) | `sku_attr` |
 
-리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 다만 엔진은 `day_basis`를 보지 않고 그 행의 일수로 계산하므로, 그런 행이 생기면 T8 출력(`null`)과 엔진 계산이 어긋납니다(2026 H1은 없음). 그런 행을 어떻게 다룰지(멈춤·보류)는 입력 검증(GLOW-100)에서 다시 정합니다. 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다.
+리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 다만 엔진은 `day_basis`를 보지 않고 그 행의 일수로 계산하므로, 그런 행이 생기면 T8 출력(`null`)과 엔진 계산이 어긋납니다(2026 H1은 없음). 그런 행을 어떻게 다룰지(멈춤·보류)는 입력 검증(GLOW-100)에서 다시 정합니다. 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다. **`skus[]`는 그 고객사의 SKU 전체입니다.** 엔진 `snapshot.build`가 상태 조건 없이 고객사의 `skus` 행을 모두 `sku_attr`로 만들기 때문입니다(`snapshot.py` 120행). 그래서 영향·관찰·선적 SKU(T6 `impacted_sku_codes`·`watch_sku_codes`, T1 `shipment_skus[]`)는 항상 `skus[]` 안에 있습니다. T9처럼 `skus[]`에서 SKU 속성을 찾는 도구는 이 전제를 씁니다. 조회 도구 시험이 overlay 실행 21건에서 이 포함 관계를 확인합니다(`test_engine_input.py`).
 
 ## 4. 재고 영향 계산 도구 출력 (C 구현)
 
