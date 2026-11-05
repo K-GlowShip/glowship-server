@@ -9,6 +9,9 @@ from app.modules.dashboard.presentation.dashboard_api_router import (
 from app.modules.data_sync.presentation.data_sync_run_api_router import (
     router as data_sync_run_router,
 )
+from app.modules.decision.presentation.member_draft_api_router import (
+    router as member_draft_router,
+)
 from app.modules.delay_analysis.presentation.agent_dev_api_router import (
     router as agent_dev_router,
 )
@@ -48,6 +51,7 @@ app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
 app.include_router(delay_event_router)
+app.include_router(member_draft_router)
 app.include_router(inventory_router)
 app.include_router(inventory_status_router)
 app.include_router(order_router)
