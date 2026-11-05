@@ -4,13 +4,10 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     PlainSerializer,
     StrictInt,
     StrictStr,
-    StringConstraints,
 )
 
 from app.core.schemas import CamelModel
@@ -23,7 +20,6 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
     ExplanationWarningCode,
     FailedStep,
     FeasibilityStatus,
-    ImpactSource,
     LineSecurementStatus,
     NotRecoveredReason,
     OptionReasonCode,
@@ -32,8 +28,6 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
     ResultClass,
     RiskAttribution,
     SalesBasisType,
-    SkuEvaluationStatus,
-    SkuNotEstimableReason,
     SkuScope,
     StaleReason,
     StaleReasonCode,
@@ -42,28 +36,27 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
     TriggerType,
     WaitCause,
 )
+from app.modules.delay_analysis.infrastructure.stored_json_schemas import (  # noqa: F401  (SkuResults 등은 여기서도 내보냄)
+    RawDecimal,
+    SkuResultDonor,
+    SkuResultItem,
+    SkuResults,
+    StoredJsonModel,
+    StoredUuid,
+)
 
 """
     GET /api/v1/analysis-runs/{runId} 응답 스키마 (명세 v6.2 4.5절)
       - 응답 필드는 camelCase(D2). 저장 위치는 ERD v6.2 analysis_runs 와 분석 결과 4개 테이블.
       - 저장된 JSON(explanation.v1, sku_results.v1)은 저장된 그대로 snake_case 키로 내려준다(D20).
+        공용 타입(StoredJsonModel·RawDecimal·StoredUuid)과 sku_results.v1 모델은 infrastructure/stored_json_schemas.py 에 있다
+        (에이전트 도구 모델과 함께 쓰기 위해 GLOW-112 에서 옮김).
         데이터 팀 계약이 키를 고정하고 알 수 없는 키를 금지하므로, 이 두 모델은 CamelModel 을 쓰지 않고 extra="forbid" 로 둔다.
         저장 JSON 의 정수는 StrictInt 로 받아 불리언·문자열을 정수로 바꿔 쓰지 않는다.
       - 응답에 넣지 않는 DB 열: dependency_scope, decision_signature, decision_signature_sha256, raw_*_shortage_quantity (명세 4.5)
         explanation.v1 안의 decision_signature_hash·prompt_template_sha256 은 계약의 필수 메타데이터라 그대로 둔다
         (명세 4.5 AI 설명 표: "표시하지 않음" = 화면에 표시하지 않음).
 """
-
-# 소수 4자리 10진 문자열 (JSON 계약 0절 raw 값, 예: "2.8929")
-RawDecimal = Annotated[str, StringConstraints(pattern=r"^[0-9]+\.[0-9]{4}$")]
-# 저장 JSON 의 식별자: 소문자·하이픈 UUID 문자열 (JSON 계약 0절, explanation.v1 analysis_run_id).
-# uuid.UUID 로 받으면 다른 표기도 받아들이고 출력 때 바꿔 버리므로, 저장된 문자열 그대로 둔다.
-StoredUuid = Annotated[
-    str,
-    StringConstraints(
-        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-    ),
-]
 
 # to_camel 은 "3pl" 다음 글자를 대문자로 만든다(planned3PlInboundDate). 명세 표기(planned3plInboundDate)로 별칭을 고정한다.
 PLANNED_3PL = "planned3plInboundDate"
@@ -75,12 +68,6 @@ BASELINE_PLANNED_3PL = "baselinePlanned3plInboundDate"
 JsonNumberDecimal = Annotated[
     Decimal, PlainSerializer(float, return_type=float, when_used="json")
 ]
-
-
-class StoredJsonModel(BaseModel):
-    """데이터 팀 계약으로 키가 고정된 저장 JSON. 키 변환 없이 그대로 주고받는다."""
-
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
 # --- explanation.v1 (analysis_runs.final_explanation_json) -------------------------------------
@@ -127,56 +114,6 @@ class Explanation(StoredJsonModel):
     recommendation_explanation: str = Field(min_length=1, max_length=600)
     warnings: list[ExplanationWarning] = Field(max_length=5)
     evidence_references: list[ExplanationEvidence] = Field(min_length=1, max_length=40)
-
-
-# --- sku_results.v1 (response_options.sku_results) ---------------------------------------------
-
-
-class SkuResultDonor(StoredJsonModel):
-    """OTHER_REGION_FULFILL 의 공여 창고 계산. 정수는 개(EA)."""
-
-    source_warehouse_id: StoredUuid
-    next_inbound_basis: Literal["N2"]
-    next_inbound_date: date | None  # null 이면 NOT_ESTIMABLE
-    on_hand: StrictInt
-    reserved: StrictInt
-    open_commitment_net: StrictInt
-    safety_stock_quantity: StrictInt
-    forecast_until_next_raw: RawDecimal | None
-    transferable_raw: RawDecimal | None
-    transferable_quantity: StrictInt | None
-    order_layer_used_quantity: StrictInt | None
-    forecast_channel_share: RawDecimal | None
-    forecast_securable_quantity: StrictInt | None
-
-
-class SkuResultItem(StoredJsonModel):
-    """대응안 1개의 SKU별 효과. EVALUATED 가 아니어도 원값이 채워져 있을 수 있다(2026 H1 데이터)."""
-
-    sku_id: StoredUuid
-    sku_scope: SkuScope
-    # v1·v2 엔진 산출물에는 키가 없다. 없으면 "기록 없음"으로 읽는다(JSON 계약 v3 0.1절).
-    impact_source: ImpactSource | None = None
-    evaluation_status: SkuEvaluationStatus
-    not_estimable_reason: SkuNotEstimableReason | None
-    raw_baseline_shortage: RawDecimal | None
-    raw_increment_shortage: RawDecimal | None
-    raw_reduction: RawDecimal | None
-    raw_residual_increment: RawDecimal | None
-    baseline_prepare_quantity: StrictInt | None
-    increment_prepare_quantity: StrictInt | None
-    reduction_committed_quantity: StrictInt | None
-    residual_prepare_quantity: StrictInt | None
-    supply_quantity: StrictInt | None
-    supply_available_date: date | None
-    donor: SkuResultDonor | None
-
-
-class SkuResults(StoredJsonModel):
-    schema_version: Literal["sku_results.v1"]
-    calculation_contract: Literal["T14-v1"]
-    unit: Literal["EA"]
-    items: list[SkuResultItem]
 
 
 # --- 응답 묶음 ---------------------------------------------------------------------------------
