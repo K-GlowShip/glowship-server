@@ -126,7 +126,10 @@ _COUNTS = text(
            count(*) FILTER (WHERE b.run_status = 'READY_FOR_REVIEW') AS ready_for_review,
            count(*) FILTER (WHERE b.run_status IN ({_IN_PROGRESS})) AS analyzing,
            count(*) FILTER (WHERE b.run_status = 'ON_HOLD') AS on_hold,
-           count(*) FILTER (WHERE b.run_status IN ('STALE','FAILED')) AS needs_reanalysis
+           count(*) FILTER (WHERE b.run_status IN ('STALE','FAILED')) AS needs_reanalysis,
+           count(*) FILTER (WHERE b.run_status = 'FINALIZED') AS finalized,
+           count(*) FILTER (WHERE b.run_status = 'NO_RISK') AS no_risk,
+           count(*) FILTER (WHERE b.run_status = 'NO_DELAY') AS no_delay
       FROM ({_BASE + _FILTERS}) b
     """
 ).bindparams(
@@ -208,6 +211,9 @@ class DelayEventCounts:
     analyzing: int
     on_hold: int
     needs_reanalysis: int
+    finalized: int
+    no_risk: int
+    no_delay: int
 
 
 @dataclass(frozen=True)

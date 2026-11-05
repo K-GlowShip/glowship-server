@@ -168,6 +168,9 @@ async def test_delay_event_counts_match_list_per_tab(db_session):
         "ready_for_review": ["READY_FOR_REVIEW"],
         "on_hold": ["ON_HOLD"],
         "needs_reanalysis": ["STALE", "FAILED"],
+        "finalized": ["FINALIZED"],
+        "no_risk": ["NO_RISK"],
+        "no_delay": ["NO_DELAY"],
     }
     for field, statuses in tab_statuses.items():
         tab_rows = await repo.find_delay_events(

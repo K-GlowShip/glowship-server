@@ -107,6 +107,9 @@ class FakeQueryService:
                 analyzing=0,
                 on_hold=0,
                 needs_reanalysis=0,
+                finalized=2,
+                no_risk=1,
+                no_delay=1,
             ),
             total_count=45,
             page=kwargs["page"],
@@ -207,6 +210,9 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
         "analyzing": 0,
         "onHold": 0,
         "needsReanalysis": 0,
+        "finalized": 2,
+        "noRisk": 1,
+        "noDelay": 1,
     }
 
 
@@ -270,6 +276,23 @@ async def test_list_passes_query_params_to_service(fake_service):
     assert call["q"] == "OCN"
     assert call["has_final_decision"] is False
     assert call["actor"].company_id == COMPANY_ID
+
+
+@pytest.mark.parametrize(
+    ("value", "tab"),
+    [
+        ("FINALIZED", DelayEventTab.FINALIZED),
+        ("NO_RISK", DelayEventTab.NO_RISK),
+        ("NO_DELAY", DelayEventTab.NO_DELAY),
+    ],
+)
+async def test_list_accepts_c26_tabs(fake_service, value, tab):
+    """명세 C26: 선택 완료·위험 없음·지연 해소 탭을 status 로 받는다"""
+    response = await _get("/api/v1/delay-events", params={"status": value})
+
+    assert response.status_code == 200
+    [call] = fake_service.calls
+    assert call["tab"] == tab
 
 
 async def test_list_rejects_unknown_tab(fake_service):

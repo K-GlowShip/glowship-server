@@ -47,6 +47,9 @@ class DelayEventCountsResponse(CamelModel):
     analyzing: int = Field(description="분석 중 (DETECTED~VALIDATING_OUTPUT)")
     on_hold: int = Field(description="분석 보류 (ON_HOLD)")
     needs_reanalysis: int = Field(description="재분석 필요 (STALE·FAILED)")
+    finalized: int = Field(description="선택 완료 (FINALIZED, 명세 C26)")
+    no_risk: int = Field(description="위험 없음 (NO_RISK, 명세 C26)")
+    no_delay: int = Field(description="지연 해소 (NO_DELAY, 명세 C26)")
 
 
 class _DelayEventBase(CamelModel):
@@ -164,6 +167,9 @@ class DelayEventListResponse(Page[DelayEventListItemResponse]):
                 analyzing=counts.analyzing,
                 on_hold=counts.on_hold,
                 needs_reanalysis=counts.needs_reanalysis,
+                finalized=counts.finalized,
+                no_risk=counts.no_risk,
+                no_delay=counts.no_delay,
             ),
         )
 

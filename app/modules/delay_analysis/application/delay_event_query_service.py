@@ -53,6 +53,9 @@ class DelayEventTab(StrEnum):
     ANALYZING = "ANALYZING"
     ON_HOLD = "ON_HOLD"
     NEEDS_REANALYSIS = "NEEDS_REANALYSIS"
+    FINALIZED = "FINALIZED"
+    NO_RISK = "NO_RISK"
+    NO_DELAY = "NO_DELAY"
 
 
 _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
@@ -61,6 +64,9 @@ _TAB_STATUSES: dict[DelayEventTab, tuple[AnalysisRunStatus, ...] | None] = {
     DelayEventTab.ANALYZING: IN_PROGRESS_STATUSES,
     DelayEventTab.ON_HOLD: (AnalysisRunStatus.ON_HOLD,),
     DelayEventTab.NEEDS_REANALYSIS: (AnalysisRunStatus.STALE, AnalysisRunStatus.FAILED),
+    DelayEventTab.FINALIZED: (AnalysisRunStatus.FINALIZED,),
+    DelayEventTab.NO_RISK: (AnalysisRunStatus.NO_RISK,),
+    DelayEventTab.NO_DELAY: (AnalysisRunStatus.NO_DELAY,),
 }
 
 

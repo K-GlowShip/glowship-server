@@ -30,7 +30,14 @@ SHIPMENT_ID = uuid.uuid7()
 SNAPSHOT_ID = uuid.uuid7()
 EVENT_ID = uuid.uuid7()
 COUNTS = DelayEventCounts(
-    all_count=1, ready_for_review=1, analyzing=0, on_hold=0, needs_reanalysis=0
+    all_count=1,
+    ready_for_review=1,
+    analyzing=0,
+    on_hold=0,
+    needs_reanalysis=0,
+    finalized=0,
+    no_risk=0,
+    no_delay=0,
 )
 
 
@@ -189,6 +196,23 @@ async def test_list_all_tab_has_no_status_filter():
     await _service(repo).list_delay_events(actor=ACTOR)
 
     assert repo.filters[0].run_statuses is None
+
+
+@pytest.mark.parametrize(
+    ("tab", "statuses"),
+    [
+        (DelayEventTab.FINALIZED, ("FINALIZED",)),
+        (DelayEventTab.NO_RISK, ("NO_RISK",)),
+        (DelayEventTab.NO_DELAY, ("NO_DELAY",)),
+    ],
+)
+async def test_list_maps_c26_tabs_to_one_run_status(tab, statuses):
+    """명세 C26: 새 탭은 현재 실행 상태 하나씩에 대응한다"""
+    repo = FakeRepository()
+
+    await _service(repo).list_delay_events(actor=ACTOR, tab=tab)
+
+    assert repo.filters[0].run_statuses == statuses
 
 
 async def test_list_defaults_to_first_page():
