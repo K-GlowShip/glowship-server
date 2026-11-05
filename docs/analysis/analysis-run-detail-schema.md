@@ -263,7 +263,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 다른 고객사 | 실제 DB: 21건마다 다른 고객사로 서비스 404, 저장소 조회 8개가 모두 빈 결과 | 통과 |
 | 실제 서버 | 8003 서버에 21건 GET(시험용 토큰, 조회만) | 21건 모두 200, 다른 고객사 404 `ANALYSIS_RUN_NOT_FOUND`, ADMIN 403 |
 | 시험이 틀린 것을 잡는지(변이 시험) | 코드 한 곳을 망가뜨리고 실제 DB 시험 실행 후 원본 복구(바이트 비교): M1 실행 조회 고객사 조건 제거, M2 주문 줄 첫 줄만, M3 STALE 사유 기본값을 다른 값으로, M4 공급 창고 조인 끊기, M5 부족 수량에 기준선 값, M6 위험 주문 조회 고객사 조건 제거 | 처음엔 M1·M6을 못 잡음(11.5 G1·G2). 시험을 고친 뒤 6건 모두 잡음 |
-| 린트·전체 시험 | `uv run --locked ruff check .`·`ruff format --check .`, `uvx --python 3.12 ruff@latest check .`·`format --check .`, `uv run --locked pytest` | 통과. 전체 727건(develop `8717165` 703건 + 새 24건), 건너뜀 0 |
+| 린트·전체 시험 | `uv run --locked ruff check .`·`ruff format --check .`, `uvx --python 3.12 ruff@latest check .`·`format --check .`, `uv run --locked pytest` | 통과. 전체 727건(develop `8717165` 703건 + 새 24건), 건너뜀 0. develop `cbc406a`(#25·#26·#27) 병합 뒤(DB 0007): 816건 통과, 건너뜀 6(엔진 로더 시험, `.env`에 `GLOWSHIP_ENGINE_DIR` 없음). 변이 6건·실제 서버 21건도 병합 뒤 다시 확인 |
 
 **검증의 한계**
 - 실제 DB에 `READY_FOR_REVIEW`(STALE 아님)·진행 중 실행·`READY_ORDER_RISK`·`DELAY_INDUCED` 위험 주문이 없어 이 경우는 직접 만든 행으로만 확인했습니다.
