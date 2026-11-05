@@ -7,6 +7,7 @@ from pydantic import Field
 from app.core.pagination import Page
 from app.core.schemas import CamelModel
 from app.core.summary_schemas import (
+    ResponseOptionSummary,
     RunSummary,
     ShipmentSummary,
     SkuSummary,
@@ -33,16 +34,6 @@ class DecisionStatus(str, Enum):
     DRAFT = "DRAFT"
     FINAL = "FINAL"
     NEEDS_REANALYSIS = "NEEDS_REANALYSIS"
-
-
-class ResponseOptionSummary(CamelModel):
-    """대응안 요약 객체 (응답 본문 규칙 5.2)"""
-
-    response_option_id: uuid.UUID
-    option_type: str = Field(
-        description="KEEP_PLAN·PRE_DEPARTURE_AIR·KR_AIR_REPLENISH·OTHER_REGION_FULFILL. 표시명은 라벨 사전 labels/ko-v1",
-        examples=["KR_AIR_REPLENISH"],
-    )
 
 
 class DecisionListItemResponse(CamelModel):

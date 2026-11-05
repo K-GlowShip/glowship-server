@@ -112,7 +112,7 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 
 ## 4. 명세와 다른 점·넣지 않은 것
 
-- **`run.failureCode`를 넣었습니다.** 명세 4.7은 `run`을 4개 필드로 적었지만, 응답 본문 규칙 5.2의 실행 요약은 C27(2026-11-04)로 `failureCode`가 들어갔고 요약 객체는 어느 API에서든 같은 모양을 씁니다. 이 작업에서 공통 `RunSummary`에 필드를 추가했고, 지연 목록의 `currentRun`도 같은 열을 읽어 채웁니다. 4.7 문구 갱신은 설계 담당에게 요청했습니다.
+- **`run.failureCode`를 넣었습니다.** 명세 4.7은 `run`을 4개 필드로 적었지만, 응답 본문 규칙 5.2의 실행 요약은 C27(2026-11-04)로 `failureCode`가 들어갔고 요약 객체는 어느 API에서든 같은 모양을 씁니다. 그래서 `run`은 #31이 `failureCode`를 더한 공통 `RunSummary`를 그대로 씁니다. 4.7 문구 갱신은 설계 담당에게 요청했습니다.
 - **선택 이유·의견 본문(`reasonText`·`opinionText`)은 넣지 않습니다.** 화면은 이유·의견을 아래 선택 상세 패널에서 보여 주고, 그 패널은 행을 눌렀을 때 `GET /analysis-runs/{runId}`(명세 4.5의 `drafts[]`·`finalDecision`)로 채웁니다.
 - **당시 분석 수치·AI 설명**도 상세 API 몫입니다.
 - `decidedBy`·`runId`가 다른 고객사의 것이면 조인 조건 때문에 0건입니다. 존재 여부를 노출하지 않는 고객사 범위 원칙(명세 2절)을 따릅니다.
@@ -153,11 +153,11 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 | 파일 | 역할 |
 | --- | --- |
 | `app/modules/decision/presentation/decision_api_router.py` | `GET /api/v1/decisions` 엔드포인트 |
-| `app/modules/decision/presentation/decision_schemas.py` | `DecisionType`·`DecisionStatus`, `ResponseOptionSummary`, `DecisionListItemResponse`, `DecisionListResponse` |
+| `app/modules/decision/presentation/decision_schemas.py` | `DecisionType`·`DecisionStatus`, `DecisionListItemResponse`, `DecisionListResponse` |
 | `app/modules/decision/application/decision_list_service.py` | `DecisionListService`, 기간 검사, 대표 상품 계산 |
 | `app/modules/decision/application/exception/decision_exceptions.py` | `INVALID_DECIDED_PERIOD`(422 `VALIDATION_ERROR`) |
 | `app/modules/decision/infrastructure/repository/decision_repository.py` | UNION·조인·`status` CASE SQL, 상세 줄 조회 |
 | `app/modules/decision/dependencies.py` | 리포지토리·서비스 조립 |
-| `app/core/summary_schemas.py` | `UserSummary`(신설), `RunSummary.failure_code`(추가) |
+| `app/core/summary_schemas.py` | `UserSummary`·`ResponseOptionSummary`(신설, 응답 본문 규칙 5.2) |
 | `app/modules/delay_analysis/application/delay_display.py` | 대표 상품 계산 `pick_representative_line` |
 | `app/core/security/tenant.py` | `get_tenant_context` |

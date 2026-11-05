@@ -39,6 +39,16 @@ class UserSummary(CamelModel):
     )
 
 
+class ResponseOptionSummary(CamelModel):
+    """대응안 요약 객체 (응답 본문 규칙 5.2)"""
+
+    response_option_id: uuid.UUID
+    option_type: str = Field(
+        description="KEEP_PLAN·PRE_DEPARTURE_AIR·KR_AIR_REPLENISH·OTHER_REGION_FULFILL. 표시명은 라벨 사전 labels/ko-v1",
+        examples=["KR_AIR_REPLENISH"],
+    )
+
+
 class RunSummary(CamelModel):
     run_id: uuid.UUID
     run_code: str = Field(
@@ -49,5 +59,5 @@ class RunSummary(CamelModel):
         description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
     )
     failure_code: str | None = Field(
-        description="실패 코드. ON_HOLD·FAILED 일 때만 값이 있고 그 밖은 null (analysis_runs.failure_code, 명세 C27)"
+        description="실패 코드 (analysis_runs.failure_code, 명세 C27). ON_HOLD·FAILED 일 때만 값이 있고 그 밖의 상태는 null (DDL ck10·ck11)"
     )
