@@ -4,11 +4,9 @@ from typing import Self
 from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from app.modules.delay_analysis.application.agent.tools.common import (
-    ShipmentStage,
     ToolDate,
     ToolId,
     ToolModel,
-    TransportMode,
     UtcTimestamp,
 )
 from app.modules.delay_analysis.application.agent.tools.impact_schemas import (
@@ -37,6 +35,10 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
     SupplySource,
 )
 from app.modules.delay_analysis.infrastructure.stored_json_schemas import SkuResults
+from app.modules.shipment.infrastructure.shipment_enums import (
+    ShipmentStage,
+    TransportMode,
+)
 
 """
     대응안 도구 T9·T10·T11 (docs/agent-flow/tool-contracts.md 5~7절, A 구현)

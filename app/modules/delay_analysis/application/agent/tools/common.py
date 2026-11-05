@@ -71,9 +71,8 @@ RawQuantity = Annotated[str, StringConstraints(pattern=r"^[0-9]+\.[0-9]{4}$")]
 SignedRawQuantity = Annotated[str, StringConstraints(pattern=r"^-?[0-9]+\.[0-9]{4}$")]
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
-# DDL CHECK 값 가운데 서버에 열거형이 없는 것 (shipments_ck1·ck2, shipment_schedule_snapshots_ck1, warehouses_ck2)
-TransportMode = Literal["OCEAN", "AIR"]
-ShipmentStage = Literal["PRE_DEPARTURE", "AT_SEA", "IN_AIR", "AT_PORT", "RECEIVED"]
+# 창고 권역 (warehouses_ck2). 서버 열거형 CustomerRegion 은 고객 권역(WEST·EAST)이라 KR 이 없어 따로 둔다.
+# 운송 수단·단계는 app/modules/shipment/infrastructure/shipment_enums.py 의 열거형을 쓴다.
 RegionCode = Literal["KR", "WEST", "EAST"]
 
 

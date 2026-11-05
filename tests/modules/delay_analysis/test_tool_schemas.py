@@ -23,14 +23,16 @@ from app.modules.delay_analysis.application.agent.tools import (
 from app.modules.delay_analysis.application.agent.tools.common import (
     TOOL_NUMBERS,
     RegionCode,
-    ShipmentStage,
     ToolModel,
-    TransportMode,
 )
 from app.modules.delay_analysis.infrastructure import analysis_enums as E
 from app.modules.delay_analysis.infrastructure.stored_json_schemas import SkuResults
 from app.modules.delay_analysis.presentation import analysis_run_schemas
 from app.modules.order.infrastructure.order_enums import OrderLineStatus, SalesChannel
+from app.modules.shipment.infrastructure.shipment_enums import (
+    ShipmentStage,
+    TransportMode,
+)
 
 """
     에이전트 도구 입출력 모델 = 계약 문서 (docs/agent-flow/tool-contracts.md, GLOW-112)
@@ -389,10 +391,10 @@ def _check_values(table: str, name: str) -> set[str]:
 @pytest.mark.parametrize(
     ("values", "table", "name"),
     [
-        (set(typing.get_args(TransportMode)), "shipments", "shipments_ck1"),
-        (set(typing.get_args(ShipmentStage)), "shipments", "shipments_ck2"),
+        ({c.value for c in TransportMode}, "shipments", "shipments_ck1"),
+        ({c.value for c in ShipmentStage}, "shipments", "shipments_ck2"),
         (
-            set(typing.get_args(ShipmentStage)),
+            {c.value for c in ShipmentStage},
             "shipment_schedule_snapshots",
             "shipment_schedule_snapshots_ck1",
         ),
@@ -442,9 +444,9 @@ NON_ENUM_CODES = {
     "KR",  # region_code (Literal)
     "WEST",
     "EAST",
-    "OCEAN",  # transport_mode (Literal)
+    "OCEAN",  # transport_mode (shipment_enums)
     "AIR",
-    "PRE_DEPARTURE",  # stage (Literal)
+    "PRE_DEPARTURE",  # stage (shipment_enums)
     "AT_SEA",
     "AT_PORT",
     "IN_AIR",

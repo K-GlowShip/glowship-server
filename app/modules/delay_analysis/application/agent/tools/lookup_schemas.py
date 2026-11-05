@@ -5,15 +5,17 @@ from pydantic import Field, StrictBool, StrictInt, StrictStr
 from app.modules.delay_analysis.application.agent.tools.common import (
     RegionCode,
     Sha256Hex,
-    ShipmentStage,
     ToolDate,
     ToolId,
     ToolModel,
-    TransportMode,
     UtcTimestamp,
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import SalesBasisType
 from app.modules.order.infrastructure.order_enums import OrderLineStatus, SalesChannel
+from app.modules.shipment.infrastructure.shipment_enums import (
+    ShipmentStage,
+    TransportMode,
+)
 
 """
     조회 도구 T1~T5·T8 출력 = 분석 입력 스냅샷 (docs/agent-flow/tool-contracts.md 3절)
