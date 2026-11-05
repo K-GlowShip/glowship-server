@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -8,6 +9,7 @@ from pydantic import (
     PlainSerializer,
     StrictInt,
     StrictStr,
+    ValidationError,
 )
 
 from app.core.schemas import CamelModel
@@ -49,6 +51,7 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
 from app.modules.delay_analysis.infrastructure.repository.analysis_run_detail_repository import (
     AtRiskLineRow,
     FinalDecisionRow,
+    InventoryImpactRow,
     OptionOutcomeRow,
     ResponseOptionRow,
 )
@@ -73,6 +76,8 @@ from app.modules.delay_analysis.infrastructure.stored_json_schemas import (  # n
         explanation.v1 안의 decision_signature_hash·prompt_template_sha256 은 계약의 필수 메타데이터라 그대로 둔다
         (명세 4.5 AI 설명 표: "표시하지 않음" = 화면에 표시하지 않음).
 """
+
+logger = logging.getLogger(__name__)
 
 # to_camel 은 "3pl" 다음 글자를 대문자로 만든다(planned3PlInboundDate). 명세 표기(planned3plInboundDate)로 별칭을 고정한다.
 PLANNED_3PL = "planned3plInboundDate"
@@ -196,13 +201,13 @@ class InputBasis(CamelModel):
 
 
 class InventoryImpact(CamelModel):
-    """SKU·창고별 재고 영향. 기준선(baseline_*) = 계획 입고일에 들어왔을 때, 전체 = 예상 입고일 반영."""
+    """
+    SKU·창고별 재고 영향. 기준선(baseline_*) = 계획 입고일에 들어왔을 때, 전체 = 예상 입고일 반영.
+      - SKU·창고는 요약 객체(sku·warehouse)다. 명세 2절 "연관 대상"(113행): 한글 항목 "SKU"·"창고"는 요약 객체로 준다.
+    """
 
-    sku_id: uuid.UUID
-    sku_code: str
-    product_name: str
-    warehouse_id: uuid.UUID
-    warehouse_code: str
+    sku: SkuSummary
+    warehouse: WarehouseSummary
     sku_scope: SkuScope
     calculation_status: CalculationStatus
     forecast_method: str
@@ -233,8 +238,7 @@ class AtRiskOrderLine(CamelModel):
     at_risk_order_id: uuid.UUID
     order_line_id: uuid.UUID
     line_no: int
-    sku_id: uuid.UUID
-    sku_code: str
+    sku: SkuSummary = Field(description="주문 줄의 SKU 요약 (명세 2절 연관 대상)")
     open_quantity: int
     wait_cause: WaitCause | None
 
@@ -293,7 +297,9 @@ class ResponseOption(CamelModel):
     not_recovered_orders: int | None
     recommendation_rank: int | None
     is_recommended: bool
-    sku_results: SkuResults
+    sku_results: SkuResults | None = Field(
+        description="sku_results.v1 저장 JSON 그대로(D20). 저장값이 계약 모델로 읽히지 않으면 null 이고 서버가 오류 로그를 남긴다"
+    )
     outcomes: list[OptionOrderOutcome]
 
 
@@ -337,7 +343,9 @@ class AnalysisRunDetailResponse(CamelModel):
     status_reason: str | None
     trigger_type: TriggerType
     trigger_reason: TriggerReason
-    requested_by: uuid.UUID | None
+    requested_by: UserSummary | None = Field(
+        description="재분석을 요청한 사용자 요약. 자동 실행(AUTO)이면 null"
+    )
     request_reason: str | None
     requested_at: datetime | None
     started_at: datetime
@@ -357,7 +365,10 @@ class AnalysisRunDetailResponse(CamelModel):
     response_options: list[ResponseOption]
 
     # AI 설명 (explanationValidationStatus = PASSED 일 때만 explanation 이 있다)
-    explanation: Explanation | None
+    explanation: Explanation | None = Field(
+        description="explanation.v1 저장 JSON 그대로(D20). 설명 검증을 통과한 실행에만 있다. "
+        "저장값이 계약 모델로 읽히지 않으면(계약 변경 등) 상세 전체를 실패시키지 않고 이 필드만 null 로 두며 서버가 오류 로그를 남긴다"
+    )
     explanation_validation_status: ExplanationValidationStatus | None
     explanation_generated_at: datetime | None
     model_name: str | None
@@ -391,7 +402,13 @@ class AnalysisRunDetailResponse(CamelModel):
             status_reason=run.status_reason,
             trigger_type=run.trigger_type,
             trigger_reason=run.trigger_reason,
-            requested_by=run.requested_by_user_id,
+            requested_by=UserSummary(
+                user_id=run.requested_by_user_id,
+                display_name=run.requested_by_display_name,
+                role_code=run.requested_by_role_code,
+            )
+            if run.requested_by_user_id is not None
+            else None,
             request_reason=run.request_reason,
             requested_at=run.requested_at,
             started_at=run.started_at,
@@ -418,17 +435,19 @@ class AnalysisRunDetailResponse(CamelModel):
                 data_basis_at=detail.data_basis_at,
                 data_warnings=[],
             ),
-            inventory_impacts=[
-                InventoryImpact.model_validate(row, from_attributes=True)
-                for row in detail.inventory_impacts
-            ],
-            at_risk_orders=_group_at_risk_orders(detail.at_risk_lines),
+            inventory_impacts=[_impact(row) for row in detail.inventory_impacts],
+            at_risk_orders=_group_at_risk_orders(
+                detail.at_risk_lines, run.analysis_run_id
+            ),
             response_options=_response_options(
                 detail.response_options, detail.option_outcomes
             ),
-            explanation=Explanation.model_validate(run.final_explanation_json)
-            if run.final_explanation_json is not None
-            else None,
+            explanation=_stored_json(
+                Explanation,
+                run.final_explanation_json,
+                column="analysis_runs.final_explanation_json",
+                row_id=run.analysis_run_id,
+            ),
             explanation_validation_status=run.explanation_validation_status,
             explanation_generated_at=run.explanation_generated_at,
             model_name=run.model_name,
@@ -492,16 +511,85 @@ def _target(target: AnalysisTargetDetail) -> AnalysisTarget:
     )
 
 
-def _group_at_risk_orders(lines: list[AtRiskLineRow]) -> list[AtRiskOrder]:
+def _impact(row: InventoryImpactRow) -> InventoryImpact:
+    """재고 영향 1행. SKU·창고는 요약 객체로, 나머지 열은 이름 그대로 옮긴다."""
+    values = {
+        name: getattr(row, name)
+        for name in InventoryImpact.model_fields
+        if name not in ("sku", "warehouse")
+    }
+    return InventoryImpact(
+        sku=SkuSummary(
+            sku_id=row.sku_id, sku_code=row.sku_code, product_name=row.product_name
+        ),
+        warehouse=WarehouseSummary(
+            warehouse_id=row.warehouse_id,
+            warehouse_code=row.warehouse_code,
+            region_code=row.region_code,
+        ),
+        **values,
+    )
+
+
+def _stored_json[M: StoredJsonModel](
+    model: type[M], value: dict | None, *, column: str, row_id: uuid.UUID
+) -> M | None:
+    """
+    저장 JSON(explanation.v1·sku_results.v1)을 계약 모델로 읽는다. 저장값이 없으면 None.
+    계약이 바뀌었거나 저장값이 모델과 맞지 않으면 상세 조회 전체를 500으로 만들지 않고
+    그 필드만 None 으로 두고 오류 로그를 남긴다(PR #32 리뷰 [should], 선택지 "검증 실패 시 null + 로그").
+    """
+    if value is None:
+        return None
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        logger.error(
+            "저장 JSON 이 계약 모델과 맞지 않아 응답에서 null 로 둠: column=%s id=%s errors=%s",
+            column,
+            row_id,
+            error.error_count(),
+        )
+        return None
+
+
+def _order_level_values(line: AtRiskLineRow) -> tuple:
+    """주문 단위로 같아야 하는 값(주문 묶음의 귀속·약속·예상 납품·horizon 밖 여부·사유)"""
+    return (
+        line.risk_attribution,
+        line.promised_delivery_at,
+        line.baseline_expected_delivery_at,
+        line.expected_delivery_at,
+        line.expected_beyond_horizon,
+        line.risk_reason,
+    )
+
+
+def _group_at_risk_orders(
+    lines: list[AtRiskLineRow], run_id: uuid.UUID
+) -> list[AtRiskOrder]:
     """
     at_risk_orders 는 주문 상세 1줄이 1행이다. 주문별로 묶고 상세는 lines[] 에 넣는다(D21, U12).
     주문 단위 값(귀속·약속·예상 납품·horizon 밖 여부·사유)은 저장기가 주문의 모든 줄에 같게 넣는다(2026 H1 데이터 확인).
     저장 순서(주문 코드·줄 번호)대로 받으므로, 주문 단위 값은 그 주문의 첫 줄(가장 작은 줄 번호)에서 읽는다.
+    DDL 이 이것을 보장하지는 않으므로, 줄끼리 값이 다르면 첫 줄 값을 쓰고 경고 로그를 남긴다(PR #32 리뷰).
     """
     orders: dict[uuid.UUID, AtRiskOrder] = {}
+    first_values: dict[uuid.UUID, tuple] = {}
     for line in lines:
         order = orders.get(line.order_id)
+        values = _order_level_values(line)
+        if order is not None and values != first_values[line.order_id]:
+            logger.warning(
+                "at_risk_orders 주문 단위 값이 줄마다 다름(첫 줄 값을 씀): "
+                "analysis_run_id=%s order_id=%s at_risk_order_id=%s line_no=%s",
+                run_id,
+                line.order_id,
+                line.at_risk_order_id,
+                line.line_no,
+            )
         if order is None:
+            first_values[line.order_id] = values
             order = orders[line.order_id] = AtRiskOrder(
                 order_id=line.order_id,
                 order_code=line.order_code,
@@ -518,8 +606,11 @@ def _group_at_risk_orders(lines: list[AtRiskLineRow]) -> list[AtRiskOrder]:
                 at_risk_order_id=line.at_risk_order_id,
                 order_line_id=line.order_line_id,
                 line_no=line.line_no,
-                sku_id=line.sku_id,
-                sku_code=line.sku_code,
+                sku=SkuSummary(
+                    sku_id=line.sku_id,
+                    sku_code=line.sku_code,
+                    product_name=line.product_name,
+                ),
                 open_quantity=line.open_quantity,
                 wait_cause=line.wait_cause,
             )
@@ -570,7 +661,12 @@ def _response_options(
             not_recovered_orders=o.not_recovered_orders,
             recommendation_rank=o.recommendation_rank,
             is_recommended=o.is_recommended,
-            sku_results=SkuResults.model_validate(o.sku_results),
+            sku_results=_stored_json(
+                SkuResults,
+                o.sku_results,
+                column="response_options.sku_results",
+                row_id=o.response_option_id,
+            ),
             outcomes=by_option[o.response_option_id],
         )
         for o in options

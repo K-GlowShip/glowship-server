@@ -24,7 +24,9 @@ _RUN = text(
     SELECT r.analysis_run_id, r.run_code, r.delay_event_id, r.version_no,
            r.parent_analysis_run_id, r.is_latest, r.status, r.completed_status,
            r.result_class, r.status_reason, r.trigger_type, r.trigger_reason,
-           r.requested_by_user_id, r.request_reason, r.requested_at,
+           r.requested_by_user_id, ru.display_name AS requested_by_display_name,
+           ru.role_code::text AS requested_by_role_code,
+           r.request_reason, r.requested_at,
            r.started_at, r.finished_at,
            r.stale_detected_at, r.stale_primary_reason, r.stale_reason_codes,
            r.input_seq, CAST(r.dependency_scope->>'base_date' AS date) AS base_date,
@@ -38,6 +40,8 @@ _RUN = text(
       JOIN operating_rule_sets rs
         ON rs.company_id = r.company_id
        AND rs.operating_rule_set_id = r.operating_rule_set_id
+      LEFT JOIN users ru
+        ON ru.company_id = r.company_id AND ru.user_id = r.requested_by_user_id
      WHERE r.company_id = :company_id AND r.analysis_run_id = :run_id
     """
 ).bindparams(bindparam("company_id", type_=_UUID), bindparam("run_id", type_=_UUID))
@@ -56,6 +60,7 @@ _DATA_VERSIONS = text(
 _IMPACTS = text(
     """
     SELECT i.sku_id, k.sku_code, k.product_name, i.warehouse_id, w.warehouse_code,
+           w.region_code,
            i.sku_scope, i.calculation_status, i.forecast_method,
            i.available_quantity, i.committed_open_quantity,
            i.sales_basis_type, i.sales_basis_days, i.sales_basis_start_date,
@@ -78,7 +83,7 @@ _IMPACTS = text(
 _AT_RISK_LINES = text(
     """
     SELECT o.at_risk_order_id, l.order_id, ord.order_code, o.order_line_id, l.line_no,
-           l.sku_id, k.sku_code, o.open_quantity, o.wait_cause,
+           l.sku_id, k.sku_code, k.product_name, o.open_quantity, o.wait_cause,
            o.risk_attribution, o.promised_delivery_at, o.baseline_expected_delivery_at,
            o.expected_delivery_at, o.expected_beyond_horizon, o.risk_reason
       FROM at_risk_orders o
@@ -163,6 +168,8 @@ class AnalysisRunRow:
     trigger_type: str
     trigger_reason: str
     requested_by_user_id: uuid.UUID | None
+    requested_by_display_name: str | None
+    requested_by_role_code: str | None
     request_reason: str | None
     requested_at: datetime | None
     started_at: datetime
@@ -202,6 +209,7 @@ class InventoryImpactRow:
     product_name: str
     warehouse_id: uuid.UUID
     warehouse_code: str
+    region_code: str
     sku_scope: str
     calculation_status: str
     forecast_method: str
@@ -237,6 +245,7 @@ class AtRiskLineRow:
     line_no: int
     sku_id: uuid.UUID
     sku_code: str
+    product_name: str
     open_quantity: int
     wait_cause: str | None
     risk_attribution: str

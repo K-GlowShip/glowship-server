@@ -116,6 +116,23 @@ async def test_every_run_matches_stored_values(db_session):
             assert body[key] == stored[column], (run_id, key)
         assert body["staleReasonCodes"] == (stored["stale_reason_codes"] or [])
 
+        # 재분석 요청자: 사용자 요약(요청자가 없으면 null)
+        requester = await _all(
+            db,
+            "SELECT u.user_id::text AS user_id, u.display_name, u.role_code::text AS role_code"
+            " FROM analysis_runs r JOIN users u ON u.user_id = r.requested_by_user_id"
+            " WHERE r.analysis_run_id = :r",
+            run_id,
+        )
+        if requester:
+            assert body["requestedBy"] == {
+                "userId": requester[0]["user_id"],
+                "displayName": requester[0]["display_name"],
+                "roleCode": requester[0]["role_code"],
+            }, run_id
+        else:
+            assert body["requestedBy"] is None, run_id
+
         # 대상(선적의 현재 값)
         target = body["target"]
         assert target["delayEventId"] == str(stored["delay_event_id"])
@@ -155,16 +172,24 @@ async def test_result_rows_match_stored_rows(db_session):
 
         impacts = await _all(
             db,
-            "SELECT sku_id::text AS sku_id, warehouse_id::text AS warehouse_id,"
-            " sku_scope, shortage_quantity, baseline_shortage_quantity, stockout_days,"
-            " stockout_date::text AS stockout_date, average_daily_sales"
-            " FROM inventory_impact_results WHERE analysis_run_id = :r",
+            "SELECT i.sku_id::text AS sku_id, k.sku_code, k.product_name,"
+            " i.warehouse_id::text AS warehouse_id, w.warehouse_code, w.region_code,"
+            " i.sku_scope, i.shortage_quantity, i.baseline_shortage_quantity, i.stockout_days,"
+            " i.stockout_date::text AS stockout_date, i.average_daily_sales"
+            " FROM inventory_impact_results i"
+            " JOIN skus k ON k.sku_id = i.sku_id"
+            " JOIN warehouses w ON w.warehouse_id = i.warehouse_id"
+            " WHERE i.analysis_run_id = :r",
             run_id,
         )
         got = sorted(
             (
-                i["skuId"],
-                i["warehouseId"],
+                (i["sku"]["skuId"], i["sku"]["skuCode"], i["sku"]["productName"]),
+                (
+                    i["warehouse"]["warehouseId"],
+                    i["warehouse"]["warehouseCode"],
+                    i["warehouse"]["regionCode"],
+                ),
                 i["skuScope"],
                 i["shortageQuantity"],
                 i["baselineShortageQuantity"],
@@ -178,8 +203,8 @@ async def test_result_rows_match_stored_rows(db_session):
         )
         want = sorted(
             (
-                i["sku_id"],
-                i["warehouse_id"],
+                (i["sku_id"], i["sku_code"], i["product_name"]),
+                (i["warehouse_id"], i["warehouse_code"], i["region_code"]),
                 i["sku_scope"],
                 i["shortage_quantity"],
                 i["baseline_shortage_quantity"],
@@ -198,8 +223,10 @@ async def test_result_rows_match_stored_rows(db_session):
         lines = await _all(
             db,
             "SELECT o.at_risk_order_id::text AS id, l.order_id::text AS order_id,"
-            " o.risk_attribution, o.expected_beyond_horizon"
+            " o.risk_attribution, o.expected_beyond_horizon,"
+            " l.sku_id::text AS sku_id, k.sku_code, k.product_name"
             " FROM at_risk_orders o JOIN order_lines l ON l.order_line_id = o.order_line_id"
+            " JOIN skus k ON k.sku_id = l.sku_id"
             " WHERE o.analysis_run_id = :r",
             run_id,
         )
@@ -211,6 +238,11 @@ async def test_result_rows_match_stored_rows(db_session):
                 line["atRiskOrderId"],
                 order["riskAttribution"],
                 order["isBeyondHorizon"],
+                (
+                    line["sku"]["skuId"],
+                    line["sku"]["skuCode"],
+                    line["sku"]["productName"],
+                ),
             )
             for order in orders
             for line in order["lines"]
@@ -220,6 +252,7 @@ async def test_result_rows_match_stored_rows(db_session):
                 line["id"],
                 line["risk_attribution"],
                 line["expected_beyond_horizon"],
+                (line["sku_id"], line["sku_code"], line["product_name"]),
             )
             for line in lines
         )

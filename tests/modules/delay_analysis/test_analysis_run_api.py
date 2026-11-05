@@ -1,4 +1,5 @@
 import copy
+import logging
 import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -131,6 +132,8 @@ RUN = AnalysisRunRow(
     trigger_type="AUTO",
     trigger_reason="EPISODE_STARTED",
     requested_by_user_id=None,
+    requested_by_display_name=None,
+    requested_by_role_code=None,
     request_reason=None,
     requested_at=None,
     started_at=NOW,
@@ -208,6 +211,7 @@ def _impact(sku_id, sku_code) -> InventoryImpactRow:
         product_name="크림",
         warehouse_id=WAREHOUSE_ID,
         warehouse_code="US-WEST-LA",
+        region_code="US_WEST",
         sku_scope="IMPACTED",
         calculation_status="CALCULATED",
         forecast_method="ORDER_FIRST_APPROX_V1",
@@ -244,6 +248,7 @@ def _line(order_id, order_code, line_no, sku_id, attribution="DELAY_INDUCED"):
         line_no=line_no,
         sku_id=sku_id,
         sku_code="SKU-A" if sku_id == SKU_A else "SKU-B",
+        product_name="크림" if sku_id == SKU_A else "세럼",
         open_quantity=2,
         wait_cause="DIRECT_SKU_SHORTAGE" if line_no == 1 else "BUNDLED_ORDER_WAIT",
         risk_attribution=attribution,
@@ -581,3 +586,115 @@ async def test_invalid_run_id_is_validation_error(fake_service):
 
     assert response.status_code == 422
     assert fake_service.calls == []
+
+
+# --- PR #32 리뷰 반영 (KatherineJH 변경 요청 1·2, purple11-11 [should]) -------------------------------
+
+
+def test_impact_sku_and_warehouse_are_summary_objects():
+    """재고 영향의 SKU·창고는 요약 객체(명세 2절 연관 대상 113행, 응답 본문 규칙 5.2)"""
+    impact = _body()["inventoryImpacts"][0]
+
+    assert impact["sku"] == {
+        "skuId": str(SKU_A),
+        "skuCode": "SKU-A",
+        "productName": "크림",
+    }
+    assert impact["warehouse"] == {
+        "warehouseId": str(WAREHOUSE_ID),
+        "warehouseCode": "US-WEST-LA",
+        "regionCode": "US_WEST",
+    }
+    assert not {
+        "skuId",
+        "skuCode",
+        "productName",
+        "warehouseId",
+        "warehouseCode",
+    } & set(impact)
+
+
+def test_at_risk_line_sku_is_summary_object():
+    line = _body()["atRiskOrders"][0]["lines"][1]
+
+    assert line["sku"] == {
+        "skuId": str(SKU_B),
+        "skuCode": "SKU-B",
+        "productName": "세럼",
+    }
+    assert "skuId" not in line and "skuCode" not in line
+
+
+def test_requested_by_is_user_summary_or_null():
+    """재분석 요청자는 사용자 요약, 자동 실행이면 null (응답 본문 규칙 5번·2.2 이름 표)"""
+    assert _body()["requestedBy"] is None
+
+    detail = replace(
+        DETAIL,
+        run=replace(
+            RUN,
+            trigger_type="REANALYSIS",
+            trigger_reason="USER_REANALYSIS",
+            requested_by_user_id=LEAD_ID,
+            requested_by_display_name="김팀장",
+            requested_by_role_code="CLIENT_LEAD",
+            request_reason="수량 확인",
+            requested_at=NOW,
+        ),
+    )
+    assert _body(detail)["requestedBy"] == {
+        "userId": str(LEAD_ID),
+        "displayName": "김팀장",
+        "roleCode": "CLIENT_LEAD",
+    }
+
+
+def test_unreadable_stored_explanation_becomes_null_with_error_log(caplog):
+    """저장 설명이 계약 모델과 맞지 않으면(예: 키가 늘어난 v2) 상세 전체를 실패시키지 않고 explanation 만 null + 오류 로그"""
+    bad = dict(EXPLANATION, schema_version="explanation.v2", new_key="x")
+    detail = replace(DETAIL, run=replace(RUN, final_explanation_json=bad))
+
+    with caplog.at_level(logging.ERROR):
+        body = _body(detail)
+
+    assert body["explanation"] is None
+    assert body["explanationValidationStatus"] == "PASSED"  # 저장된 상태는 그대로
+    assert len(body["responseOptions"]) == 2  # 나머지 묶음은 그대로 나감
+    assert (
+        "analysis_runs.final_explanation_json" in caplog.text
+        and str(RUN_ID) in caplog.text
+    )
+
+
+def test_unreadable_stored_sku_results_becomes_null_with_error_log(caplog):
+    bad = dict(_sku_results(SKU_A), unit="KG")
+    options = [replace(OPTIONS[0], sku_results=bad), OPTIONS[1]]
+    detail = replace(DETAIL, response_options=options)
+
+    with caplog.at_level(logging.ERROR):
+        body = _body(detail)
+
+    by_type = {o["optionType"]: o for o in body["responseOptions"]}
+    assert by_type["KEEP_PLAN"]["skuResults"] is None
+    assert by_type["OTHER_REGION_FULFILL"]["skuResults"] == _sku_results(SKU_A)
+    assert "response_options.sku_results" in caplog.text and str(KEEP_ID) in caplog.text
+
+
+def test_order_level_mismatch_uses_first_line_and_warns(caplog):
+    """같은 주문의 줄끼리 주문 단위 값이 다르면 첫 줄 값을 쓰고 경고 로그(PR #32 리뷰 포인트 2 답)"""
+    second = replace(LINES[1], risk_attribution="PRE_EXISTING")
+    detail = replace(DETAIL, at_risk_lines=[LINES[0], second, LINES[2]])
+
+    with caplog.at_level(logging.WARNING):
+        orders = _body(detail)["atRiskOrders"]
+
+    assert orders[0]["riskAttribution"] == "DELAY_INDUCED"
+    assert len(orders[0]["lines"]) == 2
+    assert "at_risk_orders" in caplog.text and str(ORDER_1) in caplog.text
+
+
+def test_same_order_values_do_not_warn(caplog):
+    with caplog.at_level(logging.WARNING):
+        _body()
+
+    assert "at_risk_orders" not in caplog.text

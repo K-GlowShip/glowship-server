@@ -220,11 +220,16 @@ def _ready_run() -> dict:
         },
         "inventory_impacts": [
             {
-                "sku_id": SKU_ID,
-                "sku_code": "SKU-001",
-                "product_name": "수분 크림 50ml",
-                "warehouse_id": uuid.uuid7(),
-                "warehouse_code": "US-WEST-LA",
+                "sku": {
+                    "sku_id": SKU_ID,
+                    "sku_code": "SKU-001",
+                    "product_name": "수분 크림 50ml",
+                },
+                "warehouse": {
+                    "warehouse_id": uuid.uuid7(),
+                    "warehouse_code": "US-WEST-LA",
+                    "region_code": "US_WEST",
+                },
                 "sku_scope": "IMPACTED",
                 "calculation_status": "CALCULATED",
                 "forecast_method": "ORDER_FIRST_APPROX_V1",
@@ -266,8 +271,11 @@ def _ready_run() -> dict:
                         "at_risk_order_id": AT_RISK_ID,
                         "order_line_id": uuid.uuid7(),
                         "line_no": 1,
-                        "sku_id": SKU_ID,
-                        "sku_code": "SKU-001",
+                        "sku": {
+                            "sku_id": SKU_ID,
+                            "sku_code": "SKU-001",
+                            "product_name": "수분 크림 50ml",
+                        },
                         "open_quantity": 2,
                         "wait_cause": "DIRECT_SKU_SHORTAGE",
                     }
