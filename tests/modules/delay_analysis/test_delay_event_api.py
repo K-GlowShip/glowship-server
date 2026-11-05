@@ -54,8 +54,10 @@ ROW = DelayEventRow(
     us_port_name="LOS ANGELES, CA",
     origin_region_code="KR",
     run_id=RUN_ID,
+    run_code="AN-260120-002",
     run_status="READY_FOR_REVIEW",
     run_result_class="READY_ORDER_RISK",
+    run_failure_code=None,
     has_final_decision=False,
     at_risk_order_count=4,
 )
@@ -107,6 +109,9 @@ class FakeQueryService:
                 analyzing=0,
                 on_hold=0,
                 needs_reanalysis=0,
+                finalized=2,
+                no_risk=1,
+                no_delay=1,
             ),
             total_count=45,
             page=kwargs["page"],
@@ -117,6 +122,7 @@ class FakeQueryService:
             raise DelayEventNotFoundException()
         run = RunHistoryRow(
             analysis_run_id=RUN_ID,
+            run_code="AN-260120-002",
             version_no=2,
             status="READY_FOR_REVIEW",
             is_latest=True,
@@ -125,6 +131,7 @@ class FakeQueryService:
             parent_analysis_run_id=PARENT_RUN_ID,
             completed_status="READY_FOR_REVIEW",
             result_class="FORECAST_ONLY_READY",
+            failure_code=None,
             stale_detected_at=None,
             stale_primary_reason=None,
             started_at=datetime(2026, 1, 20, tzinfo=UTC),
@@ -194,9 +201,10 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
     assert (item["closedAt"], item["closeReason"]) == (None, None)
     assert item["currentRun"] == {
         "runId": str(RUN_ID),
-        "runCode": None,
+        "runCode": "AN-260120-002",
         "status": "READY_FOR_REVIEW",
         "resultClass": "READY_ORDER_RISK",
+        "failureCode": None,
     }
     assert "runStatus" not in item
     assert item["atRiskOrderCount"] == 4
@@ -207,6 +215,9 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
         "analyzing": 0,
         "onHold": 0,
         "needsReanalysis": 0,
+        "finalized": 2,
+        "noRisk": 1,
+        "noDelay": 1,
     }
 
 
@@ -272,6 +283,23 @@ async def test_list_passes_query_params_to_service(fake_service):
     assert call["actor"].company_id == COMPANY_ID
 
 
+@pytest.mark.parametrize(
+    ("value", "tab"),
+    [
+        ("FINALIZED", DelayEventTab.FINALIZED),
+        ("NO_RISK", DelayEventTab.NO_RISK),
+        ("NO_DELAY", DelayEventTab.NO_DELAY),
+    ],
+)
+async def test_list_accepts_c26_tabs(fake_service, value, tab):
+    """명세 C26: 선택 완료·위험 없음·지연 해소 탭을 status 로 받는다"""
+    response = await _get("/api/v1/delay-events", params={"status": value})
+
+    assert response.status_code == 200
+    [call] = fake_service.calls
+    assert call["tab"] == tab
+
+
 async def test_list_rejects_unknown_tab(fake_service):
     response = await _get("/api/v1/delay-events", params={"status": "DONE"})
 
@@ -324,7 +352,73 @@ async def test_detail_returns_schedule_and_run_history(fake_service):
     assert run["triggerReason"] == "USER_REANALYSIS"
     assert run["completedStatus"] == "READY_FOR_REVIEW"
     assert run["resultClass"] == "FORECAST_ONLY_READY"
-    assert run["runCode"] is None  # 0006 병합 전
+    assert run["failureCode"] is None
+    assert run["runCode"] == "AN-260120-002"
+
+
+# 확정 DB 에 있는 실패 요약 3가지 (명세 C27)
+_FAILED_RUNS = [
+    ("ON_HOLD", "REQUIRED_DATA_INVALID"),
+    ("FAILED", "TOOL_TIMEOUT_EXHAUSTED"),
+    ("FAILED", "EXPLANATION_GENERATION_FAILED"),
+]
+
+
+@pytest.mark.parametrize(("status", "failure_code"), _FAILED_RUNS)
+async def test_list_current_run_has_failure_code(
+    fake_service, monkeypatch, status, failure_code
+):
+    failed = DelayEventListItem(
+        row=replace(
+            ROW,
+            run_status=status,
+            run_result_class=None,
+            run_failure_code=failure_code,
+        ),
+        shipment=SHIPMENT,
+        delay_days=3,
+    )
+
+    async def list_failed(**kwargs):
+        result = await FakeQueryService.list_delay_events(fake_service, **kwargs)
+        return replace(result, items=[failed])
+
+    monkeypatch.setattr(fake_service, "list_delay_events", list_failed)
+
+    [item] = (await _get("/api/v1/delay-events")).json()["items"]
+
+    assert item["currentRun"]["status"] == status
+    assert item["currentRun"]["failureCode"] == failure_code
+
+
+@pytest.mark.parametrize(("status", "failure_code"), _FAILED_RUNS)
+async def test_detail_run_history_has_failure_code(
+    fake_service, monkeypatch, status, failure_code
+):
+    detail = await fake_service.get_delay_event(actor=None, delay_event_id=EVENT_ID)
+    [run] = detail.runs
+    failed = replace(
+        detail,
+        runs=[
+            replace(
+                run,
+                status=status,
+                completed_status=status,
+                result_class=None,
+                failure_code=failure_code,
+            )
+        ],
+    )
+
+    async def get_failed(**kwargs):
+        return failed
+
+    monkeypatch.setattr(fake_service, "get_delay_event", get_failed)
+
+    [body_run] = (await _get(f"/api/v1/delay-events/{EVENT_ID}")).json()["runs"]
+
+    assert body_run["status"] == status
+    assert body_run["failureCode"] == failure_code
 
 
 async def test_detail_of_unknown_event_returns_404(fake_service):
@@ -349,7 +443,9 @@ async def test_list_rejects_old_pending_decision_tab(fake_service):
 
 async def test_list_item_without_run_has_null_current_run(fake_service, monkeypatch):
     no_run = DelayEventListItem(
-        row=replace(ROW, run_id=None, run_status=None, at_risk_order_count=None),
+        row=replace(
+            ROW, run_id=None, run_code=None, run_status=None, at_risk_order_count=None
+        ),
         shipment=replace(SHIPMENT, representative_line=None),
         delay_days=3,
     )
