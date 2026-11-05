@@ -1,9 +1,11 @@
 import asyncio
 import json
+import uuid
 from typing import Any
 
 import pytest
 from sqlalchemy import CheckConstraint, bindparam, text
+from sqlalchemy.dialects import postgresql
 
 from app.modules.data_sync.application.validation import blocking_issues
 from app.modules.delay_analysis.application.agent.retry import (
@@ -250,6 +252,46 @@ def test_explanation_failure_sets_ck26_columns_and_keeps_engine_detail():
         None,
     )
     assert "1:VALUE_MISMATCH@risk_summary#s1" in columns["failure_message"]
+    # 리뷰(#28): 그대로 저장해도 되게 끝낼 때 바꿔야 하는 열을 모두 담는다(ck23·ck21·ck36·ck7)
+    assert (
+        columns["completed_status"],
+        columns["result_class"],
+        columns["dependency_scope"],
+        columns["explanation_generated_at"],
+    ) == ("FAILED", None, None, None)
+    assert (
+        "decision_signature" not in columns
+    )  # ck37·ck40 이 막지 않으므로 바꾸지 않는다
+
+
+def test_tool_failure_columns_close_the_run_without_explanation_keys():
+    columns = hold_summary(REQUIRED_DATA_INVALID, "보류").columns()
+
+    assert (columns["status"], columns["completed_status"]) == ("ON_HOLD", "ON_HOLD")
+    assert (columns["result_class"], columns["dependency_scope"]) == (None, None)
+    assert "explanation_validation_status" not in columns
+
+
+async def test_hold_after_transient_error_keeps_real_attempt_count():
+    # 리뷰(#28) 비차단 1: 시간 초과 1회 뒤 필수 자료 오류면 시도 2 (agentflow 7.1 "마지막 도구의 최종 시도 횟수")
+    summary, _ = await _fail(FakeTool(TimeoutError(), RequiredDataError()))
+
+    assert (summary.status, summary.attempt_count, summary.retry_exhausted) == (
+        AnalysisOutcome.ON_HOLD,
+        2,
+        False,
+    )
+
+
+async def test_empty_backoff_retries_without_waiting():
+    # 리뷰(#28) 비차단 3: 빈 backoff_seconds 는 IndexError 대신 기다리지 않고 재시도
+    tool = FakeTool(TimeoutError(), "ok")
+    sleeps = Sleeps()
+
+    assert (
+        await call_with_retry("t", STEP, tool, backoff_seconds=(), sleep=sleeps) == "ok"
+    )
+    assert (tool.calls, sleeps.waits) == (2, [])
 
 
 def test_hold_code_matches_data_sync_blocking_issue():
@@ -295,51 +337,64 @@ def test_summary_rejects_values_the_ddl_rejects(change, error):
         FailureSummary(**{**_OK, **change})
 
 
-# --- 실제 DB CHECK 원문으로 판정 (읽기 전용) ----------------------------------------------------
+# --- 실제 DB 행에 덮어써 analysis_runs CHECK 전부로 판정 (읽기 전용) ------------------------------------
+# 리뷰(#28) 반영: 처음에는 ck10~14·ck26 만 봐서 completed_status(ck23)·result_class(ck21)·dependency_scope(ck36)
+# 누락을 못 잡았다. 이제 모델의 CHECK 42개를 모두, 엔진 결과 값이 찬 실제 행 위에서 판정한다.
 
-_CHECKED = ("ck10", "ck11", "ck12", "ck13", "ck14", "ck26")
 _CHECKS = {
     c.name.removeprefix("analysis_runs_"): str(c.sqltext)
     for c in AnalysisRun.__table__.constraints
-    if isinstance(c, CheckConstraint)
-    and c.name
-    and c.name.removeprefix("analysis_runs_") in _CHECKED
+    if isinstance(c, CheckConstraint) and c.name
 }
-_ROW = (
-    "SELECT CAST(:status AS text) AS status, CAST(:failed_step AS text) AS failed_step,"
-    " CAST(:failure_code AS text) AS failure_code, CAST(:attempt_count AS integer) AS attempt_count,"
-    " CAST(:retry_exhausted AS boolean) AS retry_exhausted, CAST(:failure_message AS text) AS failure_message,"
-    " CAST(:explanation_validation_status AS text) AS explanation_validation_status,"
-    " CAST(:final_explanation_json AS jsonb) AS final_explanation_json"
-)
-_EMPTY = {
-    "failed_step": None,
-    "failure_code": None,
-    "attempt_count": None,
-    "retry_exhausted": None,
-    "failure_message": None,
-    "explanation_validation_status": None,
-    "final_explanation_json": None,
+_COLUMNS = {
+    c.name: c.type.compile(dialect=postgresql.dialect())
+    for c in AnalysisRun.__table__.columns
 }
 
 
-async def _failing_checks(db, values: dict[str, Any]) -> list[str]:
-    """CHECK 는 FALSE 일 때만 거부한다(NULL 은 통과). 거부되는 제약 이름을 돌려준다."""
-    row = {**_EMPTY, **values}
-    if row["final_explanation_json"] is not None:
-        row["final_explanation_json"] = json.dumps(row["final_explanation_json"])
-    failing = []
-    for name in _CHECKED:
-        stmt = text(
-            f"SELECT ({_CHECKS[name]}) IS NOT FALSE FROM ({_ROW}) AS t"
-        ).bindparams(*(bindparam(k) for k in row))
-        if not (await db.execute(stmt, row)).scalar_one():
-            failing.append(name)
-    return failing
+def test_model_has_all_42_checks():
+    assert len(_CHECKS) == 42
 
 
-def test_all_checked_constraints_found_on_model():
-    assert sorted(_CHECKS) == sorted(_CHECKED)
+async def _base_run_id(db, status: str) -> uuid.UUID:
+    """엔진 결과 값(결과 분류·의존 범위·판정 서명)이 찬 완료 행. 진행 중 행에 엔진 값이 남은 최악의 경우를 대신한다."""
+    return (
+        await db.execute(
+            text(
+                "SELECT analysis_run_id FROM analysis_runs WHERE status = :s"
+                " AND result_class IS NOT NULL AND dependency_scope IS NOT NULL"
+                " AND decision_signature IS NOT NULL"
+                " ORDER BY analysis_run_id LIMIT 1"
+            ),
+            {"s": status},
+        )
+    ).scalar_one()
+
+
+async def _failing_checks(db, run_id: uuid.UUID, values: dict[str, Any]) -> list[str]:
+    """실제 행에 values 를 덮어쓴 행에서 거부되는 CHECK 이름. CHECK 는 FALSE 일 때만 거부한다(NULL 통과)."""
+    assert not set(values) - set(_COLUMNS), set(values) - set(_COLUMNS)
+    params: dict[str, Any] = {}
+    cols = []
+    for name, sql_type in _COLUMNS.items():
+        if name in values:
+            value = values[name]
+            if value is not None and sql_type.upper() in ("JSON", "JSONB"):
+                value = json.dumps(value)
+            params[f"v_{name}"] = value
+            cols.append(f'CAST(:v_{name} AS {sql_type}) AS "{name}"')
+        else:
+            cols.append(f'r."{name}"')
+    checks = ", ".join(
+        f'({sql.replace(":", chr(92) + ":")}) IS NOT FALSE AS "{name}"'
+        for name, sql in _CHECKS.items()
+    )
+    stmt = text(
+        f"SELECT {checks} FROM (SELECT {', '.join(cols)} FROM analysis_runs r"
+        " WHERE r.analysis_run_id = :run_id) AS t"
+    ).bindparams(*(bindparam(k) for k in params), bindparam("run_id"))
+    row = (await db.execute(stmt, {**params, "run_id": run_id})).mappings().one()
+    return sorted(name for name, ok in row.items() if not ok)
 
 
 async def _summaries() -> list[FailureSummary]:
@@ -353,6 +408,7 @@ async def _summaries() -> list[FailureSummary]:
         (PermissionDeniedError(),),
         (KeyError("x"),),
         (TimeoutError(), PermissionDeniedError()),
+        (TimeoutError(), RequiredDataError()),
     ):
         with pytest.raises(ToolFailure) as caught:
             await call_with_retry("t", STEP, FakeTool(*script), sleep=Sleeps())
@@ -360,40 +416,45 @@ async def _summaries() -> list[FailureSummary]:
     return made
 
 
-async def test_every_summary_we_make_passes_db_checks(db_session):
+@pytest.mark.parametrize("base_status", ["FINALIZED", "NO_RISK"])
+async def test_every_summary_passes_all_checks_over_a_real_row(db_session, base_status):
+    run_id = await _base_run_id(db_session, base_status)
+    assert (
+        await _failing_checks(db_session, run_id, {}) == []
+    )  # 기준 행 자체는 통과(시험 장치 확인)
+
     summaries = await _summaries()
-    assert len(summaries) == 7
-
+    assert len(summaries) == 8
     for summary in summaries:
-        assert await _failing_checks(db_session, summary.columns()) == [], summary
+        assert await _failing_checks(db_session, run_id, summary.columns()) == [], (
+            summary
+        )
 
 
-async def test_db_checks_reject_wrong_rows(db_session):
-    # 음성: FailureSummary 를 거치지 않고 틀린 값을 넣으면 DB 제약이 실제로 거부하는지
-    ok = explanation_failure().columns()
+async def test_checks_catch_missing_or_wrong_columns(db_session):
+    # 음성: columns() 에서 열을 빼면(= 기준 행의 엔진 값이 남으면) 리뷰가 지적한 제약이 실제로 거부하는지
+    run_id = await _base_run_id(db_session, "FINALIZED")
+    tool = (await _summaries())[2].columns()  # 시간 초과 소진
+    explain = explanation_failure().columns()
+
+    def without(values: dict[str, Any], key: str) -> dict[str, Any]:
+        return {k: v for k, v in values.items() if k != key}
+
     cases = {
-        "ck14": {**ok, "failure_code": TOOL_TIMEOUT_EXHAUSTED, "attempt_count": 2},
-        "ck13": {
-            **ok,
-            "failure_code": TOOL_TIMEOUT_EXHAUSTED,
-            "attempt_count": 4,
-            "retry_exhausted": False,
-        },
-        "ck26": {**ok, "failed_step": "ANALYZING_IMPACT"},
+        "ck23": without(tool, "completed_status"),
+        "ck21": without(explain, "result_class"),
+        "ck36": without(tool, "dependency_scope"),
+        "ck7": without(explain, "explanation_generated_at"),
+        "ck14": {**tool, "attempt_count": 2},
+        "ck13": {**tool, "attempt_count": 4, "retry_exhausted": False},
+        "ck26": {**explain, "failed_step": "ANALYZING_IMPACT"},
         "ck10": {
-            **ok,
+            **tool,
             "status": "READY_FOR_REVIEW",
-            "failure_code": TOOL_TIMEOUT_EXHAUSTED,
+            "completed_status": "READY_FOR_REVIEW",
         },
-        "ck11": {**ok, "failure_message": None},
-        "ck12": {
-            **ok,
-            "failed_step": "COMPARING",
-            "failure_code": TOOL_TIMEOUT_EXHAUSTED,
-        },
+        "ck11": {**tool, "failure_message": None},
+        "ck12": {**tool, "failed_step": "COMPARING"},
     }
-    for expected, row in cases.items():
-        assert expected in await _failing_checks(db_session, row), expected
-
-    # 실패가 아닌 실행(5컬럼 모두 빔)은 통과
-    assert await _failing_checks(db_session, {"status": "READY_FOR_REVIEW"}) == []
+    for expected, values in cases.items():
+        assert expected in await _failing_checks(db_session, run_id, values), expected
