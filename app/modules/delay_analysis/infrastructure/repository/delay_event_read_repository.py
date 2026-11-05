@@ -127,7 +127,10 @@ _COUNTS = text(
            count(*) FILTER (WHERE b.run_status = 'READY_FOR_REVIEW') AS ready_for_review,
            count(*) FILTER (WHERE b.run_status IN ({_IN_PROGRESS})) AS analyzing,
            count(*) FILTER (WHERE b.run_status = 'ON_HOLD') AS on_hold,
-           count(*) FILTER (WHERE b.run_status IN ('STALE','FAILED')) AS needs_reanalysis
+           count(*) FILTER (WHERE b.run_status IN ('STALE','FAILED')) AS needs_reanalysis,
+           count(*) FILTER (WHERE b.run_status = 'FINALIZED') AS finalized,
+           count(*) FILTER (WHERE b.run_status = 'NO_RISK') AS no_risk,
+           count(*) FILTER (WHERE b.run_status = 'NO_DELAY') AS no_delay
       FROM ({_BASE + _FILTERS}) b
     """
 ).bindparams(
@@ -164,8 +167,8 @@ _SNAPSHOT_EXPECTED_DATE = text(
 
 _RUNS = text(
     """
-    SELECT analysis_run_id, version_no, status, is_latest, trigger_type, trigger_reason,
-           parent_analysis_run_id, completed_status, result_class,
+    SELECT analysis_run_id, run_code, version_no, status, is_latest, trigger_type, trigger_reason,
+           parent_analysis_run_id, completed_status, result_class, failure_code,
            stale_detected_at, stale_primary_reason, started_at, finished_at
       FROM analysis_runs
      WHERE company_id = :company_id AND delay_event_id = :delay_event_id
@@ -196,8 +199,10 @@ class DelayEventRow:
     us_port_name: str
     origin_region_code: str | None
     run_id: uuid.UUID | None
+    run_code: str | None  # 실행이 없으면 None (0006, D14)
     run_status: str | None
     run_result_class: str | None
+    run_failure_code: str | None  # ON_HOLD·FAILED 일 때만 값 (ck10·ck11, 명세 C27)
     has_final_decision: bool
     at_risk_order_count: int | None
     # ON_HOLD·FAILED 일 때만 값 (명세 C27). 뒤에 더한 열이라 기본값을 두어 기존 생성 코드와 호환한다.
@@ -211,6 +216,9 @@ class DelayEventCounts:
     analyzing: int
     on_hold: int
     needs_reanalysis: int
+    finalized: int
+    no_risk: int
+    no_delay: int
 
 
 @dataclass(frozen=True)
@@ -226,6 +234,7 @@ class ShipmentLineRow:
 @dataclass(frozen=True)
 class RunHistoryRow:
     analysis_run_id: uuid.UUID
+    run_code: str  # 0006, D14
     version_no: int
     status: str
     is_latest: bool
@@ -234,6 +243,7 @@ class RunHistoryRow:
     parent_analysis_run_id: uuid.UUID | None
     completed_status: str | None
     result_class: str | None
+    failure_code: str | None  # ON_HOLD·FAILED 일 때만 값 (ck10·ck11, 명세 C27)
     stale_detected_at: datetime | None
     stale_primary_reason: str | None
     started_at: datetime

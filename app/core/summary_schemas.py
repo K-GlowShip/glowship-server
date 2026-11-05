@@ -41,8 +41,8 @@ class UserSummary(CamelModel):
 
 class RunSummary(CamelModel):
     run_id: uuid.UUID
-    run_code: str | None = Field(
-        description="표시용 실행 ID (D14). analysis_runs.run_code 마이그레이션(0006) 전에는 null"
+    run_code: str = Field(
+        description="표시용 실행 ID (D14, AN-YYMMDD-NNN). analysis_runs.run_code (0006, NOT NULL)"
     )
     status: str
     result_class: str | None = Field(
