@@ -232,12 +232,11 @@ def _summary_started_at(started_at: datetime) -> LatestRunSummary:
     return _summary(started_ago=NOW - started_at, synced_ago=NOW - started_at)
 
 
-async def test_가상_시각이면_가장_최근_수집_시작을_지금으로_본다():
-    """서버 시각(11월)이 아니라 고객사의 가장 최근 수집 시작(7월 초)이 지금. 그 원천은 동기화됨,
-    하루 뒤처진 원천은 주기 × 배수를 넘어 동기화 안 됨"""
-    latest = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+async def test_가상_시각이면_수집_멈춤_판정을_하지_않는다():
+    """선적만 수동 수집해 하루 앞서도(07-02) 수동 수집 수단이 없는 원천(07-01)은 동기화됨으로 남는다.
+    서버 시각(11월)으로도 멈춤으로 보지 않는다 (PR #40 rouiv 리뷰: 카드 4개가 수집 오류로 바뀌던 문제)"""
     summaries = {
-        "SHIPMENT": _summary_started_at(latest),
+        "SHIPMENT": _summary_started_at(datetime(2026, 7, 2, 0, 0, tzinfo=UTC)),
         "ORDER": _summary_started_at(datetime(2026, 7, 1, 0, 2, tzinfo=UTC)),
     }
     repo = FakeDataSyncRunRepository(summaries=summaries)
@@ -248,7 +247,26 @@ async def test_가상_시각이면_가장_최근_수집_시작을_지금으로_�
     statuses = {s.source_domain: s for s in await service.get_latest_statuses(TENANT)}
 
     assert statuses[SourceDomain.SHIPMENT].is_synced is True
-    assert statuses[SourceDomain.ORDER].is_synced is False
+    assert statuses[SourceDomain.ORDER].is_synced is True
+
+
+async def test_가상_시각이어도_마지막_수집이_실패면_동기화_안_됨이다():
+    """조건 1(마지막으로 끝난 수집의 결과)은 가상 시각에서도 그대로 본다"""
+    summaries = {
+        "SHIPMENT": _summary(
+            started_ago=NOW - datetime(2026, 7, 2, tzinfo=UTC),
+            status="FAILED",
+            completed_status="FAILED",
+        )
+    }
+    repo = FakeDataSyncRunRepository(summaries=summaries)
+    service = DataSyncStatusService(
+        repo=repo, stale_multiplier=2, clock=lambda: NOW, virtual_clock=True
+    )
+
+    statuses = {s.source_domain: s for s in await service.get_latest_statuses(TENANT)}
+
+    assert statuses[SourceDomain.SHIPMENT].is_synced is False
 
 
 async def test_가상_시각이_아니면_서버_시각으로_판정한다():
