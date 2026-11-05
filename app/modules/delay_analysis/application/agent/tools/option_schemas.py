@@ -7,6 +7,7 @@ from app.modules.delay_analysis.application.agent.tools.common import (
     ToolDate,
     ToolId,
     ToolModel,
+    UniqueCodes,
     UtcTimestamp,
 )
 from app.modules.delay_analysis.application.agent.tools.impact_schemas import (
@@ -117,9 +118,7 @@ class OptionPrecheck(ToolModel):
     precheck: Precheck
     reason_code: OptionReasonCode | None  # NO_SUPPLY·NEEDS_CHECK 일 때의 사유
     supply_available_date: ToolDate | None  # 공급 가능일 S. 리드타임이 없으면 null
-    eligible_sku_codes: list[
-        StrictStr
-    ]  # KR_AIR_REPLENISH 만 값이 있고, 나머지는 빈 배열
+    eligible_sku_codes: UniqueCodes  # KR_AIR_REPLENISH 만 값이 있고, 나머지는 빈 배열
 
     @model_validator(mode="after")
     def _match_precheck_table(self) -> Self:

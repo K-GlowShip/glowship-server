@@ -8,6 +8,7 @@ from app.modules.delay_analysis.application.agent.tools.common import (
     ToolDate,
     ToolId,
     ToolModel,
+    UniqueCodes,
     UtcTimestamp,
     end_of_day,
 )
@@ -70,7 +71,9 @@ class AtRiskOrder(ToolModel):
     promised_delivery_at: UtcTimestamp
     risk_attribution: RiskAttribution
     expected_delivery_date: ToolDate  # E 시뮬레이션의 배송일
-    baseline_expected_delivery_date: ToolDate  # P 시뮬레이션의 배송일
+    # P 시뮬레이션의 배송일. DDL 은 DELAY_INDUCED 일 때 NULL 을 허용하지만(at_risk_orders_ck6), 엔진은 늘 값을 낸다:
+    # 계획일 기준으로 확보되지 않으면 구간 끝 + 출고·배송 리드타임으로 정하고(core.order_layer), storage.py 가 늘 저장한다
+    baseline_expected_delivery_date: ToolDate
     expected_beyond_horizon: StrictBool
     lines: list[AtRiskOrderLine] = Field(min_length=1)
 
@@ -102,9 +105,9 @@ class AtRiskOrders(ToolModel):
     """T7 출력"""
 
     risks: list[AtRiskOrder]
-    delay_induced_sku_codes: list[
-        StrictStr
-    ]  # DELAY_INDUCED 주문의 모든 활성 상세 SKU(K_SHIPMENT 밖 포함)
+    delay_induced_sku_codes: (
+        UniqueCodes  # DELAY_INDUCED 주문의 모든 활성 상세 SKU(K_SHIPMENT 밖 포함)
+    )
     simulation_horizon_end: ToolDate  # max(E, 약속일들) + 14일
     # E 시뮬레이션 결과(주문별 확보일, 일별 보호량). 형식은 엔진 연결 작업에서 정한다(9절 Q1·Q12).
     expected_plan_simulation: dict[str, Any]
@@ -136,7 +139,7 @@ class CalculateInventoryImpactInput(ToolModel):
     sales_history: SalesHistory
     open_orders: OpenOrders
     operating_rules: OperatingRules
-    delay_induced_sku_codes: list[StrictStr]
+    delay_induced_sku_codes: UniqueCodes
 
 
 class DailyDeficit(ToolModel):
@@ -190,10 +193,10 @@ class InventoryImpact(ToolModel):
     """T6 출력"""
 
     items: list[InventoryImpactItem]
-    impacted_sku_codes: list[
-        StrictStr
-    ]  # K_IMPACTED (지연 유발 주문의 K_SHIPMENT 밖 SKU 포함)
-    watch_sku_codes: list[StrictStr]  # K_WATCH
+    impacted_sku_codes: (
+        UniqueCodes  # K_IMPACTED (지연 유발 주문의 K_SHIPMENT 밖 SKU 포함)
+    )
+    watch_sku_codes: UniqueCodes  # K_WATCH
     completed_status: Literal[CompletedStatus.READY_FOR_REVIEW, CompletedStatus.NO_RISK]
     result_class: ResultClass
 
