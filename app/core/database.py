@@ -1,4 +1,5 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -25,6 +26,30 @@ SessionLocal = async_sessionmaker(
     autocommit=False,  # 자동 커밋 기능을 비활성화
     autoflush=False,  # 자동으로 플러시(Flush)되는 기능을 비활성화 (asyncpg 드라이버 사용하기 위한 필수 설정 -> 비동기이기 때문)
 )
+
+
+# 수집 적재 전용 연결 (워커 역할, GLOW-13). 워커 계정을 따로 두지 않으면 앱 연결을 그대로 쓴다.
+worker_engine = (
+    create_async_engine(get_settings().worker_database_url, echo=True, future=True)
+    if get_settings().uses_separate_worker_account
+    else engine
+)
+
+WorkerSessionLocal = async_sessionmaker(
+    bind=worker_engine, expire_on_commit=False, autocommit=False, autoflush=False
+)
+
+
+@asynccontextmanager
+async def open_worker_session() -> AsyncIterator[AsyncSession]:
+    """
+    수집 적재 전용 세션 (요청 세션 get_db 와 따로)
+      - 수집 서비스(DataIngestService)가 RUNNING 기록·적용·FAILED 기록을 직접 commit·rollback 하므로
+        요청 세션을 공유하지 않고 이 세션을 넘깁니다. 여기서는 commit 하지 않고 닫기만 합니다.
+      - 요청 응답(202) 뒤 백그라운드에서 열어 씁니다(API 25).
+    """
+    async with WorkerSessionLocal() as session:
+        yield session
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

@@ -86,13 +86,12 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
         (user_id=None), 워커 역할의 app_context_allowed 는 고객사가 ACTIVE 인지만 봅니다. 앱 역할(glowship_v4_app)은
         ACTIVE 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고
         INSERT 가 고유 제약 위반으로 실패합니다 (마이그레이션 0001 app_context_allowed).
-        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 포함합니다. 다만 지연 에피소드 종료(delay_events 의
-        closed_at·close_reason UPDATE)는 아직 없고, 두 열만 주기로 정해 별도 리비전(개발자 3)으로 넣습니다 (ERD 설명 4절).
+        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 포함하고, 지연 에피소드 종료(delay_events 의
+        closed_at·close_reason UPDATE)는 마이그레이션 0007(GLOW-117)이 두 열만 줍니다 (ERD 설명 4절).
       - 세션: 이 서비스 전용 세션을 넘깁니다. 서비스가 직접 commit·rollback 하므로(RUNNING 기록, 적용, FAILED 기록)
         요청 세션(get_db)을 공유하면 안 됩니다.
-      - 지금 앱 연결은 설정의 postgres_user 하나뿐이고 워커 역할 연결은 아직 없습니다. 수동 수집 API 25
-        (POST /data-sync-runs, 202 뒤 백그라운드 실행)를 붙일 때 워커 역할 전용 세션을 새로 여는 방식으로 연결을 정합니다
-        (아직 확정 아님). 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
+      - 워커 역할 연결은 app/core/database.open_worker_session 입니다(2026-11-05 결정). 설정 WORKER_POSTGRES_USER·PASSWORD 의
+        워커 계정으로 붙고, 비어 있으면 앱 연결(postgres_user)과 같습니다. 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
       - 파서가 레코드로 바꾸지 못해 거부한 원천 레코드(MISSING_REQUIRED·INVALID_DATE, source_payload 의 파서 계약)는
         parse_rejections 로 받습니다. 받은 건수·거부 건수에 넣고 결과의 거부 사유에도 앞에 담습니다.
 """

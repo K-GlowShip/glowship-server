@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.security.jwt import JwtConfig
@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     postgres_user: str
     postgres_password: str
     postgres_db: str
+
+    # 수집 적재 전용 워커 DB 계정 (GLOW-13, 수집 서비스 ingest_service "실행 전제")
+    # 수집은 워커 역할(glowship_v4_worker) 권한으로 돌아야 한다. 운영은 그 역할에 속한 로그인 계정을 넣는다.
+    # 둘 다 비우면 위 POSTGRES_USER·PASSWORD 로 붙는다 (로컬 superuser 개발 DB 는 지금처럼 동작).
+    # 호스트·포트·DB 이름은 앱 연결과 같다.
+    worker_postgres_user: str | None = None
+    worker_postgres_password: str | None = None
 
     # JWT
     # HS256 은 RFC 7518 3.2 에 따라 32바이트 이상 키를 권장한다. 짧으면 기동 시점에 실패시킨다.
@@ -57,11 +64,46 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("worker_postgres_user", "worker_postgres_password", mode="before")
+    @classmethod
+    def _blank_worker_credential_is_unset(cls, value: object) -> object:
+        # `WORKER_POSTGRES_USER=` 처럼 비워 두면 설정하지 않은 것(None)으로 본다.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _worker_credentials_come_together(self) -> Settings:
+        # 계정만 있고 비밀번호가 없는(또는 그 반대) 설정은 운영에서 조용히 앱 계정으로 붙지 않도록 기동 시점에 실패시킨다.
+        if (self.worker_postgres_user is None) != (
+            self.worker_postgres_password is None
+        ):
+            raise ValueError(
+                "WORKER_POSTGRES_USER 와 WORKER_POSTGRES_PASSWORD 는 함께 넣거나 함께 비워야 합니다."
+            )
+        return self
+
+    def _postgres_url(self, user: str, password: str) -> str:
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
     @property
     def database_url(self) -> str:
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        return self._postgres_url(self.postgres_user, self.postgres_password)
+
+    @property
+    def uses_separate_worker_account(self) -> bool:
+        return self.worker_postgres_user is not None
+
+    @property
+    def worker_database_url(self) -> str:
+        """수집 적재 전용 연결. 워커 계정이 없으면 앱 연결과 같다"""
+        if self.worker_postgres_user is None or self.worker_postgres_password is None:
+            return self.database_url
+        return self._postgres_url(
+            self.worker_postgres_user, self.worker_postgres_password
         )
 
     @property
