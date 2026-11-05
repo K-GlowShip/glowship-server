@@ -85,9 +85,11 @@ Base64 해제 → 72바이트 초과면 401 → users.email 조회 → bcrypt �
 
 ```http
 HTTP/1.1 204 No Content
-Set-Cookie: access_token=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Max-Age=0; Path=/; SameSite=lax; Secure
-Set-Cookie: refresh_token=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Max-Age=0; Path=/api/v1/auth/refresh; SameSite=lax; Secure
+Set-Cookie: access_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path=/; SameSite=lax; Secure
+Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path=/api/v1/auth/refresh; SameSite=lax; Secure
 ```
+
+`expires`에는 과거 고정 시각이 아니라 **응답 시각**이 찍힙니다(Starlette `delete_cookie`가 `expires=0`을 넘김. 예: `expires=Thu, 05 Nov 2026 05:00:18 GMT`). `Max-Age=0`이 `Expires`보다 우선이므로 지워지는 동작은 같습니다.
 
 - 서버가 두 쿠키를 발급 때와 **같은 이름·Path·SameSite·HttpOnly**로 `Max-Age=0` 처리해 브라우저가 지우게 합니다(`clear_auth_cookies`). HttpOnly 쿠키는 프론트가 지울 수 없습니다. 브라우저는 이름·도메인·Path가 같은 쿠키만 덮어쓰므로 Path가 다르면 지워지지 않습니다. `tests/core/test_cookies.py`가 발급과 삭제의 쌍을 대조합니다.
 - 브라우저는 refresh 쿠키를 `/api/v1/auth/refresh`에만 보내므로 로그아웃 요청에는 refresh 쿠키가 실려 오지 않습니다. 서버는 토큰 값을 볼 필요 없이 삭제 지시만 내립니다.
@@ -96,18 +98,19 @@ Set-Cookie: refresh_token=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; M
 | 상태 | code | 상황 |
 | --- | --- | --- |
 | 204 | – | 항상. 멱등 |
-| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청(3-1절). 다른 사이트가 사용자를 강제로 로그아웃시키는 것을 SameSite=Lax와 함께 막습니다 |
+| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청(3-1절). 다른 사이트가 사용자를 강제로 로그아웃시키는 것은 **출처 검사만** 막습니다. 로그아웃은 쿠키 없이도 동작하므로 SameSite=Lax는 이 경우 방어가 되지 않습니다(SameSite는 쿠키를 **보내는** 것만 막고, 다른 사이트 폼 POST 응답의 `Set-Cookie`는 브라우저가 적용합니다). 출처 검사 범위를 조정할 때 로그아웃을 빼면 안 됩니다 |
 
 ### 왜 인증을 요구하지 않는가
 
 - 로그아웃은 "이 브라우저의 세션을 끝낸다"는 뜻이고, 세션이 이미 만료되어 실패하는 로그아웃은 사용자에게 의미가 없습니다. 항상 성공해야 버튼이 꼬이지 않습니다.
 - access 토큰이 만료된 상태에서 401을 돌려주면 프론트가 재발급을 시도한 뒤 다시 로그아웃하는 우회 경로가 생깁니다.
-- 명세 3절의 권한 "로그인"은 "로그인한 화면에서 부른다"는 뜻으로 해석했습니다. 인증 없이도 서버 상태는 바뀌지 않고, 교차 사이트 요청은 출처 검사가 막습니다.
+- 인증 없이도 서버 상태는 바뀌지 않고, 교차 사이트 요청은 출처 검사가 막습니다. 명세 v6.2는 이 결정에 맞춰 로그아웃을 인증 예외로 고쳤습니다(C35: 2절 인증 예외에 로그아웃 추가, 3절 2번 권한 "없음").
 
 ### 한계 (무상태 로그아웃)
 
 - 서버는 토큰을 기록하지 않습니다. **로그아웃 전에 복사된 토큰은 만료까지 유효합니다**: access 최대 30분(재발급 API 머지 때 15분), refresh 최대 7일.
 - 같은 쿠키 값을 다시 보내면 `GET /me`는 여전히 200입니다. 즉시 무효화가 필요하면 refresh `jti` 폐기 목록이 필요하며, 재발급 API 구현 때 저장소와 함께 정합니다(7절).
+- 폐기 목록을 넣으려면 로그아웃이 refresh `jti`를 읽어야 하는데, refresh 쿠키는 Path가 `/api/v1/auth/refresh`로 좁혀져 로그아웃 요청에 실려 오지 않습니다. 따라서 그때는 **쿠키 Path 조정**(예: `/api/v1/auth`로 넓혀 인증 엔드포인트에만 실리게)이 함께 필요합니다(7절).
 
 ## 3. 쿠키
 
@@ -230,7 +233,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 | 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급 |
 | ~~로그아웃~~ | 구현됨. `POST /api/v1/auth/logout`이 `clear_auth_cookies`로 두 쿠키를 만료시킨다 (2-1절) |
 | ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
-| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태라(2-1절 한계) 폐기 목록이 생기면 로그아웃에서 refresh `jti`를 기록하는 한 줄을 더한다 |
+| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태(2-1절 한계)이고 refresh 쿠키가 로그아웃 요청에 실려 오지 않으므로, 폐기 목록을 넣을 때는 `REFRESH_TOKEN_COOKIE_PATH`를 `/api/v1/auth`로 넓히는 것(인증 엔드포인트에만 실림. `cookies.py` 상수 한 곳이면 발급·삭제가 함께 따라가고, 명세 D4·C31의 Path 문구도 같이 고침)을 함께 정한다. 재발급 API 전에 바꾸는 편이 안전하다. Path가 다르면 브라우저가 별개 쿠키로 취급해 이미 로그인한 사용자에게 옛 Path 쿠키가 7일간 남으므로, 전환 기간에는 로그아웃에서 옛·새 Path를 모두 삭제한다. 명세 4.1 `POST /auth/refresh`에도 메모(C35) |
 | 서버 간 호출 | 로그인 토큰이 아니라 별도 자격(서비스 토큰·API 키)으로 다룸 |
 
 ## 8. 관련 파일
