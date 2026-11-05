@@ -46,7 +46,9 @@
 
 **규칙**
 
-- **바인드 변수만 씁니다.** 사용자 입력을 문자열로 이어 붙이지 않습니다. 모든 변수는 `bindparam(name, type_=...)`로 타입을 정합니다(`NULL` 비교와 `uuid`·`timestamptz` 변환을 DB가 바르게 하도록).
+- **바인드 변수만 씁니다.** 사용자 입력을 문자열로 이어 붙이지 않습니다.
+- **타입이 필요한 변수는 `bindparam(name, type_=...)`로 정합니다.** 선택 필터의 `NULL` 비교(`CAST(:x AS uuid) IS NULL`)에 쓰는 변수와 `uuid`·`timestamptz`·`date` 값을 넘기는 변수가 그렇습니다. DB가 `NULL`과 값 변환을 바르게 하도록 하기 위해서입니다. 목록·집계 조회 문장은 모두 여기에 해당합니다.
+  - PostgreSQL 함수의 text 인자처럼 문자열로 받는 값은 타입을 정하지 않고 문자열로 넘깁니다. 다른 타입이 필요하면 SQL 안에서 `CAST`합니다. 예: `core/locks.py`(`CAST(:company_id AS text)`), `core/rls_context.py`(`set_config`), `user_repository.py`의 `app_admin_create_client_user()` 이메일·이름 인자.
 - **LIKE 검색어는 이스케이프합니다.** `\`·`%`·`_`를 글자 그대로 찾도록 바꾸고 `ESCAPE '\'`를 씁니다. 지금 같은 함수 `_like_pattern`이 세 리포지토리(`sku`·`order`·`inventory`)에 따로 있습니다(9절).
 - **SQL 문장은 모듈 상수로 둡니다.** `_LIST_PAGE`, `_COUNT_PAGE`처럼 이름을 붙이고, 문장 위 주석에 명세의 어느 정의를 옮긴 것인지 적습니다. 리뷰에서 명세와 한 줄씩 대조하기 위해서입니다.
 - **결과는 dataclass로 바꿉니다.** 리포지토리는 `Row`를 그대로 내보내지 않고 `XxxRow(**row._mapping)`처럼 이름 있는 값으로 돌려줍니다.
