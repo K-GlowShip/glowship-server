@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.modules.decision.application.member_draft_service import MemberDraftService
+from app.modules.decision.application.reanalysis_service import ReanalysisService
 from app.modules.decision.infrastructure.repository.member_draft_repository import (
     MemberDraftRepository,
 )
@@ -18,3 +19,9 @@ def get_member_draft_service(
     db: AsyncSession = Depends(get_db),
 ) -> MemberDraftService:
     return MemberDraftService(repo=MemberDraftRepository(db))
+
+
+def get_reanalysis_service(
+    db: AsyncSession = Depends(get_db),
+) -> ReanalysisService:
+    return ReanalysisService(db=db, repo=MemberDraftRepository(db))
