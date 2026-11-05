@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     ENGINE_PACKAGE,
     EngineIntegrityError,
@@ -91,6 +91,23 @@ def test_resolve_requires_configured_dir_with_engine_package(tmp_path):
 
     (tmp_path / ENGINE_PACKAGE).mkdir()
     assert resolve_engine_dir(tmp_path) == tmp_path
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_blank_engine_dir_setting_means_not_configured(monkeypatch, raw):
+    # `GLOWSHIP_ENGINE_DIR=` 로 비워 두면 Path("") 가 "." 이 되어 설정된 것처럼 보였다(11-05 발견)
+    monkeypatch.setenv("GLOWSHIP_ENGINE_DIR", raw)
+    settings = Settings(
+        _env_file=None,
+        postgres_host="h",
+        postgres_port=5432,
+        postgres_user="u",
+        postgres_password="p",
+        postgres_db="d",
+        jwt_secret_key="x" * 32,
+    )
+
+    assert settings.glowship_engine_dir is None
 
 
 def test_import_does_not_write_bytecode_into_engine_dir(tmp_path):
