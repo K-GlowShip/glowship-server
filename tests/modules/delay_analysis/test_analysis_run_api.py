@@ -177,6 +177,8 @@ EVENT = DelayEventRow(
     run_id=RUN_ID,
     run_status="READY_FOR_REVIEW",
     run_result_class="READY_ORDER_RISK",
+    run_code="AN-260101-001",
+    run_failure_code=None,
     has_final_decision=False,
     at_risk_order_count=2,
 )
