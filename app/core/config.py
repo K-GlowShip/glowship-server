@@ -53,8 +53,8 @@ class Settings(BaseSettings):
 
     # 가상 시각 (GLOW-13·49 데모, 2026-11-04 결정). 데이터가 2026-06-30 까지이고 마지막 수집이 07-01 이라 데모의 "지금"은 7월 초다.
     # 값이 있으면 수동 수집(API 25)은 서버의 지금 시각이 아니라 "마지막 적재 SHIPMENT 수집 날짜 + 1일 00:00Z"(처음은 이 값)로
-    # 수집하고, 수집 현황의 동기화 판정도 고객사의 가장 최근 수집 시작 시각을 지금으로 본다 (virtual_clock.py).
-    # 비우면(VIRTUAL_CLOCK_START=) 서버의 지금 시각을 쓴다. 실제 원천을 붙이는 환경에서만 비운다.
+    # 수집하고, 수집 현황의 동기화 판정은 수집 멈춤(주기 × 배수)을 보지 않는다 (virtual_clock.py, data_sync_status_service.py).
+    # 비우면(VIRTUAL_CLOCK_START=) 서버의 지금 시각을 쓴다. 실제 원천을 붙이는 환경(운영 배포)에서는 반드시 비운다.
     virtual_clock_start: datetime | None = datetime(2026, 7, 2, tzinfo=UTC)
 
     # 가상 TMS 시나리오 파일 (GLOW-49, infrastructure/virtual_tms.py). 수동 수집(API 25) SHIPMENT 가 이 파일에서 응답을 읽는다.

@@ -40,6 +40,8 @@ sequenceDiagram
 - 수집 시각 = 그 원천의 마지막 적재 수집(`applied_seq` 최대) 시작 날짜 + 1일 00:00Z. 처음은 `VIRTUAL_CLOCK_START`(기본 `2026-07-02T00:00:00Z`). 누를 때마다 하루씩 나아갑니다. `FAILED` 수집은 적재가 아니라서 다시 누르면 같은 날을 다시 시도합니다.
 - 수집 시작·완료 시각과 일정 스냅샷 관측 시각이 모두 이 값입니다(`application/virtual_clock.py`).
 - `VIRTUAL_CLOCK_START`를 비우면 서버 시각입니다(실제 원천을 붙일 때만).
+- 가상 시각이면 수집 현황 `isSynced`는 수집 멈춤(주기 × 배수)을 보지 않고 마지막 수집 결과만 봅니다. 선적만 하루씩 나아가도 나머지 원천 카드가 "수집 오류"로 바뀌지 않습니다(`docs/data-sync/latest-sync-status.md` 3절).
+- **운영 배포 체크:** 실제 원천을 붙이는 환경에서는 `VIRTUAL_CLOCK_START=`로 비웁니다. 비우지 않으면 수집 시각이 7월 초 가상 시각으로 나아가고, 수집기가 멈춰도 `isSynced: true`로 보입니다.
 
 ## 4. 가상 TMS 시나리오 파일
 
