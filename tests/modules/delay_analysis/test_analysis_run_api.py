@@ -562,6 +562,7 @@ async def test_non_client_role_is_forbidden(fake_service, role):
     response = await _get(f"/api/v1/analysis-runs/{RUN_ID}", role=role)
 
     assert response.status_code == 403
+    assert response.json()["code"] == "FORBIDDEN"  # 명세 C31 오류 코드 이름
     assert fake_service.calls == []
 
 
@@ -569,6 +570,7 @@ async def test_login_required(fake_service):
     response = await _get(f"/api/v1/analysis-runs/{RUN_ID}", role=None)
 
     assert response.status_code == 401
+    assert response.json()["code"] == "UNAUTHENTICATED"  # 명세 C31 오류 코드 이름
     assert fake_service.calls == []
 
 
