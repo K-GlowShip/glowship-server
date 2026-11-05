@@ -52,7 +52,8 @@ validator = load_engine_module("explain.validator")
 ## 4. 엔진 새 판을 받을 때
 1. 데이터 팀이 새 이름·새 해시로 낸 판만 받습니다.
 2. 받은 파일로 `engine_manifest.json`을 다시 만들고, 출처 기록(overlay manifest 또는 glowship-plan README)과 대조합니다.
-3. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
+3. 엔진 입력 저장소를 다시 확인합니다. `test_engine_input_store.py`의 엔진 `Store` 소스 해시 시험이 실패하면, 옮겨 적은 색인 코드를 새 판과 맞추고 `GLOWSHIP_ENGINE_GOLDEN=1` 정답 대조를 돌린 뒤 해시를 갱신합니다(`engine-input-store.md` 3절). PR 체크리스트에 정답 대조 결과를 적습니다.
+4. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
 
 ## 5. 시험
 | 시험 | 엔진 없이 | 엔진 있을 때 |
