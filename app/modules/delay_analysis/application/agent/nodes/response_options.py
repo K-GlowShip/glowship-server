@@ -17,7 +17,7 @@ async def response_options_node(state: AnalysisState, config: RunnableConfig) ->
     대응안 분석 에이전트 (agentflow 5.3)
       - 설계대로 T2 가용 재고·T8 운영 기준을 다시 조회한 뒤 T9 후보·사전 판정 → T10 대응안 결과를 계산합니다.
         두 조회는 입력이 없어(결정 3) 재고 영향 단계와 같은 값이 나옵니다. 재사용 안은
-        tools/might_better_way/dev2.md 1번(개선안, 사용자 결정 11-06: 지금은 설계대로).
+        tools/might_better_way/might_better_way.md D2-1(개선안, 사용자 결정 11-06: 지금은 설계대로).
       - T9 입력 출처는 계약 5절 입력 표(T1·T8·T6·T2·T3), T10 입력은 계약 6절(T9·T1~T5·T8·T6·T7).
       - 실패 단계는 ANALYZING_OPTIONS. 결과는 조정 에이전트로 돌아갑니다.
     """

@@ -31,7 +31,7 @@
    3) ctx.engine = EngineInput               실행마다 한 번(저장소 읽기 고객사당 약 9.5초, 개발 1 LRU)
  coordinator: T1                                  (재고 영향 뒤 T6 이 NO_RISK 면 decision_of 뒤 NO_RISK 종료)
  inventory_impact: T2·T3·T4·T5·T8 → T7 → T6       (부르는 순서는 계약 Q3)
- response_options: T2·T8 다시 조회 → T9 → T10     (설계 agentflow 5.3. 재사용 안은 tools/might_better_way/dev2.md 1번)
+ response_options: T2·T8 다시 조회 → T9 → T10     (설계 agentflow 5.3. 재사용 안은 tools/might_better_way/might_better_way.md D2-1)
  compare: T11 → 엔진 대조 → decision_of(ctx.engine) (대조가 다르면 FAILED. 의존 범위·판정 서명)
  explain: explain(ctx, now)                      (최대 3회는 함수 안. 실패면 validate 없이 종료)
  validate: T12                                   (최종 설명을 한 번 더 확인)
