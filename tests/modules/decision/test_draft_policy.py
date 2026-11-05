@@ -156,5 +156,10 @@ def test_error_codes_follow_spec_status():
         DecisionErrorCode.RUN_NOT_READY,
     ]
     assert {code.status_code for code in conflict} == {409}
-    assert all(code.code == code.name for code in DecisionErrorCode)
+    # 코드 이름 = 멤버 이름. 시간 경과만 코드 ANALYSIS_STALE 를 문구만 달리해 씀 (명세 4.6 대응표)
+    assert all(
+        code.code == code.name
+        for code in DecisionErrorCode
+        if code is not DecisionErrorCode.ANALYSIS_STALE_TIME_ELAPSED
+    )
     assert DecisionErrorCode.OPTION_NOT_IN_RUN.status_code == 422

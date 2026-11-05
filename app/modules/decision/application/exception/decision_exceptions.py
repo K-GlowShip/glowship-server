@@ -59,6 +59,23 @@ class DecisionErrorCode(BaseErrorCode):
         "REANALYSIS_NOT_ALLOWED",
         "지연이 해소된(NO_DELAY) 분석 실행은 재분석할 수 없습니다.",
     )
+    # 최종 선택(API 19) 거부: 명세 4.6 POST /analysis-runs/{runId}/final-decision, 대응표 D22 제안
+    OPERATING_RULE_CHANGED = (
+        status.HTTP_409_CONFLICT,
+        "OPERATING_RULE_CHANGED",
+        "분석 뒤 운영 기준이 바뀌어 재분석이 필요합니다.",
+    )
+    # 시간 경과(TIME_ELAPSED)는 코드는 ANALYSIS_STALE 그대로, 사유를 문구에 둡니다(명세 4.6 대응표)
+    ANALYSIS_STALE_TIME_ELAPSED = (
+        status.HTTP_409_CONFLICT,
+        "ANALYSIS_STALE",
+        "선택 시점에 대응안이 시간 안에 들어오지 않습니다(TIME_ELAPSED). 재분석이 필요합니다.",
+    )
+    OPTION_NOT_FEASIBLE = (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "OPTION_NOT_FEASIBLE",
+        "실행 가능(FEASIBLE)한 대응안만 최종 선택할 수 있습니다.",
+    )
     OPTION_NOT_IN_RUN = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "OPTION_NOT_IN_RUN",
