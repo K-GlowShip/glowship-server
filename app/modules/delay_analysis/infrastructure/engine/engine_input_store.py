@@ -269,7 +269,19 @@ async def read_company_tables(
     dcr_data = await _copy_csv(
         session, f"{store.DCR_SQL} AND d.company_id = $1", args[0]
     )
+    _check_not_silently_empty(tables, company_id)
     return tables, await asyncio.to_thread(parse_engine_csv, store, dcr_data)
+
+
+def _check_not_silently_empty(
+    tables: dict[str, list[dict]], company_id: uuid.UUID
+) -> None:
+    """RLS 로 보이지 않으면 오류 없이 0행이 된다(앱 역할 세션, ACTIVE 가 아닌 고객사, 없는 고객사). 빈 Store 로 계산하지 않게 멈춘다(PR #36 리뷰)."""
+    if len(tables["companies"]) != 1 or not tables["data_sync_runs"]:
+        raise EngineInputError(
+            f"고객사 {company_id} 의 엔진 입력이 비어 있습니다(companies {len(tables['companies'])}행,"
+            f" data_sync_runs {len(tables['data_sync_runs'])}행). 워커 역할 세션인지, 고객사가 ACTIVE 인지 확인하세요"
+        )
 
 
 async def load_company_engine_store(

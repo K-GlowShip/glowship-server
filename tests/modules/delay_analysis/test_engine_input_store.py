@@ -317,6 +317,31 @@ async def test_company_store_reads_only_that_company_up_to_input_seq(
     assert dcr and {row["company_id"] for row in dcr} == {str(company_id)}
 
 
+async def test_silently_empty_read_stops_instead_of_building_empty_store(
+    db_write_session, real_engine
+):
+    # PR #36 리뷰(KatherineJH): RLS 로 보이지 않으면 오류 없이 0행 → 빈 Store 로 계산하지 않게 멈춘다
+    company_id = await _company(db_write_session, "B_COSMETICS")
+    max_seq = await _max_seq(db_write_session, company_id)
+
+    with pytest.raises(EIS.EngineInputError, match="비어 있습니다"):
+        await EIS.read_company_tables(
+            db_write_session, uuid.uuid4(), max_seq
+        )  # 없는 고객사
+
+    await db_write_session.execute(
+        text("SET LOCAL ROLE glowship_v4_worker")
+    )  # 분석 실행 역할: 읽힘
+    tables, _ = await EIS.read_company_tables(db_write_session, company_id, max_seq)
+    assert len(tables["companies"]) == 1 and tables["data_sync_runs"]
+
+    await db_write_session.execute(
+        text("SET LOCAL ROLE glowship_v4_app")
+    )  # 앱 역할: RLS 로 0행
+    with pytest.raises(EIS.EngineInputError, match="비어 있습니다"):
+        await EIS.read_company_tables(db_write_session, company_id, max_seq)
+
+
 async def test_company_store_matches_run_input_seq_and_builds_snapshot(
     db_session, real_engine
 ):
