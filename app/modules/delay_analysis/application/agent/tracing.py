@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -63,9 +64,13 @@ _REMOVED_KEY = re.compile(
     r"|^prompt$|prompt_text|rendered_prompt|full_prompt|input_document|raw_output",
     re.IGNORECASE,
 )
-_ORDER_CODE = re.compile(r"\b[A-Z]-ORD-\d{8}-\d{4}\b")
+# re.ASCII: Python 의 \b·\w 는 기본으로 한글도 단어 글자로 봐서, "…-0040이"처럼 조사가 붙으면 경계가 없어 안 가려졌다(PR #42 리뷰).
+# 주문 코드는 날짜·번호 형식 밖의 키(B-ORD-ERR-0001 등)도 가린다.
+_ORDER_CODE = re.compile(r"\b[A-Z]-ORD-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.ASCII)
 # 도메인 끝이 글자여야 이메일로 본다(판 번호 explain_ready_v1@1.0.0 은 이메일이 아님)
-_EMAIL = re.compile(r"[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
+_EMAIL = re.compile(
+    r"[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b", re.ASCII
+)
 _MAX_TEXT = 200
 _MAX_ITEMS = 20
 
@@ -249,8 +254,22 @@ class RunTracer:
                     exc_info=True,
                 )
 
+    async def aclose(self, timeout: float = 2.0) -> bool:
+        """이벤트 루프를 막지 않고 쓰기를 기다린다. async 코드(그래프 실행 뒤)에서는 이것을 쓴다.
+
+        close() 는 동기라 루프에서 바로 부르면 쓰기가 밀렸을 때 루프 전체가 최대 timeout 초 멈춘다.
+        그러면 같은 루프의 다른 실행의 도구가 시간 초과로 기록될 수 있다(PR #42 리뷰).
+        """
+        try:
+            return await asyncio.to_thread(self.close, timeout)
+        except Exception:
+            logger.warning(
+                "추적 쓰기 마무리에 실패했습니다(분석은 계속)", exc_info=True
+            )
+            return False
+
     def close(self, timeout: float = 2.0) -> bool:
-        """쓰기를 기다린다(최대 timeout 초). 다 썼으면 True. 늦어도 분석 쪽은 기다리지 않고 넘어간다."""
+        """쓰기를 기다린다(최대 timeout 초). 다 썼으면 True. 동기 코드용이다. async 코드에서는 aclose() 를 쓴다."""
         try:
             _, not_done = wait_futures(self._pending, timeout=timeout)
             self._writer.shutdown(wait=False, cancel_futures=False)
@@ -282,24 +301,34 @@ class RunTracer:
     def explanation_attempts(
         self, attempts: Iterable[Mapping[str, Any]], usage: Iterable[Any] = ()
     ) -> None:
-        """엔진 explain.generator.generate() 결과의 attempts 를 사건으로 남긴다. 프롬프트·모델 출력 원문은 받지 않는다."""
-        usage_list = list(usage)
-        for index, attempt in enumerate(attempts):
-            codes = [f"{code}@{loc}" for code, loc in attempt.get("codes", [])]
-            summary: dict[str, Any] = {
-                "codes": codes,
-                "model": f"{attempt.get('model_provider')}/{attempt.get('model_id')}",
-                "prompt_version": f"{attempt.get('prompt_template_id')}@{attempt.get('prompt_template_version')}",
-            }
-            if index < len(usage_list) and usage_list[index] is not None:
-                summary["usage"] = usage_list[index]  # 모델 호출 토큰 수(NFR-008)
-            self.emit(
-                "EXPLANATION_ATTEMPT",
-                "explain",
-                "ERROR" if codes else "OK",
-                attempt=attempt.get("retry_no"),
-                error_code=attempt["codes"][0][0] if attempt.get("codes") else None,
-                summary=summary,
+        """엔진 explain.generator.generate() 결과의 attempts 를 사건으로 남긴다. 프롬프트·모델 출력 원문은 받지 않는다.
+
+        모양이 엔진과 달라도(codes 가 None 등) 예외를 올리지 않는다(세기만 함, PR #42 리뷰).
+        """
+        try:
+            usage_list = list(usage)
+            for index, attempt in enumerate(attempts):
+                raw_codes = attempt.get("codes") or []
+                codes = [f"{code}@{loc}" for code, loc in raw_codes]
+                summary: dict[str, Any] = {
+                    "codes": codes,
+                    "model": f"{attempt.get('model_provider')}/{attempt.get('model_id')}",
+                    "prompt_version": f"{attempt.get('prompt_template_id')}@{attempt.get('prompt_template_version')}",
+                }
+                if index < len(usage_list) and usage_list[index] is not None:
+                    summary["usage"] = usage_list[index]  # 모델 호출 토큰 수(NFR-008)
+                self.emit(
+                    "EXPLANATION_ATTEMPT",
+                    "explain",
+                    "ERROR" if codes else "OK",
+                    attempt=attempt.get("retry_no"),
+                    error_code=raw_codes[0][0] if raw_codes else None,
+                    summary=summary,
+                )
+        except Exception:
+            self.sink_failures += 1
+            logger.warning(
+                "설명 시도를 추적에 남기지 못했습니다(분석은 계속)", exc_info=True
             )
 
     def callback_handler(self) -> TraceCallbackHandler:
@@ -407,13 +436,14 @@ class TraceCallbackHandler(BaseCallbackHandler):
             kind, name, started = opened
             elapsed = int((time.perf_counter() - started) * 1000)
             event_kind: EventKind = "RUN_ERROR" if kind == "RUN" else "NODE_ERROR"
+            # 오류 메시지는 남기지 않는다. 칸 이름 필터를 거치지 않는 자유 문장이라 접속 문자열·비밀번호·
+            # 가리지 못한 업무 값이 섞일 수 있다(PR #42 리뷰). 오류 종류만 남기고, 내용은 서버 로그(예외)에서 본다.
             self.tracer.emit(
                 event_kind,
                 name,
                 "ERROR",
                 error_code=type(error).__name__,
                 elapsed_ms=elapsed,
-                summary={"message": str(error)},
             )
         except Exception:
             logger.warning("추적 콜백 처리 실패(분석은 계속)", exc_info=True)
