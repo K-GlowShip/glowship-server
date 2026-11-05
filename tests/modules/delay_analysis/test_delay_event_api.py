@@ -54,6 +54,7 @@ ROW = DelayEventRow(
     us_port_name="LOS ANGELES, CA",
     origin_region_code="KR",
     run_id=RUN_ID,
+    run_code="AN-260120-002",
     run_status="READY_FOR_REVIEW",
     run_result_class="READY_ORDER_RISK",
     run_failure_code=None,
@@ -121,6 +122,7 @@ class FakeQueryService:
             raise DelayEventNotFoundException()
         run = RunHistoryRow(
             analysis_run_id=RUN_ID,
+            run_code="AN-260120-002",
             version_no=2,
             status="READY_FOR_REVIEW",
             is_latest=True,
@@ -199,7 +201,7 @@ async def test_list_returns_items_in_spec_field_names(fake_service):
     assert (item["closedAt"], item["closeReason"]) == (None, None)
     assert item["currentRun"] == {
         "runId": str(RUN_ID),
-        "runCode": None,
+        "runCode": "AN-260120-002",
         "status": "READY_FOR_REVIEW",
         "resultClass": "READY_ORDER_RISK",
         "failureCode": None,
@@ -351,7 +353,7 @@ async def test_detail_returns_schedule_and_run_history(fake_service):
     assert run["completedStatus"] == "READY_FOR_REVIEW"
     assert run["resultClass"] == "FORECAST_ONLY_READY"
     assert run["failureCode"] is None
-    assert run["runCode"] is None  # 0006 병합 전
+    assert run["runCode"] == "AN-260120-002"
 
 
 # 확정 DB 에 있는 실패 요약 3가지 (명세 C27)
@@ -441,7 +443,9 @@ async def test_list_rejects_old_pending_decision_tab(fake_service):
 
 async def test_list_item_without_run_has_null_current_run(fake_service, monkeypatch):
     no_run = DelayEventListItem(
-        row=replace(ROW, run_id=None, run_status=None, at_risk_order_count=None),
+        row=replace(
+            ROW, run_id=None, run_code=None, run_status=None, at_risk_order_count=None
+        ),
         shipment=replace(SHIPMENT, representative_line=None),
         delay_days=3,
     )

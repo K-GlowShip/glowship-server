@@ -31,7 +31,7 @@ from app.modules.delay_analysis.presentation.analysis_run_schemas import (
       - "3pl" 이 들어간 필드는 to_camel 이 "3Pl" 로 바꾸므로 명세 이름(planned3plInboundDate 등)을 별칭으로 직접 줍니다.
         계획·예상 입고일 별칭은 분석 실행 응답(analysis_run_schemas)과 같은 상수를 씁니다.
       - episodeNo, currentRun.resultClass, runs[].triggerReason·completedStatus·resultClass 는 0005 열에서 읽습니다.
-      - 아직 열이 없어 null 로 주는 필드: currentRun.runCode, runs[].runCode → 0006 (D14)
+      - currentRun.runCode, runs[].runCode 는 0006 열 analysis_runs.run_code 에서 읽습니다 (D14).
 """
 
 _PLANNED = PLANNED_3PL
@@ -137,7 +137,7 @@ class DelayEventListItemResponse(_DelayEventBase):
             at_risk_order_count=row.at_risk_order_count,
             current_run=RunSummary(
                 run_id=row.run_id,
-                run_code=None,
+                run_code=row.run_code,
                 status=row.run_status,
                 result_class=row.run_result_class,
                 failure_code=row.run_failure_code,
@@ -177,8 +177,8 @@ class DelayEventListResponse(Page[DelayEventListItemResponse]):
 
 class AnalysisRunHistoryResponse(CamelModel):
     run_id: uuid.UUID
-    run_code: str | None = Field(
-        description="표시용 실행 ID (D14). 0006 병합 전에는 null"
+    run_code: str = Field(
+        description="표시용 실행 ID (D14, AN-YYMMDD-NNN). analysis_runs.run_code (0006, NOT NULL)"
     )
     version_no: int
     status: str
@@ -226,7 +226,7 @@ class DelayEventDetailResponse(_DelayEventBase):
             runs=[
                 AnalysisRunHistoryResponse(
                     run_id=run.analysis_run_id,
-                    run_code=None,
+                    run_code=run.run_code,
                     version_no=run.version_no,
                     status=run.status,
                     is_latest=run.is_latest,

@@ -38,7 +38,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repos
       - 고객사 범위는 로그인 토큰의 company_id 로 정하고, 같은 값으로 RLS 컨텍스트를 설정합니다.
       - 경로·대표 상품·SKU 수·지연 일수는 delay_display 의 순수 함수로 계산합니다 (D13).
       - 단계·계획·예상 입고일·지연 일수는 선적의 현재 값 기준입니다 (Repository 참고).
-      - 표시용 실행 ID(runCode, D14)는 analysis_runs.run_code 마이그레이션 전이라 아직 없습니다.
+      - 표시용 실행 ID(runCode, D14)는 analysis_runs.run_code(0006)에서 읽습니다.
 """
 
 # 경로 출발지는 한국 출고 창고의 지역입니다. 고객사에 KR_ORIGIN 창고가 없으면 이 값을 씁니다.

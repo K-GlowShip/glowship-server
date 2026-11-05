@@ -41,7 +41,7 @@ _BASE = f"""
              WHERE w.company_id = e.company_id AND w.warehouse_type = 'KR_ORIGIN'
              ORDER BY w.warehouse_code
              LIMIT 1) AS origin_region_code,
-           r.analysis_run_id AS run_id, r.status AS run_status,
+           r.analysis_run_id AS run_id, r.run_code, r.status AS run_status,
            r.result_class AS run_result_class, r.failure_code AS run_failure_code,
            EXISTS (SELECT 1 FROM final_decisions f
                     WHERE f.company_id = r.company_id
@@ -166,7 +166,7 @@ _SNAPSHOT_EXPECTED_DATE = text(
 
 _RUNS = text(
     """
-    SELECT analysis_run_id, version_no, status, is_latest, trigger_type, trigger_reason,
+    SELECT analysis_run_id, run_code, version_no, status, is_latest, trigger_type, trigger_reason,
            parent_analysis_run_id, completed_status, result_class, failure_code,
            stale_detected_at, stale_primary_reason, started_at, finished_at
       FROM analysis_runs
@@ -198,6 +198,7 @@ class DelayEventRow:
     us_port_name: str
     origin_region_code: str | None
     run_id: uuid.UUID | None
+    run_code: str | None  # 실행이 없으면 None (0006, D14)
     run_status: str | None
     run_result_class: str | None
     run_failure_code: str | None  # ON_HOLD·FAILED 일 때만 값 (ck10·ck11, 명세 C27)
@@ -230,6 +231,7 @@ class ShipmentLineRow:
 @dataclass(frozen=True)
 class RunHistoryRow:
     analysis_run_id: uuid.UUID
+    run_code: str  # 0006, D14
     version_no: int
     status: str
     is_latest: bool

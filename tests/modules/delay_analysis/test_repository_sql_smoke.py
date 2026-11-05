@@ -236,6 +236,30 @@ async def test_delay_event_rows_read_0005_columns(db_session):
             ) == tuple(stored)
 
 
+async def test_run_code_matches_db(db_session):
+    """목록 currentRun·상세 runs[] 의 run_code 는 DB 값이고, 실행이 있으면 비어 있지 않다 (0006, D14)"""
+    repo = DelayEventReadRepository(db_session)
+    companies = (
+        await db_session.scalars(text("SELECT DISTINCT company_id FROM delay_events"))
+    ).all()
+
+    async def stored(run_id):
+        return await db_session.scalar(
+            text("SELECT run_code FROM analysis_runs WHERE analysis_run_id = :r"),
+            {"r": run_id},
+        )
+
+    for company_id in companies:
+        for row in await repo.find_delay_events(company_id, DelayEventFilter()):
+            if row.run_id is None:
+                assert row.run_code is None
+            else:
+                assert row.run_code == await stored(row.run_id)
+                assert row.run_code.startswith("AN-")
+            for run in await repo.find_runs(company_id, row.delay_event_id):
+                assert run.run_code == await stored(run.analysis_run_id)
+
+
 async def test_failure_code_matches_db_only_for_on_hold_and_failed(db_session):
     """목록 currentRun·상세 runs[] 의 failure_code 는 DB 값 그대로이고 ON_HOLD·FAILED 일 때만 있다 (명세 C27)"""
     repo = DelayEventReadRepository(db_session)

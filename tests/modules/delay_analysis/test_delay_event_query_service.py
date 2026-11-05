@@ -61,6 +61,7 @@ def _row(**kwargs) -> DelayEventRow:
         "us_port_name": "LOS ANGELES, CA",
         "origin_region_code": "KR",
         "run_id": uuid.uuid7(),
+        "run_code": "AN-260120-001",
         "run_status": "READY_FOR_REVIEW",
         "run_result_class": "READY_ORDER_RISK",
         "run_failure_code": None,
@@ -253,6 +254,7 @@ async def test_list_uses_default_origin_and_handles_shipment_without_lines():
 async def test_detail_returns_previous_expected_date_and_runs():
     run = RunHistoryRow(
         analysis_run_id=uuid.uuid7(),
+        run_code="AN-260120-001",
         version_no=1,
         status="READY_FOR_REVIEW",
         is_latest=True,
