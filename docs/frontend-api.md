@@ -11,8 +11,8 @@
 | POST | `/admin/users` | 고객사 계정 생성. ADMIN 전용(`access_token` 쿠키). 요청 `{companyId, email, password(Base64), roleCode(CLIENT_MEMBER·CLIENT_LEAD), displayName?}`. 응답 201 `{userId, companyId, email, displayName, roleCode, status, createdAt}`. 요청자가 그 고객사에 배정되어 있고 계정 관리 권한이 있어야 한다. 400(비밀번호 형식)·401·403(ADMIN 아님·미배정·권한 없음)·404(고객사 없음)·409(중복 이메일·비활성 고객사)·422. [문서](admin/client-account.md) | GLOW-85 | 2026-10-30 |
 | GET | `/data-sync-runs/latest` | 원천 유형(ORDER·INVENTORY·SHIPMENT·PRODUCT·WAREHOUSE)별 마지막 수집 실행·미해결 이슈 수·원천 시스템 이름·수집 주기와 서버 판정 `isSynced`·`lastSyncedAt` (명세 v6.2 4.3). 고객사 사용자 전용. [문서](data-sync/latest-sync-status.md) | GLOW-97 | 2026-11-02 |
 | POST | `/data-sync-runs` | 수동 수집(API 25, "동기화"·"다시 수집" 버튼). 팀원·팀장. 요청 `{sourceDomain}`, **지금은 `SHIPMENT`만**(다른 원천 422 `VALIDATION_ERROR`). 응답 202 `{dataSyncRunId, status: "RUNNING"}`, 적용은 백그라운드라 결과는 `GET /data-sync-runs/latest`를 다시 조회. 같은 원천 실행 중이면 409 `SYNC_IN_PROGRESS`. 수집 시각은 가상 시각(마지막 적재 SHIPMENT 수집 날짜 + 1일, 처음 2026-07-02)이라 누를 때마다 하루씩 나아감. [문서](data-sync/manual-sync.md) | GLOW-13, GLOW-49 | 2026-11-05 |
-| GET | `/delay-events` | 지연 목록·탭별 건수. 필터 `status`(`ALL`·`READY_FOR_REVIEW`·`ANALYZING`·`ON_HOLD`·`NEEDS_REANALYSIS`), `warehouseId`, `from`·`to`(ISO 8601 UTC 시각, `[from, to)` `to` 미포함, 시간대 없는 값·날짜만·Unix 초 같은 숫자·`from > to`는 422 `VALIDATION_ERROR`, `from = to`는 0건. 명세 v6.2 C18·C20), `q`, `hasFinalDecision`, `page`·`size`. 응답 `items`·`page`·`size`·`totalCount`·`totalPages`와 `counts`(키 `all`·`readyForReview`·`analyzing`·`onHold`·`needsReanalysis`, 탭·`hasFinalDecision` 필터 제외). 정렬은 `detectedAt` 최신순, 같으면 `delayEventId` | GLOW-16 | 2026-11-02 (기간 필터 UTC 시각·`to` 미포함으로 변경 2026-11-03, 숫자 거부 2026-11-04) |
-| GET | `/delay-events/{delayEventId}` | 지연 상세·분석 실행 버전 이력(`runs[]`, 최신 버전 먼저). 다른 고객사 건은 404 | GLOW-16 | 2026-11-02 |
+| GET | `/delay-events` | 지연 목록·탭별 건수. 필터 `status`(`ALL`·`READY_FOR_REVIEW`·`ANALYZING`·`ON_HOLD`·`NEEDS_REANALYSIS`·`FINALIZED`·`NO_RISK`·`NO_DELAY`), `warehouseId`, `from`·`to`(ISO 8601 UTC 시각, `[from, to)` `to` 미포함, 시간대 없는 값·날짜만·Unix 초 같은 숫자·`from > to`는 422 `VALIDATION_ERROR`, `from = to`는 0건. 명세 v6.2 C18·C20), `q`, `hasFinalDecision`, `page`·`size`. 응답 `items`·`page`·`size`·`totalCount`·`totalPages`와 `counts`(키 `all`·`readyForReview`·`analyzing`·`onHold`·`needsReanalysis`·`finalized`·`noRisk`·`noDelay`, 탭·`hasFinalDecision` 필터 제외). 행의 `currentRun`은 `runId`·`runCode`·`status`·`resultClass`·`failureCode`(`ON_HOLD`·`FAILED`일 때만 값, 명세 C27). 정렬은 `detectedAt` 최신순, 같으면 `delayEventId` | GLOW-16 | 2026-11-02 (기간 필터 UTC 시각·`to` 미포함으로 변경 2026-11-03, 숫자 거부 2026-11-04, 탭 `FINALIZED`·`NO_RISK`·`NO_DELAY`와 `counts` 키 추가 2026-11-05, 명세 C26, `currentRun.failureCode` 추가 2026-11-05, 명세 C27, `currentRun.runCode` 값 채움 2026-11-05, D14) |
+| GET | `/delay-events/{delayEventId}` | 지연 상세·분석 실행 버전 이력(`runs[]`, 최신 버전 먼저, 행마다 `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값, 명세 C27). 다른 고객사 건은 404 | GLOW-16 | 2026-11-02 (`runs[].failureCode` 추가 2026-11-05, 명세 C27, `runs[].runCode` 값 채움 2026-11-05, D14) |
 | GET | `/orders` | 주문 목록. 필터 `status`(주문 상태 6종), `warehouseId`, `salesChannel`(`AMAZON`·`SEPHORA`), `from`·`to`(ISO 8601 UTC 시각, `[from, to)`로 `to` 미포함, 시간대 없는 값·날짜만·Unix 초 같은 숫자는 422), `q`(주문 번호·SKU 코드·상품명), `page`·`size`. 행마다 `warehouse` 요약. 행마다 주문 상세 `lines[]`(`lineNo`, `sku` 요약, `orderedQuantity`, `shippedQuantity`, `lineStatus`, `lineNo` 순, 없으면 `[]`). 정렬은 `orderedAt` 최신순, 같으면 `orderId`. 출고 날짜 4개 중 `actualDispatchDate`는 수집 변경 기록으로 역산(출고 전이면 `null`), `securedDate`·`plannedDispatchDate`·`expectedDeliveryDate`는 아직 계산하지 않아 항상 `null`. 고객사 사용자 전용. [문서](order/order-list.md) | GLOW-109 | 2026-11-03 (기간 필터 숫자 거부 2026-11-04) |
 | GET | `/skus` | 상품(SKU) 목록. 필터 `q`(상품명·ERP 코드), `onlyErrors`, `page`·`size`. 행마다 `hs10`, 원천별 외부 코드 `externalCodes[]`(INVENTORY·SHIPMENT 항목 고정, 매핑 없으면 `externalCode: null`·`UNMAPPED`)와 `validationStatus`(`OK`·`CODE_MISSING`·`ISSUE_OPEN`). 정렬은 `skuCode`, 같으면 `skuId`. 고객사 사용자 전용. [문서](master-data/sku-list.md) | GLOW-104 | 2026-11-03 |
 | GET | `/inventory` | 재고 목록(한 일자의 창고·SKU별 재고). 필터 `date`(`YYYY-MM-DD`, 생략 시 고객사의 최신 적재 일자), `warehouseId`, `skuId`, `q`(SKU 코드·상품명), `page`·`size`. 응답 최상위에 기준 일자 `inventoryDate`(재고 없으면 `null`). 행마다 `warehouse`·`sku` 요약과 `onHandQuantity`(= `reservedQuantity` + `availableQuantity`), `outboundQuantity`, `dataSyncRunId`. 정렬은 창고 코드 → SKU 코드, 같으면 `skuId`. 고객사 사용자 전용. [문서](inventory/inventory-list.md) | GLOW-111 | 2026-11-03 |
@@ -30,7 +30,7 @@
 | `shipment` | `{ shipmentId, shipmentCode }` |
 | `warehouse` | `{ warehouseId, warehouseCode, regionCode }` |
 | `representativeSku` | `{ skuId, skuCode, productName }` 또는 `null`(선적 상세 없음) |
-| `currentRun` | `{ runId, runCode, status, resultClass }` 또는 `null`(실행 없음) |
+| `currentRun` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27) |
 
 **지연 목록·상세 필드 메모**
 
@@ -38,11 +38,6 @@
 - `atRiskOrderCount`는 서로 다른 주문 수입니다. 저장된 계산 결과가 없으면 `null`(실행 없음·분석 중·`ON_HOLD`·`NO_DELAY`·도구 실패 `FAILED`)이고, 설명 생성만 실패한 `FAILED`는 숫자입니다.
 - `closedAt`·`closeReason`(`RECOVERED`·`RECEIVED`)은 열린 지연이면 `null`입니다.
 
-**아직 `null`로 오는 필드 (서버 후속 작업 후 값이 채워짐)**
-
-| 필드 | 채워지는 시점 |
-| --- | --- |
-| `episodeNo`, `currentRun.resultClass`, `runs[].triggerReason`·`completedStatus`·`resultClass` | 개발자 3의 마이그레이션 0005 병합 후 |
-| `currentRun.runCode`, `runs[].runCode` | 마이그레이션 0006(D14) 병합 후 |
+**표시용 실행 ID:** `currentRun.runCode`·`runs[].runCode`는 2026-11-05부터 `AN-YYMMDD-NNN` 값으로 옵니다(마이그레이션 0006, 명세 D14). 그 전에는 항상 `null`이었습니다. `episodeNo`, `currentRun.resultClass`, `runs[].triggerReason`·`completedStatus`·`resultClass`도 0005 병합 뒤로 값이 옵니다.
 
 **11/02 응답 변경 (이전 버전과 다른 점):** `shipmentCode` → `shipment.shipmentCode`, `representativeSku`(상품명 문자열)·`representativeSkuCode` → `representativeSku` 객체, `runId`·`runCode`·`runStatus` → `currentRun` 객체, 탭 `PENDING_DECISION` → `READY_FOR_REVIEW`, `counts.pendingDecision` → `counts.readyForReview`. 추가: `warehouse`, `transportMode`, `closedAt`·`closeReason`, `episodeNo`, `runs[]`의 `parentRunId`·`staleDetectedAt`·`stalePrimaryReason`·`triggerReason`·`completedStatus`·`resultClass`. 상세의 `shipment` 안에 있던 `transportMode`·`warehouseId`·`route`·대표 상품·`skuCount`는 목록과 같은 최상위 필드로 옮겼습니다.
