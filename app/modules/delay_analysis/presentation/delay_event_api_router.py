@@ -54,7 +54,8 @@ async def list_delay_events(
         DelayEventTab.ALL,
         description=(
             "탭(현재 실행 상태 이름): ALL(전체), READY_FOR_REVIEW(선택 대기), ANALYZING(분석 중), "
-            "ON_HOLD(분석 보류), NEEDS_REANALYSIS(재분석 필요: STALE·FAILED)"
+            "ON_HOLD(분석 보류), NEEDS_REANALYSIS(재분석 필요: STALE·FAILED), "
+            "FINALIZED(선택 완료), NO_RISK(위험 없음), NO_DELAY(지연 해소) (명세 C26)"
         ),
     ),
     warehouse_id: uuid.UUID | None = Query(None, alias="warehouseId"),

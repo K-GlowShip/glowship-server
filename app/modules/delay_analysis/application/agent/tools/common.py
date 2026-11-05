@@ -1,9 +1,17 @@
 import re
+from collections import Counter
 from datetime import date
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    StrictStr,
+    StringConstraints,
+)
 
 """
     에이전트 도구 입출력 공통 규칙 (docs/agent-flow/tool-contracts.md 1절)
@@ -57,6 +65,19 @@ def _require_date(value: object) -> object:
 
 
 ToolDate = Annotated[date, BeforeValidator(_require_date)]
+
+
+def _require_unique[T](values: list[T]) -> list[T]:
+    """같은 값이 두 번 들어 있으면 거부한다. 엔진은 이 목록들을 집합에서 만든다(core.impact_sets·delay_induced_skus 등)."""
+    duplicated = sorted(str(v) for v, n in Counter(values).items() if n > 1)
+    if duplicated:
+        raise ValueError(f"중복 값이 있습니다: {duplicated}")
+    return values
+
+
+# 코드·날짜 값 배열(SKU 코드 집합, 행사 이름, 실제 수요를 아는 날). 중복 없음은 모델이, 정렬은 도구가 맞춘다(계약 1절)
+UniqueCodes = Annotated[list[StrictStr], AfterValidator(_require_unique)]
+UniqueDates = Annotated[list[ToolDate], AfterValidator(_require_unique)]
 ToolId = Annotated[
     str,
     StringConstraints(

@@ -31,7 +31,7 @@ from app.modules.delay_analysis.presentation.analysis_run_schemas import (
       - "3pl" 이 들어간 필드는 to_camel 이 "3Pl" 로 바꾸므로 명세 이름(planned3plInboundDate 등)을 별칭으로 직접 줍니다.
         계획·예상 입고일 별칭은 분석 실행 응답(analysis_run_schemas)과 같은 상수를 씁니다.
       - episodeNo, currentRun.resultClass, runs[].triggerReason·completedStatus·resultClass 는 0005 열에서 읽습니다.
-      - 아직 열이 없어 null 로 주는 필드: currentRun.runCode, runs[].runCode → 0006 (D14)
+      - currentRun.runCode, runs[].runCode 는 0006 열 analysis_runs.run_code 에서 읽습니다 (D14).
 """
 
 _PLANNED = PLANNED_3PL
@@ -47,6 +47,9 @@ class DelayEventCountsResponse(CamelModel):
     analyzing: int = Field(description="분석 중 (DETECTED~VALIDATING_OUTPUT)")
     on_hold: int = Field(description="분석 보류 (ON_HOLD)")
     needs_reanalysis: int = Field(description="재분석 필요 (STALE·FAILED)")
+    finalized: int = Field(description="선택 완료 (FINALIZED, 명세 C26)")
+    no_risk: int = Field(description="위험 없음 (NO_RISK, 명세 C26)")
+    no_delay: int = Field(description="지연 해소 (NO_DELAY, 명세 C26)")
 
 
 class _DelayEventBase(CamelModel):
@@ -134,9 +137,10 @@ class DelayEventListItemResponse(_DelayEventBase):
             at_risk_order_count=row.at_risk_order_count,
             current_run=RunSummary(
                 run_id=row.run_id,
-                run_code=None,
+                run_code=row.run_code,
                 status=row.run_status,
                 result_class=row.run_result_class,
+                failure_code=row.run_failure_code,
             )
             if row.run_id
             else None,
@@ -164,14 +168,17 @@ class DelayEventListResponse(Page[DelayEventListItemResponse]):
                 analyzing=counts.analyzing,
                 on_hold=counts.on_hold,
                 needs_reanalysis=counts.needs_reanalysis,
+                finalized=counts.finalized,
+                no_risk=counts.no_risk,
+                no_delay=counts.no_delay,
             ),
         )
 
 
 class AnalysisRunHistoryResponse(CamelModel):
     run_id: uuid.UUID
-    run_code: str | None = Field(
-        description="표시용 실행 ID (D14). 0006 병합 전에는 null"
+    run_code: str = Field(
+        description="표시용 실행 ID (D14, AN-YYMMDD-NNN). analysis_runs.run_code (0006, NOT NULL)"
     )
     version_no: int
     status: str
@@ -188,6 +195,9 @@ class AnalysisRunHistoryResponse(CamelModel):
     )
     result_class: str | None = Field(
         description="결과 분류. 완료 판정이 READY_FOR_REVIEW·NO_RISK 일 때만 값이 있고, 완료 전·NO_DELAY·ON_HOLD·FAILED 이면 null (DDL ck21·ck22)"
+    )
+    failure_code: str | None = Field(
+        description="실패 코드 (analysis_runs.failure_code, 명세 C27). ON_HOLD·FAILED 일 때만 값이 있고 그 밖의 상태는 null (DDL ck10·ck11)"
     )
     stale_detected_at: datetime | None = Field(
         description="STALE 기록 시각. STALE 이 아니면 null"
@@ -216,7 +226,7 @@ class DelayEventDetailResponse(_DelayEventBase):
             runs=[
                 AnalysisRunHistoryResponse(
                     run_id=run.analysis_run_id,
-                    run_code=None,
+                    run_code=run.run_code,
                     version_no=run.version_no,
                     status=run.status,
                     is_latest=run.is_latest,
@@ -225,6 +235,7 @@ class DelayEventDetailResponse(_DelayEventBase):
                     parent_run_id=run.parent_analysis_run_id,
                     completed_status=run.completed_status,
                     result_class=run.result_class,
+                    failure_code=run.failure_code,
                     stale_detected_at=run.stale_detected_at,
                     stale_primary_reason=run.stale_primary_reason,
                     started_at=run.started_at,
