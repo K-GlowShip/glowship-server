@@ -331,6 +331,14 @@ class OptionOutcome(ToolModel):
             )
         if self.feasibility_status == F.FEASIBLE and no_result:
             raise ValueError("FEASIBLE 은 집계가 있어야 합니다 (response_options_ck9)")
+        if self.feasibility_status == F.NOT_FEASIBLE and no_result:
+            raise ValueError(
+                "NOT_FEASIBLE 은 계산을 마친 대응안이라 집계가 0을 포함한 숫자입니다 (계약 6절, 집계 NULL 규칙)"
+            )
+        if self.reason_code == R.MISSING_OPERATING_RULE and not no_result:
+            raise ValueError(
+                "MISSING_OPERATING_RULE 은 계산하지 않아 집계가 null 입니다 (판정 순서 1번)"
+            )
         if not no_result:
             fully, induced, blocked, not_rec = aggregates
             if not (

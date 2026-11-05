@@ -1018,6 +1018,26 @@ def test_option_outcome_accepts_contract_cases():
             _option("KEEP_PLAN", agg=(0, 0, 0, 1), outcomes=[_line()]),
         ),
         ("필요 수량 음수 (ck11)", _option(required_quantity=-1)),
+        (
+            "NOT_FEASIBLE 인데 집계 null (계약 6절·집계 NULL 규칙)",
+            _option(
+                "PRE_DEPARTURE_AIR",
+                "NOT_FEASIBLE",
+                "NO_RECOVERY_EFFECT",
+                agg=None,
+                outcomes=[],
+            ),
+        ),
+        (
+            "MISSING_OPERATING_RULE 인데 집계 있음 (판정 순서 1번)",
+            _option(
+                "PRE_DEPARTURE_AIR",
+                "NEEDS_CHECK",
+                "MISSING_OPERATING_RULE",
+                agg=(0, 0, 0, 0),
+                outcomes=[],
+            ),
+        ),
     ],
     ids=lambda v: v if isinstance(v, str) else "",
 )
