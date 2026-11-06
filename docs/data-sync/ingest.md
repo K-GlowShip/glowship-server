@@ -17,6 +17,7 @@ sequenceDiagram
     S->>DB: data_sync_runs RUNNING 저장 → 커밋
     Note over S,DB: 여기부터 한 트랜잭션
     S->>DB: L1 고객사 잠금 (lock_company)
+    S->>DB: 시작 시각 확정 (마지막 적재 수집 시작 + 1초보다 늦게, 겹치면 1초씩)
     S->>S: 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부)
     S->>S: 외부 코드 → 내부 ID (못 바꾸면 그 레코드 거부)
     S->>DB: 업무 키로 현재 행 조회
@@ -33,6 +34,18 @@ sequenceDiagram
 - **같은 고객사·원천의 수집은 한 번에 하나만 돕니다.** 시작할 때 L1 안에서 `RUNNING` 수집이 있으면 시작 시각과 관계없이 `SyncInProgressException`(409 `SYNC_IN_PROGRESS`, 명세 4.3)으로 거부합니다. 그래서 늦게 잠금을 얻은 수집이 먼저 적용된 최신 값을 과거 값으로 덮어쓰지 않습니다.
 - **오래 남은 `RUNNING`(작업이 죽은 경우)도 막습니다.** 시간이 지났다고 무시하지 않습니다. 살아 있는 긴 수집과 새 수집이 둘 다 적용되는 역전을 막기 위해서입니다. 정리 절차는 7절(후속 운영 작업)입니다.
 - 순서대로 따로 들어온 응답의 선후(관측 시각)는 호출 측 계약입니다. 가상 API 는 관측 시각 순서대로 응답합니다.
+- **수집 시각 규칙(이슈 #39, 엔진 규칙):** 엔진은 원본 그대로 쓰므로(PR #25 해시 대조) 시각을 처음 쓰는 수집 적재에서 맞춥니다. 엔진 입력 저장소(PR #36, `docs/analysis/engine-input-store.md`)가 이 규칙을 전제합니다.
+
+  | # | 규칙 | 서버 | 엔진 근거 |
+  | --- | --- | --- | --- |
+  | 1 | 초 단위 | 서비스 `now`에서 1초 미만을 버림(`whole_second`). 수집 시작·완료, 일정 스냅샷 관측, 검증 이슈 감지·해소, STALE 감지 시각 모두 | `store.iso_ts` 1초 미만 거부 |
+  | 2 | 가상 시각 원천별 자리 | PRODUCT 00:00·WAREHOUSE 00:01·ORDER 00:02·SHIPMENT 00:03·INVENTORY 00:04(overlay 와 같음, `virtual_clock.SOURCE_SLOT`) | overlay 데이터 모양 |
+  | 3 | 완료 > 시작 | 가상: 시작 + 30초(`finish_after`). 실제: `max(지금, 시작 + 1초)`. `FAILED`도 같음. 검증 이슈·STALE 감지 시각은 완료 시각 | `stale.judge`가 완료 시각으로 수집을 찾음 |
+  | 4 | 고객사 안에서 시작 초가 겹치지 않음 | 시작 시각에 그 고객사의 수집이 있으면(원천·상태 무관) 1초씩 밂(`free_started_at`, L1 안). 규칙 전 1초 미만 시각도 초로 비교. `FAILED` 뒤 같은 날 재시도는 00:03:01 | `store.run_at` 키 `(company_id, started_at)` |
+  | 5 | 시작 순서 = 적용 순번 순서 | `start`의 시작 시각은 임시. `apply`가 L1 뒤 `max(임시, 고객사 마지막 적재 수집 시작 + 1초)`로 확정해 다시 씀(겹치면 1초씩). 스냅샷 관측·완료 시각도 확정 값 기준 | `store.input_seq` = 시작 ≤ t 인 적재 수집의 최대 순번(PR #36 `check_input_seq`) |
+
+  - 5번 때문에 수집 도중 `GET /data-sync-runs/latest`의 `startedAt`은 끝난 뒤 값과 다를 수 있습니다. `FAILED` 수집은 적용 트랜잭션을 되돌리므로 임시 시각이 남습니다.
+  - "고객사 안에서 원천과 무관하게 수집을 한 번에 하나만" 돌리는 방법은 쓰지 않았습니다. 명세 4.3의 409(`SYNC_IN_PROGRESS`)가 "같은 원천" 기준이라 동작이 바뀌기 때문입니다(이슈 #39 결정).
 - **입력 크기:** 업무 키 IN 조회와 수집 ID 교체는 키 5,000개씩 나눠 실행합니다(asyncpg 바인딩 한도 32,767, 재고 복합 키는 키당 값 3개). 나눠도 수집 1회 = 한 트랜잭션입니다.
 - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 `SUCCEEDED` 수집이 남습니다.
 - **실행 전제(호출 측 계약):**
@@ -55,7 +68,7 @@ sequenceDiagram
 
 - 선적은 TMS 응답 그대로입니다(`shipmentNo`·`mode`·`destWh`·`plannedKrRelease`·`stage`·`etaPort`·`eta3pl`·`actual3pl`·`items`). 운송 수단은 `OCEAN`·`AIR`입니다.
   - 가상 TMS(`infrastructure/virtual_tms.py`, GLOW-49)는 날짜별 TMS 응답 시나리오 파일(census `shipments_api.json`과 같은 모양: `responses[].fetched_at`·`_demo_company`·`data`)에서 `after < fetched_at ≤ until`인 응답을 모으고, 같은 선적은 마지막 관측 값만 남겨 돌려줍니다. `until`은 7월 초 가상 시각이며 서버의 지금 시각을 넘기지 않습니다. 시나리오 내용은 데이터 설계 몫입니다.
-  - 가상 시각(`application/virtual_clock.py`, 설정 `VIRTUAL_CLOCK_START`, 기본 `2026-07-02T00:00:00Z`): 수동 수집 시각은 서버의 지금(11월)이 아니라 "그 원천의 마지막 적재 수집(`applied_seq` 최대) 시작 날짜 + 1일 00:00Z"이고, 처음은 시작값입니다. 누를 때마다 하루씩 나아갑니다. 가상 TMS 에는 (지난 수집 시작, 이번 수집 시각] 응답을 묻고, 수집 서비스 `now`는 이번 수집 시각으로 고정합니다(수집 시작·완료·스냅샷 관측 시각). 비우면 서버 시각입니다. **운영 배포에서는 `VIRTUAL_CLOCK_START=`로 비웁니다**(비우지 않으면 수집 시각이 가상 시각으로 나아가고, 수집 현황은 수집 멈춤을 보지 않습니다. `docs/data-sync/manual-sync.md`).
+  - 가상 시각(`application/virtual_clock.py`, 설정 `VIRTUAL_CLOCK_START`, 기본 `2026-07-02T00:00:00Z`): 수동 수집 시각은 서버의 지금(11월)이 아니라 "그 원천의 마지막 적재 수집(`applied_seq` 최대) 시작 날짜 + 1일의 원천 자리(SHIPMENT 00:03, 1절 수집 시각 규칙 2)"이고, 처음은 시작값 날짜의 원천 자리(`2026-07-02T00:03:00Z`)입니다. 누를 때마다 하루씩 나아갑니다. 가상 TMS 에는 (지난 적재 수집 날짜의 원천 자리, 이번 수집 시각] 응답을 묻고, 수집 서비스 `now`는 이번 수집 시각으로 고정합니다(수집 시작·스냅샷 관측 시각, 완료는 + 30초). 비우면 서버 시각입니다. **운영 배포에서는 `VIRTUAL_CLOCK_START=`로 비웁니다**(비우지 않으면 수집 시각이 가상 시각으로 나아가고, 수집 현황은 수집 멈춤을 보지 않습니다. `docs/data-sync/manual-sync.md`).
   - TMS 응답 파서 `tms_parser.parse_tms_shipments`가 응답 `data[]`를 `SourceShipment`와 거부로 나눕니다. 상세는 `items[].lineNo`·`sku`·`qty`, 날짜는 `YYYY-MM-DD`이고 `_demo`로 시작하는 필드는 읽지 않습니다. 거부 코드는 `MISSING_REQUIRED`·`INVALID_DATE`, 값은 있으나 타입이 다르면(수량이 문자열 등) `INVALID_FORMAT`(기준선에 없는 이름)입니다. 거부 키는 `shipmentNo`, 없으면 `data[i]`입니다.
 - 원천 삭제는 행을 지우지 않고 상태 `REMOVED_AT_SOURCE`로 옵니다(UPDATE). 응답에서 빠진 행·상세는 삭제로 보지 않습니다.
 - **파서가 보장할 조건**(원천 응답 → 레코드, 적재 서비스는 다시 검사하지 않음):
@@ -190,9 +203,10 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_tms_parser.py` | TMS 응답 파서: 필드 변환, 선택 날짜 생략, 필수값·날짜·타입 거부 위치, 상세 줄 하나로 선적 1건 거부, 값의 의미는 넘김 (DB 없음) |
 | `test_tms_parser_sql.py` | 확정 선적 166건 → TMS 응답 JSON → 파싱 결과가 직접 만든 레코드와 같음, 이름만 바꿔 적재하면 거부 없이 `SUCCEEDED` |
 | `test_virtual_tms.py` | 가상 TMS 시나리오: 고객사별 `after < fetched_at ≤ until` 응답, 같은 선적은 마지막 관측만, 시간대 다른 시각 비교, 파서 통과, 잘못된 시나리오 파일은 설정 오류 (DB 없음) |
-| `test_ingest_start_apply_sql.py` | 나눠 부르기: `start` 뒤 `RUNNING`·실행 ID, 같은 원천 두 번째 `start`는 409(다른 원천은 허용), `apply`로 완료 뒤 다시 시작 가능, 원천 응답 전 실패는 `fail`로 `FAILED`, 기록 실패 시 원래 예외에 note |
-| `test_virtual_clock.py`·`test_virtual_clock_sql.py` | 가상 시각: 마지막 적재 수집 날짜 + 1일 00:00Z(UTC 날짜 기준, 시작값보다 이르지 않음), 시작값 비우면 서버 시각, 설정 기본값·빈 값·시간대 필수, 확정 DB 첫 수동 수집 = 07-02 00:00Z |
-| `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
+| `test_ingest_start_apply_sql.py` | 나눠 부르기: `start` 뒤 `RUNNING`·실행 ID, 같은 원천 두 번째 `start`는 409(다른 원천은 허용), `apply`로 완료 뒤 다시 시작 가능, 원천 응답 전 실패는 `fail`로 `FAILED`, 기록 실패 시 원래 예외에 note. 수집 시각 규칙 1·3·4: 마이크로초 시계도 초 단위, 완료 = 시작 + 30초(가상)·`max(지금, 시작 + 1초)`(실제), 같은 시작 초면 1초씩 밂(`FAILED` 재시도 00:03:01), 1초 미만 기존 수집도 겹침 |
+| `test_ingest_engine_rules_sql.py` | 수집 시각 규칙 5: 먼저 시작해 늦게 적용된 수집의 시작 시각이 앞선 적용보다 늦게 확정됨, 고객사 전체 수집이 초 단위·겹침 없음·시작 순서 = 순번. **엔진 시험**(`GLOWSHIP_ENGINE_DIR`): 서버가 적재한 수집으로 `load_company_engine_store`·`check_input_seq` 통과 |
+| `test_virtual_clock.py`·`test_virtual_clock_sql.py` | 가상 시각: 마지막 적재 수집 날짜 + 1일의 원천 자리(UTC 날짜 기준, 시작값 날짜보다 이르지 않음, 원천 5개 자리), 시작값 비우면 서버 시각, 설정 기본값·빈 값·시간대 필수, 확정 DB 첫 수동 수집 = 07-02 00:03Z |
+| `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음. 지난 날짜를 다시 넣으므로 수집 시각 규칙 5의 "마지막 적재 수집"만 없는 것으로 보는 시험용 저장소를 씀 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
 

@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
 
 from app.core.security.tenant import TenantContext
+from app.modules.data_sync.application import (
+    manual_sync_service as manual_sync_module,
+)
 from app.modules.data_sync.application.exception.data_sync_exceptions import (
     SourceNotSupportedException,
     SyncInProgressException,
@@ -14,6 +17,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
     DataSyncRunStatus,
     SourceDomain,
 )
+from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
+    DataSyncRunRepository,
+)
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
@@ -21,7 +27,7 @@ from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 
 """
     수동 수집 (API 25) 서비스 통합 테스트 (실제 DB, 끝나면 롤백)
-      - 확정 DB(마지막 SHIPMENT 수집 07-01)에서 첫 수동 수집은 07-02 00:00Z 이고, 가상 TMS 의 그날 응답을 적재한다.
+      - 확정 DB(마지막 SHIPMENT 수집 07-01)에서 첫 수동 수집은 07-02 00:03Z 이고, 가상 TMS 의 그날 응답을 적재한다.
       - 시험용 시나리오: A_BEAUTY 에 확정 선적과 같은 창고·SKU(TMS 코드)로 새 선적 1건, 예상 3PL 입고일을 크게 늦춰 지연.
         첫 관측이 지연이면 에피소드 1번이 열린다(앞선 SHIPMENT 수집이 있으므로 초기 적재 아님, PR #24).
         이 선적·날짜는 동작 확인용이며 데모 시나리오가 아니다.
@@ -29,6 +35,9 @@ from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 """
 
 START = datetime(2026, 7, 2, tzinfo=UTC)
+# 첫 SHIPMENT 수동 수집 시각(원천 자리 00:03)과 완료(시작 + 30초), 이슈 #39 규칙 2·3
+AT = datetime(2026, 7, 2, 0, 3, tzinfo=UTC)
+FINISHED = datetime(2026, 7, 2, 0, 3, 30, tzinfo=UTC)
 NEW_CODE = "V-TEST-0702-001"
 
 
@@ -127,17 +136,17 @@ async def test_first_manual_sync_loads_july_2nd_and_opens_delay(db_write_session
 
     ticket = await service.request(tenant, SourceDomain.SHIPMENT)
 
-    assert ticket.window.at == START
+    assert ticket.window.at == AT
     assert ticket.window.after.date().isoformat() == "2026-07-01"
     assert ticket.company_code == "A_BEAUTY"
     run = await _run_row(db, ticket.started.data_sync_run_id)
-    assert (run.status, run.started_at) == ("RUNNING", START)
+    assert (run.status, run.started_at) == ("RUNNING", AT)
 
     result = await service.run(ticket)
 
     assert result is not None and result.status == DataSyncRunStatus.SUCCEEDED
     run = await _run_row(db, ticket.started.data_sync_run_id)
-    assert tuple(run) == ("SUCCEEDED", START, START, 1)
+    assert tuple(run) == ("SUCCEEDED", AT, FINISHED, 1)
     opened = (
         await db.execute(
             text(
@@ -149,13 +158,46 @@ async def test_first_manual_sync_loads_july_2nd_and_opens_delay(db_write_session
         )
     ).one()
     # 열린 에피소드 = 판단 API 18~20 을 시연할 수 있는 지연
-    assert tuple(opened) == (1, None, START)
+    assert tuple(opened) == (1, None, AT)
 
     # 다음 수동 수집은 하루 뒤, 같은 응답은 다시 받지 않는다
     again = await service.request(tenant, SourceDomain.SHIPMENT)
-    assert again.window.at == datetime(2026, 7, 3, tzinfo=UTC)
+    assert again.window.at == datetime(2026, 7, 3, 0, 3, tzinfo=UTC)
     second = await service.run(again)
     assert second.counts.received == 0
+
+
+async def test_window_is_read_inside_company_lock(db_write_session, monkeypatch):
+    """이슈 #39 댓글(PR #40 리뷰): 수집 구간을 L1 안에서 읽고, 되돌리지 않고 같은 트랜잭션에서 start 한다"""
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    calls = []
+    original_lock = manual_sync_module.lock_company
+    original_last = DataSyncRunRepository.find_last_applied_started_at
+    original_rollback = db.rollback
+
+    async def lock(session, cid):
+        calls.append("lock")
+        await original_lock(session, cid)
+
+    async def last(self, cid, domain):
+        calls.append("window")
+        return await original_last(self, cid, domain)
+
+    async def rollback():
+        calls.append("rollback")
+        await original_rollback()
+
+    monkeypatch.setattr(manual_sync_module, "lock_company", lock)
+    monkeypatch.setattr(DataSyncRunRepository, "find_last_applied_started_at", last)
+    monkeypatch.setattr(db, "rollback", rollback)
+
+    ticket = await _service(db, lambda: None).request(
+        TenantContext(user_id=None, company_id=company_id), SourceDomain.SHIPMENT
+    )
+
+    assert calls == ["lock", "window"]
+    assert ticket.window.at == AT
 
 
 async def test_only_shipment_is_supported(db_write_session):
@@ -213,4 +255,40 @@ async def test_scenario_failure_marks_failed_and_reopens(db_write_session, caplo
     assert "원천 응답을 받지 못해 FAILED" in caplog.text
     # FAILED 는 적재된 수집이 아니므로 다시 누르면 같은 날(07-02)을 다시 시도한다
     retry = await service.request(tenant, SourceDomain.SHIPMENT)
-    assert retry.window.at == START
+    assert retry.window.at == AT
+    # 같은 날 재시도는 FAILED 수집과 시작 초가 겹치지 않게 1초 뒤 (이슈 #39 규칙 4)
+    assert retry.started.started_at == AT + timedelta(seconds=1)
+
+
+async def test_retry_shift_leaves_no_gap_in_next_window(db_write_session):
+    """
+    PR #52 리뷰(rouiv): 재시도로 시작이 00:03:01 로 밀려도, 다음 날 구간은 그날 자리(00:03)부터라
+    fetched_at 00:03:01 응답이 07-02·07-03 어느 수집에서도 빠지지 않는다.
+    """
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    scenario = _scenario(shipment, fetched_at="2026-07-02T00:03:01Z")
+    attempts = iter([OSError("시나리오 파일 없음")])
+
+    def first_fails():
+        error = next(attempts, None)
+        if error is not None:
+            raise error
+        return scenario
+
+    service = _service(db, first_fails)
+    tenant = TenantContext(user_id=None, company_id=company_id)
+    assert (
+        await service.run(await service.request(tenant, SourceDomain.SHIPMENT)) is None
+    )
+    retry = await service.request(tenant, SourceDomain.SHIPMENT)
+    first = await service.run(retry)
+    assert retry.started.started_at == AT + timedelta(seconds=1)
+    assert first.counts.received == 0  # 00:03:01 은 07-02 구간(…, 00:03] 밖
+
+    following = await service.request(tenant, SourceDomain.SHIPMENT)
+    second = await service.run(following)
+
+    assert following.window.after == AT  # 기록된 시작(00:03:01)이 아니라 그날 자리
+    assert second.counts.received == 1

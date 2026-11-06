@@ -1,7 +1,7 @@
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import bindparam, func, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -644,6 +644,52 @@ class IngestRepository:
                     .exists()
                 )
             )
+        )
+
+    async def free_started_at(
+        self,
+        company_id: uuid.UUID,
+        candidate: datetime,
+        exclude_run_id: uuid.UUID | None = None,
+    ) -> datetime:
+        """
+        candidate 부터 1초씩 밀어, 그 고객사의 어느 수집(상태 무관)과도 시작 초가 겹치지 않는 첫 시각 (이슈 #39 규칙 4).
+        엔진 store.run_at 이 (company_id, started_at) 키라 RUNNING·FAILED 수집과도 겹치면 안 됩니다.
+        초 단위로 비교합니다(엔진 입력 저장소가 1초 미만을 버리고 읽으므로, 이 규칙 전에 적재된 수집도 초로 봄).
+        exclude_run_id: 시작 시각을 다시 정하는 수집 자신(apply). L1 안에서 불러야 다른 수집이 그 사이 같은 시각을 잡지 않습니다.
+        """
+        query = select(func.date_trunc("second", DataSyncRun.started_at)).where(
+            DataSyncRun.company_id == company_id,
+            DataSyncRun.started_at >= candidate,
+        )
+        if exclude_run_id is not None:
+            query = query.where(DataSyncRun.data_sync_run_id != exclude_run_id)
+        taken = set(await self.db.scalars(query))
+        started_at = candidate
+        while started_at in taken:
+            started_at += timedelta(seconds=1)
+        return started_at
+
+    async def last_applied_started_at(self, company_id: uuid.UUID) -> datetime | None:
+        """그 고객사에서 적재된(적용 순번 있는) 수집 중 가장 늦은 시작 초. 없으면 None (이슈 #39 규칙 5)"""
+        return await self.db.scalar(
+            select(func.max(func.date_trunc("second", DataSyncRun.started_at))).where(
+                DataSyncRun.company_id == company_id,
+                DataSyncRun.applied_seq.is_not(None),
+            )
+        )
+
+    async def move_started_at(
+        self, company_id: uuid.UUID, data_sync_run_id: uuid.UUID, started_at: datetime
+    ) -> None:
+        """RUNNING 수집의 임시 시작 시각을 적용 때 확정한 값으로 바꿉니다 (이슈 #39 규칙 5)."""
+        await self.db.execute(
+            update(DataSyncRun)
+            .where(
+                DataSyncRun.company_id == company_id,
+                DataSyncRun.data_sync_run_id == data_sync_run_id,
+            )
+            .values(started_at=started_at)
         )
 
     async def start_run(

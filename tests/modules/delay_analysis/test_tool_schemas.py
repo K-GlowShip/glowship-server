@@ -20,6 +20,9 @@ from app.modules.delay_analysis.application.agent.tools import (
 from app.modules.delay_analysis.application.agent.tools import (
     option_schemas as OS,
 )
+from app.modules.delay_analysis.application.agent.tools import (
+    validation_schemas as V,
+)
 from app.modules.delay_analysis.application.agent.tools.common import (
     TOOL_NUMBERS,
     RegionCode,
@@ -469,6 +472,7 @@ NON_ENUM_CODES = {
     "REQUIRED_DATA_INVALID",  # 입력 검증 보류 사유(엔진 Hold, GLOW-100)
     "COMPUTED_OUTCOME_ROWS",  # 엔진 검증기 bundle_verify.py 의 검사 이름(6절)
     "ORDER_COUNT_MISMATCH",
+    "EXPLANATION_GENERATION_FAILED",  # 실패 코드 retry.py 상수(8절, #28)
 }
 
 
@@ -489,6 +493,8 @@ def _known_codes() -> set[str]:
     return (
         {m.value for e in enums for m in e}
         | {p.value for p in OS.Precheck}
+        | {s.value for s in V.AgentOutputStatus}  # T12 판정·사유 코드(8절, GLOW-127)
+        | {c.value for c in V.ExplanationErrorCode}
         | NON_ENUM_CODES
     )
 
