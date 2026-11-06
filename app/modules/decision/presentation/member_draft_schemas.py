@@ -51,4 +51,6 @@ class MemberDraftCreateRequest(CamelModel):
 
 class MemberDraftCreateResponse(CamelModel):
     member_draft_id: uuid.UUID
-    created_at: datetime = Field(description="작성 시각 (UTC, 서버의 지금 시각)")
+    created_at: datetime = Field(
+        description="작성 시각 (UTC, 판단 시각). 데모(가상 시각)에서는 고객사의 가장 최근 수집 시작 시각이라 같은 날의 초안·최종 선택이 같은 값일 수 있습니다. 같은 값이면 ID(UUIDv7) 순이 작성 순입니다"
+    )

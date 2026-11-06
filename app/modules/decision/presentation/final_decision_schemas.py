@@ -36,6 +36,8 @@ class FinalDecisionCreateRequest(CamelModel):
 
 class FinalDecisionCreateResponse(CamelModel):
     final_decision_id: uuid.UUID
-    decided_at: datetime = Field(description="선택 시각 (UTC)")
+    decided_at: datetime = Field(
+        description="선택 시각 (UTC, 판단 시각). 데모(가상 시각)에서는 고객사의 가장 최근 수집 시작 시각, 아니면 서버 시각"
+    )
     checked_seq: int = Field(description="선택 시점에 확인한 고객사의 최대 적용 순번")
     status: str = Field(description="실행 상태. 항상 FINALIZED", examples=["FINALIZED"])
