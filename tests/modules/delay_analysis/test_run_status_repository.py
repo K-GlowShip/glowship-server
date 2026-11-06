@@ -10,7 +10,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.modules.delay_analysis.application.agent.fake_runtime import fake_runtime
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
+from app.modules.delay_analysis.application.agent.runtime import RUNTIME_KEY
 from app.modules.delay_analysis.application.agent.state import AnalysisOutcome
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.repository.run_status_repository import (
@@ -166,7 +168,8 @@ async def test_graph_stops_when_reader_reports_stale():
     }
 
     result = await build_analysis_graph().ainvoke(
-        state, {"configurable": {"run_status_reader": reader}}
+        state,
+        {"configurable": {"run_status_reader": reader, RUNTIME_KEY: fake_runtime()}},
     )
 
     assert result["outcome"] == AnalysisOutcome.STALE

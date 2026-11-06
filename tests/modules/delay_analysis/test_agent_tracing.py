@@ -9,12 +9,14 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.modules.delay_analysis.application.agent.fake_runtime import fake_runtime
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
 from app.modules.delay_analysis.application.agent.retry import (
     TOOL_TEMPORARY_ERROR_EXHAUSTED,
     TransientToolError,
     call_with_retry,
 )
+from app.modules.delay_analysis.application.agent.runtime import RUNTIME_KEY
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
 from app.modules.delay_analysis.application.agent.tracing import (
     AUTO_TRACING_ENV,
@@ -82,7 +84,13 @@ def _state(run_id=None, company_id=None):
 
 
 async def _run(state, tracer=None, status="ANALYZING_IMPACT", reader=None):
-    config = {"configurable": {"run_status_reader": reader or _Status(status)}}
+    # 노드는 실행 도구 묶음(GLOW-129)이 있어야 돈다. 묶음은 실행 하나에 하나라 부를 때마다 새로 만든다
+    config = {
+        "configurable": {
+            "run_status_reader": reader or _Status(status),
+            RUNTIME_KEY: fake_runtime(),
+        }
+    }
     if tracer is not None:
         config["callbacks"] = [tracer.callback_handler()]
     return await build_analysis_graph().ainvoke(state, config=config)
@@ -109,11 +117,15 @@ async def test_one_run_is_traced_from_start_to_end_state():
     assert sink.events[-1].kind == "RUN_END"
     assert sink.events[-1].summary["outcome"] == "READY_FOR_REVIEW"
     routes = [e.summary["next"] for e in sink.events if e.kind == "ROUTE"]
+    # 조건 분기마다 ROUTE 하나. GLOW-129 로 하위 에이전트 뒤(→ 조정)·비교 뒤(→ 설명)도 조건 분기(도구 실패면 종료)가 됨
     assert routes == [
         "coordinator",
         "inventory_impact",
+        "coordinator",
         "response_options",
+        "coordinator",
         "compare",
+        "explain",
         "validate",
     ]
     assert [e.seq for e in sink.events] == list(range(1, len(sink.events) + 1))

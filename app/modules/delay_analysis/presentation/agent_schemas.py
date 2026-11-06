@@ -9,7 +9,7 @@ from app.modules.delay_analysis.application.agent.state import (
 
 
 class AgentDryRunRequest(BaseModel):
-    """빈 노드 그래프 실행 확인용 입력. 값을 주지 않으면 임의 UUID를 사용합니다."""
+    """가짜 도구 그래프 실행 확인용 입력. 값을 주지 않으면 임의 UUID를 사용합니다."""
 
     analysis_run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     company_id: uuid.UUID = Field(default_factory=uuid.uuid4)
