@@ -1,4 +1,4 @@
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 
@@ -101,6 +101,38 @@ class AtRiskOrder(ToolModel):
         return self
 
 
+class PlanSecuredDate(ToolModel):
+    """E 시뮬레이션에서 확보되어 출고를 기다리게 된 주문의 확보일. 정렬: order_code"""
+
+    order_code: StrictStr
+    secured_date: ToolDate
+
+
+class PlanLineProtection(ToolModel):
+    """그날 배정 출력의 위험 주문 줄 보호 수량. 정렬: (order_code, line_no)"""
+
+    order_code: StrictStr
+    line_no: StrictInt
+    protected: StrictInt = Field(ge=0)
+
+
+class PlanDay(ToolModel):
+    """E 시뮬레이션 하루 출력 중 위험 주문 줄만. 정렬: date"""
+
+    date: ToolDate
+    lines: list[PlanLineProtection]
+
+
+class ExpectedPlanSimulation(ToolModel):
+    """E 시뮬레이션 결과 중 T10 이 읽는 값 (계약 4.1절, 9절 Q12 — GLOW-126 에서 정함)
+
+    엔진 options.py 가 simE 에서 읽는 것은 확보일(secured)과 판정일의 줄별 보호량(outs[날짜]["lines"])이다.
+    T10 은 위험 주문의 줄만 조회하므로 위험 주문 줄만 담는다. 구간 끝은 simulation_horizon_end 와 같다."""
+
+    secured_dates: list[PlanSecuredDate]
+    days: list[PlanDay]
+
+
 class AtRiskOrders(ToolModel):
     """T7 출력"""
 
@@ -109,8 +141,9 @@ class AtRiskOrders(ToolModel):
         UniqueCodes  # DELAY_INDUCED 주문의 모든 활성 상세 SKU(K_SHIPMENT 밖 포함)
     )
     simulation_horizon_end: ToolDate  # max(E, 약속일들) + 14일
-    # E 시뮬레이션 결과(주문별 확보일, 일별 보호량). 형식은 엔진 연결 작업에서 정한다(9절 Q1·Q12).
-    expected_plan_simulation: dict[str, Any]
+    expected_plan_simulation: (
+        ExpectedPlanSimulation  # T10 의 KEEP_PLAN·다른 권역 출고가 씀
+    )
 
     @model_validator(mode="after")
     def _delay_induced_skus_cover_orders(self) -> Self:

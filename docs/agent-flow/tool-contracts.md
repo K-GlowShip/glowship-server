@@ -172,9 +172,11 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 
 T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·`at_risk_orders`(분석 실행 상세 응답 스키마 문서 참고)와 같습니다.
 
+**구현(GLOW-126):** 엔진은 `pipeline.analyze(snap)` 한 번으로 예측 층·주문 층·영향 집합·결과 분류를 함께 계산합니다. 서버는 실행마다 그 결과를 한 번 만들고(`EngineInput.analysis`, 3절 "구현"), T7·T6은 그 결과를 아래 표대로 **옮기기만** 합니다(`application/agent/tools/impact_tools.py`, `docs/analysis/impact-tools.md`). 아래 "입력"은 노드가 넘기는 모델이고, 도구는 그 값을 계산에 쓰지 않고 이 실행의 엔진 입력과 맞는지 확인하는 데만 씁니다(선적·기준일, T6은 지연 유발 SKU도). 맞지 않으면 멈추고 실행은 FAILED입니다.
+
 ### 4.1 T7 `identify_at_risk_orders` — 위험 주문 (먼저 실행)
 
-입력: T1·T2·T3·T5·T8. 계획일 P와 예상일 E로 도착 창고 배정을 두 번 시뮬레이션하고, E에서 약속 배송일을 넘는 주문을 위험 주문으로 고릅니다(P에서도 넘으면 `PRE_EXISTING`, 아니면 `DELAY_INDUCED`). 시뮬레이션은 `allocation_core.simulate`를 씁니다. 원본은 확보했고, `expected_plan_simulation`의 필드 형식은 다음 PR에서 채웁니다(9절 Q1).
+입력: T1·T2·T3·T5·T8. 계획일 P와 예상일 E로 도착 창고 배정을 두 번 시뮬레이션하고, E에서 약속 배송일을 넘는 주문을 위험 주문으로 고릅니다(P에서도 넘으면 `PRE_EXISTING`, 아니면 `DELAY_INDUCED`). 시뮬레이션은 `allocation_core.simulate`를 씁니다. `expected_plan_simulation`의 필드 형식은 GLOW-126에서 채웠습니다(9절 Q12, 아래 표).
 
 | 필드 | 형식 | NULL | 뜻 | 엔진 키 |
 | --- | --- | --- | --- | --- |
@@ -187,7 +189,12 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `risks[].lines[]` | 배열(`line_no`) `{order_line_id, line_no, sku_code, open_quantity, wait_cause}` | `wait_cause`만 예 | 활성 상세 | `lines` |
 | `delay_induced_sku_codes[]` | 배열 | — | `DELAY_INDUCED` 주문의 모든 활성 상세 SKU(K_SHIPMENT 밖 포함) | `core.delay_induced_skus` |
 | `simulation_horizon_end` | date | 아니오 | 시뮬레이션 구간 끝 = max(E, 약속일들) + 14일 | `h_end` |
-| `expected_plan_simulation` | 객체(엔진 연결에서 정함, 9절 Q12) | — | E 시뮬레이션 결과(주문별 확보일, 일별 보호량). T10의 `KEEP_PLAN`·다른 권역 출고가 씀 | `simE` |
+| `expected_plan_simulation` | 객체 | 아니오 | E 시뮬레이션 결과 중 T10이 읽는 값. T10의 `KEEP_PLAN`·다른 권역 출고가 씀 | `simE` |
+| `expected_plan_simulation.secured_dates[]` | 배열(`order_code`) `{order_code, secured_date}` | 아니오 | 위험 주문 중 E 시뮬레이션에서 확보된 주문의 확보일(확보되지 않은 주문은 없음) | `simE.secured` |
+| `expected_plan_simulation.days[]` | 배열(`date`) | — | D부터 구간 끝까지 하루씩 | `simE.outs` |
+| `expected_plan_simulation.days[].lines[]` | 배열(`order_code`, `line_no`) `{order_code, line_no, protected}` | 아니오 | 그날 배정 출력의 위험 주문 줄 보호 수량 | `outs[날짜].lines` |
+
+`expected_plan_simulation`에는 **위험 주문 줄만** 담습니다. 엔진 T10(`options.py`)이 `simE`에서 읽는 것은 위험 주문의 확보일(`evaluate` 107행, `_outcomes_from_sim`)과 판정일의 줄별 보호량(`_securement` 34~42행, 그날 출력이 없으면 마지막 날)뿐이라 결과가 같습니다. 구간 끝은 `simulation_horizon_end`와 같아 따로 두지 않았습니다. A의 T10 구현이 다른 값을 읽게 되면 이 형식을 다시 맞춥니다.
 
 저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인). 날짜 끝이 아닌 약속 시각이 들어오는 원천이 생기면 갈리므로, 입력 검증(GLOW-100)에서 이런 주문이 있으면 실행을 보류로 막을지 정합니다(엔진에는 없는 검사라 그 작업에서 결정, #26 리뷰).
 
@@ -463,6 +470,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | T7 시각 비교 | 배송일 → `T23:59:59Z` | 엔진 `storage.py`, 4.1절 |
 | 식별자·시각 | 문자열로 받음(소문자 UUID, `…Z` 초 단위) | `uuid.UUID`·`datetime`은 대문자·`+09:00`·마이크로초를 받아 다른 모양으로 내보냄(11-04 확인) |
 | 조회 도구 T2~T5·T8의 입력 | **입력 없음(11-06, GLOW-125 2부)** | 범위는 실행마다 한 번 만드는 엔진 입력이 정함(인터페이스 결정 3, 3절 "구현") |
+| T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). A의 T10 구현이 다른 값을 읽으면 다시 맞춤 |
 
 ## 10. 작업 중 실패와 원인
 
