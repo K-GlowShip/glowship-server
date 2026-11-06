@@ -27,7 +27,7 @@
 | --- | --- |
 | 도구 유형 | **조회 도구**(T1·T2·T3·T4·T5·T8)는 DB를 읽기만 합니다. **계산·검증 도구**(T6·T7·T9·T10·T11·T12)는 입력만으로 계산하는 순수 함수입니다. DB·현재 시각·난수·언어 모델을 쓰지 않습니다(엔진 `core.py` 머리말, 업무 분장 5절) |
 | 범위 | 조회 도구는 실행의 고객사(`company_id`) 범위에서만 읽습니다. 워커 역할 세션에 `app.company_id`를 설정하고, 조회 조건에도 `company_id`를 넣습니다(GLOW-98 실행 상태 조회기와 같은 방식) |
-| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`) 이하로 적용된 수집**(`data_sync_runs.applied_seq <= input_seq`)이 적재한 값만 읽습니다. serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다. 엔진의 `confirm_t`(시각)는 CSV를 읽는 참조 구현의 대응일 뿐이고, 서버는 순번을 씁니다 |
+| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`)으로 고정한 엔진 입력**에서만 값을 옮깁니다. 엔진 입력 저장소는 `data_sync_runs`와 수집 단위 표(`inventory_daily`·`shipment_schedule_snapshots`·`data_validation_issues`)를 `applied_seq <= input_seq`로 거르고, 변경 기록과 현재 상태 표(주문·선적·SKU 등)는 거르지 않고 엔진의 시각 규칙(`confirm_t`)에 맡깁니다. 엔진이 나중 수집의 변경 기록으로 주문의 과거 상태를 되돌려 보기 때문입니다(사용자 결정 11-05, 문서 차이 DV1-1). 표별 기준은 `docs/analysis/engine-input-store.md` 2절. 입력 순번을 쓰는 이유는 serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다 |
 | 저장 | 도구는 업무 DB에 쓰지 않습니다. 결과 저장은 서비스가 합니다(agentflow 4절 "부작용 없음") |
 | JSON 키 | snake_case입니다. 엔진과 DB 열 이름을 그대로 써서 저장 단계에서 키를 바꾸지 않게 합니다(D20과 같은 방향) |
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
@@ -247,7 +247,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 - 영향 SKU가 없으면 `DONOR_NO_NEXT_INBOUND`로 판정하지 않습니다(엔진 `k_imp and all(...)`).
 - `kr_on_hand[]`에 행이 없는 SKU는 보유 0이고, `donor_next_inbound[]`에 행이 없는 SKU는 다음 입고 `null`과 같습니다.
 - `eligible_sku_codes[]`는 `sku_code` 순이고, 한국 재고가 0인 SKU도 넣습니다. 리드타임이 없어 `NEEDS_CHECK`여도 채웁니다(9절 Q14).
-- 영향 SKU가 `skus[]`에 없으면 후보와 상관없이 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 멈춥니다(9절 Q13).
+- 영향 SKU가 `skus[]`에 없으면 후보와 상관없이 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 멈춥니다. 입력 연결 오류라서 그래프가 `FAILED`로 끝냅니다(9절 Q13).
 
 ## 6. T10 `calculate_option_outcomes` — 대응안 결과 (A 구현)
 
@@ -434,7 +434,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장에서 더함(**11-05 처리:** 출력 계약은 바꾸지 않고 저장할 때 계산. `calculation_status = CALCULATED`, `warehouse_id` = T1 도착 창고, 가용·확정 수요·평균 판매는 T2·T4·T5에서 엔진 식대로, `risk_reason`은 엔진 문구. 서버 `docs/analysis/result-save.md` 4절) |
 | Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
-| Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132)** | 긴급 항공 가능 여부를 알 수 없으므로 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 실행을 보류함. 엔진은 `KeyError`로 멈춤. 필수 자료 부족은 실행 전체 `ON_HOLD`라는 Q7과 같은 방향 |
+| Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132 → 11-06 결정 1에 맞춤)** | 입력 연결 오류다. T9는 `RequiredDataError`를 내지만, 그래프의 도구 호출부(`call_tool`)가 재시도 없이 `FAILED`(`UNEXPECTED_TOOL_ERROR`, 메시지에 원래 코드)로 끝낸다. 보류는 분석 준비 단계(`EngineHold`)에서만 낸다. 엔진 입력의 `sku_attr`는 고객사 SKU 전체라 이 경우는 데이터로는 생기지 않는다 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
 

@@ -447,6 +447,7 @@ def test_reason_sets_are_within_ddl():
 
 # 문서에 나오는 대문자 코드값 가운데 서버 열거형이 아닌 것 (어디 값인지 밝혀 둔다)
 NON_ENUM_CODES = {
+    "UNEXPECTED_TOOL_ERROR",  # #28 실패 코드(agent/retry.py), 9절 Q13: 도구의 RequiredDataError 는 FAILED
     "KR",  # region_code (Literal)
     "WEST",
     "EAST",
