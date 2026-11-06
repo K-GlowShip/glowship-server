@@ -76,6 +76,12 @@ class DecisionErrorCode(BaseErrorCode):
         "OPTION_NOT_FEASIBLE",
         "실행 가능(FEASIBLE)한 대응안만 최종 선택할 수 있습니다.",
     )
+    # 최종 선택은 Idempotency-Key 헤더가 필수 (명세 4.6·5절 400)
+    IDEMPOTENCY_KEY_REQUIRED = (
+        status.HTTP_400_BAD_REQUEST,
+        "IDEMPOTENCY_KEY_REQUIRED",
+        "최종 선택에는 Idempotency-Key 헤더가 필요합니다.",
+    )
     # 같은 고객사에서 이미 다른 실행에 쓴 Idempotency-Key (final_decisions_uk3). 명세에 없는 코드(11/05 결정, 명세 반영은 요청)
     IDEMPOTENCY_KEY_REUSED = (
         status.HTTP_409_CONFLICT,
