@@ -50,6 +50,7 @@ class DataSyncStatusService:
         repo: DataSyncRunRepository,
         stale_multiplier: int,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        virtual_clock: bool = False,
     ):
         """
         Args:
@@ -57,10 +58,15 @@ class DataSyncStatusService:
             stale_multiplier: 수집 멈춤 판정 배수. 마지막 실행 시작이 수집 주기 × 배수보다 오래되면 동기화 안 됨으로 본다.
                 0 이면 멈춤 판정을 하지 않는다 (Settings.sync_stale_multiplier).
             clock: 현재 시각(UTC). 테스트에서 시각을 고정하기 위한 주입점
+            virtual_clock: True 면(데모, Settings.virtual_clock_start 가 있을 때) 수집 멈춤 판정(조건 2)을 하지 않는다.
+                가상 시각에는 "지금"이 없다. 데이터가 7월 초에 멈춰 있어 서버 시각(11월)으로 보면 모든 원천이 멈춘 것으로 보이고,
+                가장 최근 수집 시각을 지금으로 보면 수동 수집이 있는 원천(SHIPMENT)만 하루씩 나아가서 나머지 원천이
+                모두 동기화 안 됨(카드 "수집 오류")이 되며 데모 중 되돌릴 방법이 없다(PR #40 리뷰). 조건 1(마지막 수집 결과)만 본다.
         """
         self.repo = repo
         self.stale_multiplier = stale_multiplier
         self.clock = clock
+        self.virtual_clock = virtual_clock
 
     async def get_latest_statuses(
         self, tenant: TenantContext
@@ -103,14 +109,14 @@ class DataSyncStatusService:
         동기화된 상태인지 판정한다. 두 조건을 모두 만족해야 True 다.
           1. 마지막으로 끝난 실행(RUNNING 제외)이 SUCCEEDED·PARTIAL_SUCCESS
              (진행 중 실행은 결과를 모르므로 직전에 끝난 실행으로 판정한다)
-          2. 배수가 0 이 아니면, 가장 최근 실행 시작이 수집 주기 × 배수 이내
-             (수집기가 멈춰 새 실행이 기록되지 않는 경우를 잡는다)
+          2. 배수가 0 이 아니고 가상 시각이 아니면, 가장 최근 실행 시작이 수집 주기 × 배수 이내
+             (수집기가 멈춰 새 실행이 기록되지 않는 경우를 잡는다. 가상 시각에는 "지금"이 없어 보지 않는다)
         수집 이력이 없으면 False 다.
         """
         if summary is None or summary.latest_completed_status not in APPLIED_STATUSES:
             return False
 
-        if self.stale_multiplier == 0:
+        if self.stale_multiplier == 0 or self.virtual_clock:
             return True
         allowed_gap = timedelta(
             minutes=spec.sync_interval_minutes * self.stale_multiplier

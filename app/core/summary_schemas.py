@@ -28,27 +28,6 @@ class SkuSummary(CamelModel):
     product_name: str
 
 
-class UserSummary(CamelModel):
-    """사용자 요약 (작성자·선택자 등 역할 이름으로 담는다: author, decidedBy). 이메일은 넣지 않는다."""
-
-    user_id: uuid.UUID
-    display_name: str
-    role_code: str = Field(
-        description="OWNER·ADMIN·CLIENT_MEMBER(팀원)·CLIENT_LEAD(팀장)",
-        examples=["CLIENT_LEAD"],
-    )
-
-
-class ResponseOptionSummary(CamelModel):
-    """대응안 요약 객체 (응답 본문 규칙 5.2)"""
-
-    response_option_id: uuid.UUID
-    option_type: str = Field(
-        description="KEEP_PLAN·PRE_DEPARTURE_AIR·KR_AIR_REPLENISH·OTHER_REGION_FULFILL. 표시명은 라벨 사전 labels/ko-v1",
-        examples=["KR_AIR_REPLENISH"],
-    )
-
-
 class RunSummary(CamelModel):
     run_id: uuid.UUID
     run_code: str = Field(
@@ -60,4 +39,19 @@ class RunSummary(CamelModel):
     )
     failure_code: str | None = Field(
         description="실패 코드 (analysis_runs.failure_code, 명세 C27). ON_HOLD·FAILED 일 때만 값이 있고 그 밖의 상태는 null (DDL ck10·ck11)"
+    )
+
+
+class UserSummary(CamelModel):
+    """사용자 요약. 키 이름은 역할 이름만 쓴다(예: author, decidedBy, 응답 본문 규칙 5.2)"""
+
+    user_id: uuid.UUID
+    display_name: str
+    role_code: str = Field(description="CLIENT_MEMBER·CLIENT_LEAD·ADMIN")
+
+
+class ResponseOptionSummary(CamelModel):
+    response_option_id: uuid.UUID
+    option_type: str = Field(
+        description="KEEP_PLAN·PRE_DEPARTURE_AIR·KR_AIR_REPLENISH·OTHER_REGION_FULFILL"
     )
