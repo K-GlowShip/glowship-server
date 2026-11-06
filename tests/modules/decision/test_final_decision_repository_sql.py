@@ -146,7 +146,8 @@ async def test_find_by_idempotency_key(db_session):
         await db_session.execute(
             text(
                 "SELECT company_id, final_decision_id, analysis_run_id, decided_at, checked_seq,"
-                " idempotency_key FROM final_decisions ORDER BY final_decision_id LIMIT 1"
+                " response_option_id, reason_text, idempotency_key"
+                " FROM final_decisions ORDER BY final_decision_id LIMIT 1"
             )
         )
     ).first()
@@ -158,7 +159,7 @@ async def test_find_by_idempotency_key(db_session):
         stored.company_id, stored.idempotency_key
     )
 
-    assert tuple(vars(found).values()) == tuple(stored)[1:5]
+    assert tuple(vars(found).values()) == tuple(stored)[1:7]
     assert (
         await repo.find_by_idempotency_key(UNKNOWN_ID, stored.idempotency_key) is None
     )

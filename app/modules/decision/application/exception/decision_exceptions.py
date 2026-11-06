@@ -82,11 +82,12 @@ class DecisionErrorCode(BaseErrorCode):
         "IDEMPOTENCY_KEY_REQUIRED",
         "최종 선택에는 Idempotency-Key 헤더가 필요합니다.",
     )
-    # 같은 고객사에서 이미 다른 실행에 쓴 Idempotency-Key (final_decisions_uk3). 명세에 없는 코드(11/05 결정, 명세 반영은 요청)
+    # 같은 고객사에서 이미 다른 실행에 쓴 Idempotency-Key (final_decisions_uk3), 또는 같은 실행인데 본문(대응안·선택 이유)이
+    # 다른 재요청(PR #46 리뷰). 명세에 없는 코드(11/05 결정, 명세 반영은 요청)
     IDEMPOTENCY_KEY_REUSED = (
         status.HTTP_409_CONFLICT,
         "IDEMPOTENCY_KEY_REUSED",
-        "이 Idempotency-Key 는 다른 분석 실행의 최종 선택에 이미 쓰였습니다. 새 키로 요청해 주세요.",
+        "이 Idempotency-Key 는 다른 최종 선택 요청(다른 분석 실행이나 다른 대응안·선택 이유)에 이미 쓰였습니다. 새 키로 요청해 주세요.",
     )
     OPTION_NOT_IN_RUN = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,

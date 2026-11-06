@@ -107,7 +107,8 @@ _RECOVERED_PROMISED = text(
 
 _BY_IDEMPOTENCY_KEY = text(
     """
-    SELECT final_decision_id, analysis_run_id, decided_at, checked_seq
+    SELECT final_decision_id, analysis_run_id, decided_at, checked_seq,
+           response_option_id, reason_text
       FROM final_decisions
      WHERE company_id = :company_id AND idempotency_key = :idempotency_key
     """
@@ -120,6 +121,8 @@ class StoredFinalDecision:
     analysis_run_id: uuid.UUID
     decided_at: datetime
     checked_seq: int
+    response_option_id: uuid.UUID  # 같은 키 재요청이 같은 본문인지 비교 (PR #46 리뷰)
+    reason_text: str
 
 
 @dataclass(frozen=True)

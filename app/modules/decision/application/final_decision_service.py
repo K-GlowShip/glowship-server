@@ -34,7 +34,8 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
     최종 선택 서비스 (API 19 POST /analysis-runs/{runId}/final-decision, API 명세 v6.2 4.6절)
       - 순서: 같은 Idempotency-Key 확인 → 고객사에 없는 실행 404 → L2(그 실행만, 명세 "최종 선택은 L2만") → 잠근 뒤
         같은 키 다시 확인 → 재확인 2~7(selection_policy) → final_decisions 한 행 + 실행 FINALIZED.
-      - 같은 키: 같은 실행이면 저장된 결과를 그대로 돌려주고(재요청), 다른 실행이면 409 IDEMPOTENCY_KEY_REUSED(11/05 결정).
+      - 같은 키: 같은 실행·같은 대응안·같은 선택 이유면 저장된 결과를 그대로 돌려주고(재요청), 실행(11/05 결정)이나
+        본문(대응안·선택 이유, PR #46 리뷰)이 다르면 409 IDEMPOTENCY_KEY_REUSED.
         잠근 뒤 다시 보는 것은 같은 키·같은 실행 요청이 동시에 들어와 두 번째가 L2 를 기다린 경우 재요청으로 답하기 위해서입니다.
       - 시간 경과(TIME_ELAPSED)면 실행을 STALE(stale_detected_seq 없음)로 기록해 **먼저 커밋한 뒤** 409 ANALYSIS_STALE 로 거부합니다.
         요청 세션(get_db)은 예외에서 롤백하므로 여기서 커밋해야 STALE 기록이 남습니다.
@@ -77,12 +78,23 @@ class FinalDecisionService:
         self.clock = clock or DecisionClock(None, virtual=False)
 
     async def _replay(
-        self, company_id: uuid.UUID, analysis_run_id: uuid.UUID, idempotency_key: str
+        self,
+        company_id: uuid.UUID,
+        analysis_run_id: uuid.UUID,
+        idempotency_key: str,
+        response_option_id: uuid.UUID,
+        reason_text: str,
     ) -> FinalDecisionResult | None:
         stored = await self.repo.find_by_idempotency_key(company_id, idempotency_key)
         if stored is None:
             return None
-        if stored.analysis_run_id != analysis_run_id:
+        # 같은 키는 같은 요청의 재시도일 때만 저장된 결과를 돌려준다. 실행·대응안·선택 이유 중 하나라도 다르면
+        # "이 대응안으로 확정됐다"고 잘못 읽히지 않게 거부한다(PR #46 리뷰). 선택 이유는 스키마가 앞뒤 공백을 뺀 값이다.
+        if (
+            stored.analysis_run_id != analysis_run_id
+            or stored.response_option_id != response_option_id
+            or stored.reason_text != reason_text
+        ):
             raise DecisionException(DecisionErrorCode.IDEMPOTENCY_KEY_REUSED)
         return _result(stored, replayed=True)
 
@@ -96,7 +108,8 @@ class FinalDecisionService:
         idempotency_key: str,
     ) -> FinalDecisionResult:
         company_id = tenant.company_id
-        replay = await self._replay(company_id, analysis_run_id, idempotency_key)
+        same_request = (idempotency_key, response_option_id, reason_text)
+        replay = await self._replay(company_id, analysis_run_id, *same_request)
         if replay is not None:
             return replay
 
@@ -110,7 +123,7 @@ class FinalDecisionService:
         ):
             raise AnalysisRunNotFoundException()
         run = await lock_analysis_run(self.db, analysis_run_id)
-        replay = await self._replay(company_id, analysis_run_id, idempotency_key)
+        replay = await self._replay(company_id, analysis_run_id, *same_request)
         if replay is not None:
             return replay
         target = await self.repo.find_selection_target(

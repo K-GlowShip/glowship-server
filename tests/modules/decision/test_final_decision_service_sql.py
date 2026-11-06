@@ -82,12 +82,20 @@ def _service(db) -> FinalDecisionService:
     )
 
 
-async def _decide(db, row, *, key="key-1", option_id=None, company_id=None):
+async def _decide(
+    db,
+    row,
+    *,
+    key="key-1",
+    option_id=None,
+    company_id=None,
+    reason="재고 영향이 가장 적음",
+):
     return await _service(db).decide(
         TenantContext(user_id=row.lead_id, company_id=company_id or row.company_id),
         analysis_run_id=row.analysis_run_id,
         response_option_id=option_id or row.option_id,
-        reason_text="재고 영향이 가장 적음",
+        reason_text=reason,
         idempotency_key=key,
     )
 
@@ -228,3 +236,15 @@ async def test_run_of_other_company_is_404(db_write_session):
 
     with pytest.raises(AnalysisRunNotFoundException):
         await _decide(db, row, company_id=UNKNOWN_ID)
+
+
+async def test_same_key_with_other_reason_is_rejected(db_write_session):
+    """같은 키·같은 실행이라도 선택 이유가 다르면 재요청으로 보지 않는다 (PR #46 리뷰)"""
+    db = db_write_session
+    row = await _ready_run(db)
+    await _decide(db, row)
+
+    with pytest.raises(DecisionException) as raised:
+        await _decide(db, row, reason="다른 이유")
+
+    assert raised.value.error_code == DecisionErrorCode.IDEMPOTENCY_KEY_REUSED

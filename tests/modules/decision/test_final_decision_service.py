@@ -136,7 +136,7 @@ async def test_same_key_same_run_returns_saved_without_locking(monkeypatch):
         raise AssertionError("재요청은 잠그지 않는다")
 
     monkeypatch.setattr(final_decision_service, "lock_analysis_run", must_not_lock)
-    stored = StoredFinalDecision(uuid.uuid7(), RUN_ID, NOW, 7)
+    stored = StoredFinalDecision(uuid.uuid7(), RUN_ID, NOW, 7, OPTION_ID, "이유")
 
     result = await _decide(FakeRepository(TARGET, stored), FakeSession())
 
@@ -148,9 +148,29 @@ async def test_same_key_same_run_returns_saved_without_locking(monkeypatch):
 
 
 async def test_same_key_other_run_is_reused(run):
-    stored = StoredFinalDecision(uuid.uuid7(), uuid.uuid7(), NOW, 7)
+    stored = StoredFinalDecision(uuid.uuid7(), uuid.uuid7(), NOW, 7, OPTION_ID, "이유")
 
     with pytest.raises(DecisionException) as raised:
         await _decide(FakeRepository(TARGET, stored), FakeSession())
 
     assert raised.value.error_code == DecisionErrorCode.IDEMPOTENCY_KEY_REUSED
+
+
+@pytest.mark.parametrize(
+    "stored_body",
+    [
+        (uuid.uuid7(), "이유"),  # 같은 키·같은 실행인데 다른 대응안
+        (OPTION_ID, "다른 이유"),  # 같은 키·같은 실행인데 다른 선택 이유
+    ],
+)
+async def test_same_key_same_run_with_other_body_is_reused(run, stored_body):
+    """같은 키로 본문이 다른 요청을 보내면 저장된 결과("다른 대응안으로 확정")를 돌려주지 않고 거부 (PR #46 리뷰)"""
+    option_id, reason_text = stored_body
+    stored = StoredFinalDecision(uuid.uuid7(), RUN_ID, NOW, 7, option_id, reason_text)
+    repo = FakeRepository(TARGET, stored)
+
+    with pytest.raises(DecisionException) as raised:
+        await _decide(repo, FakeSession())
+
+    assert raised.value.error_code == DecisionErrorCode.IDEMPOTENCY_KEY_REUSED
+    assert repo.inserted == []

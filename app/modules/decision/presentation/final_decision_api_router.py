@@ -62,7 +62,7 @@ require_lead = require_roles(UserRoleCode.CLIENT_LEAD)
             "description": (
                 "EPISODE_CLOSED, EXPLANATION_NOT_READY, ANALYSIS_STALE(STALE 이거나 시간 경과 TIME_ELAPSED), "
                 "FINAL_DECISION_EXISTS, NOT_CURRENT_RUN, RUN_NOT_READY, OPERATING_RULE_CHANGED, "
-                "IDEMPOTENCY_KEY_REUSED(같은 키를 다른 실행에 씀)"
+                "IDEMPOTENCY_KEY_REUSED(같은 키를 다른 실행이나 다른 본문에 씀)"
             ),
         },
         422: {
