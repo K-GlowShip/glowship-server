@@ -59,7 +59,7 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 
 ## 3. 조회 도구 출력 — 분석 입력 스냅샷
 
-엔진은 분석 입력을 스냅샷 하나(`snapshot.build`)로 고정한 뒤 계산 함수가 그 일부를 읽습니다. 서버에서는 이 스냅샷을 조회 도구 6개의 출력으로 나눕니다. 모든 조회는 **입력 순번까지 적용된 값**만 읽습니다(1절 "입력 기준"). 아래 표의 "최신 관측"도 입력 순번 이하 수집이 적재한 관측 가운데 가장 최근 것입니다.
+엔진은 분석 입력을 스냅샷 하나(`snapshot.build`)로 고정한 뒤 계산 함수가 그 일부를 읽습니다. 서버에서는 이 스냅샷을 조회 도구 6개의 출력으로 나눕니다. 모든 조회는 **입력 순번까지 적용된 값**만 읽습니다(1절 "입력 기준"). 아래 표의 "최신 관측"도 입력 순번 이하 수집이 적재한 관측 가운데 가장 최근 것입니다. T1의 단계·예상일만 AUTO 실행에서 트리거 일정 스냅샷을 씁니다(3.1절).
 
 **구현(GLOW-125 2부):** 서버는 실행마다 엔진 입력을 한 번 만들고(`infrastructure/engine/engine_input.py`, `docs/analysis/engine-input.md`), 조회 도구는 그 스냅샷을 아래 표대로 옮기기만 합니다(`application/agent/tools/lookup_tools.py`). DB를 다시 읽지 않으므로 몇 번 불러도 같은 값입니다. **T2~T5·T8은 입력이 없습니다**(`payload: None`, 인터페이스 결정 3). 창고·SKU·날짜·운영 기준 판은 엔진 입력이 이미 정합니다. T1 입력은 이 실행의 값과 같아야 하고, 다르면 도구가 멈추고 실행은 FAILED가 됩니다(다른 실행을 부른 것이므로 재시도하지 않음).
 
@@ -72,11 +72,11 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 | `shipment_id` | uuid | 아니오 | 지연 선적 | `delay_events.shipment_id` | `delayed_shipment_id` |
 | `base_date` | date | 아니오 | 분석 기준일 D | 입력 | `D` |
 | `planned_3pl_inbound_date` | date | 아니오 | 계획 3PL 입고일 P | `shipments.planned_3pl_inbound_date` | `P` |
-| `expected_3pl_inbound_date` | date | 아니오 | 예상 3PL 입고일 E (입력 순번까지의 최신 관측) | `shipment_schedule_snapshots.expected_3pl_inbound_date` | `E` |
-| `stage` | text | 아니오 | 운송 단계 (입력 순번까지의 최신 관측) | `shipment_schedule_snapshots` | `stage` |
+| `expected_3pl_inbound_date` | date | 아니오 | 예상 3PL 입고일 E (AUTO는 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 9절 Q16) | `shipment_schedule_snapshots.expected_3pl_inbound_date` | `E` |
+| `stage` | text | 아니오 | 운송 단계 (AUTO는 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 9절 Q16) | `shipment_schedule_snapshots` | `stage` |
 | `transport_mode` | text | 아니오 | `OCEAN`·`AIR` | `shipments.transport_mode`(ck1) | `mode` |
 | `planned_kr_release_date` | date | 아니오 | 한국 출고 예정일 (출항 전 항공의 공급일 계산) | `shipments.planned_kr_release_date` | `planned_kr_release` |
-| `trigger_shipment_schedule_snapshot_id` | uuid | 아니오 | 입력 순번까지의 최신 관측 | `shipment_schedule_snapshots` | `trigger_snapshot_id` |
+| `trigger_shipment_schedule_snapshot_id` | uuid | 아니오 | 입력 순번까지의 최신 관측. 이름과 달리 AUTO에서도 엔진이 최신 관측의 ID를 냅니다(9절 Q16) | `shipment_schedule_snapshots` | `trigger_snapshot_id` |
 | `shipment_skus[]` | 배열(`sku_code`) | — | 지연 선적의 SKU = K_SHIPMENT | `shipment_lines` + `skus` | `k_shipment`, `delayed_qty` |
 | `shipment_skus[].sku_id`·`sku_code` | uuid·text | 아니오 | | `skus` | `sku_ids` |
 | `shipment_skus[].delayed_quantity` | 정수 | 아니오 | SKU별 선적 수량 합 | `shipment_lines.shipped_quantity` 합 | `delayed_qty` |
@@ -398,6 +398,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132)** | 긴급 항공 가능 여부를 알 수 없으므로 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 실행을 보류함. 엔진은 `KeyError`로 멈춤. 필수 자료 부족은 실행 전체 `ON_HOLD`라는 Q7과 같은 방향 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
+| Q16 | T1 단계·예상일 E의 기준(트리거와 최신 관측) | **결정(PR #53 승인 리뷰)** | AUTO 실행은 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 엔진 하네스(`run_s1_s5.py` 153행)와 같음. AUTO와 트리거 있음은 DDL `analysis_runs_ck16`으로 같은 뜻. AUTO 실행은 지연을 판정한 수집의 적재 트랜잭션 안에서 만들어(이슈 #34) 트리거가 곧 입력 순번까지의 최신 관측이므로, 둘이 갈리는 것은 실행 생성을 적재와 떼어 늦게 할 때뿐임. `trigger_shipment_schedule_snapshot_id`는 다른 기준: 엔진 `snapshot.build`는 넘긴 단계·E와 상관없이 최신 관측의 ID를 내므로(219행), 실행 생성을 떼면 이 ID가 실행의 트리거와 달라짐 |
 
 ### 9.1 모델로 옮기며 채운 것
 

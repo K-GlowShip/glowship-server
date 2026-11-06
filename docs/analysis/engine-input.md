@@ -18,7 +18,7 @@
 | 3. 도구 | `lookup_tools.get_*`(T1~T5·T8) | `ctx.engine.snap`을 계약 출력 모델로 옮김 |
 | 4. 판정 서명 | `decision_of(engine)` | `EngineDecision`(상태·결과 분류·`dependency_scope`·`decision_signature`·`decision_signature_sha256`). 결과 저장(#38)의 같은 이름 칸에 그대로 넣습니다. 복사본을 돌려줍니다 |
 
-- 저장소·입력 순번이 맞지 않거나 실행의 지연 이벤트·트리거 스냅샷을 못 찾으면 `EngineInputError`·`LookupError`를 올립니다. 이것은 보류가 아니라 시스템 문제입니다.
+- 저장소·입력 순번이 맞지 않거나 실행의 지연 이벤트·트리거 스냅샷을 못 찾으면 `EngineInputError`·`LookupError`를 올립니다. 이것은 보류가 아니라 시스템 문제입니다. 지연 이벤트를 못 찾는 흔한 원인은 RLS입니다(앱 역할 세션, ACTIVE가 아닌 고객사). 그래서 오류 메시지가 저장소(`_check_not_silently_empty`)와 같이 두 가지를 확인하라고 안내합니다.
 
 ## 3. 실행 행에서 엔진 입력 값을 정하는 규칙 (#36 정답 대조와 같음)
 | 엔진 값 | 정하는 법 |
@@ -26,7 +26,7 @@
 | 입력 확정 시각 `confirm_t` | `engine_timestamp(run.started_at)`(UTC, 초 아래 버림) |
 | 기준일 D | `confirm_t`의 날짜 |
 | 지연 선적 | `delay_events.shipment_id` |
-| 단계·예상 입고일 E | 실행의 트리거 일정 스냅샷(`trigger_shipment_schedule_snapshot_id`). **트리거가 없으면(재분석)** 엔진처럼 입력 확정 시각까지의 최신 관측(`store.snapshot_at`) |
+| 단계·예상 입고일 E | 실행의 트리거 일정 스냅샷(`trigger_shipment_schedule_snapshot_id`). **트리거가 없으면(재분석)** 엔진처럼 입력 확정 시각까지의 최신 관측(`store.snapshot_at`). 계약 3.1절·9절 Q16과 같음 |
 | 계획 입고일 P | `shipments.planned_3pl_inbound_date` |
 | 행사 일정 | 엔진 폴더 `glowship_engine/config/event_calendar_2026h1_v1.json`(하네스 `run_s1_s5.CAL`과 같은 파일, 해시는 엔진 매니페스트가 고정) |
 
@@ -46,7 +46,7 @@
 ## 5. 시험·검증
 | 구분 | 내용 | 결과(11-06) |
 | --- | --- | --- |
-| 단위(엔진·DB 없음) | 손으로 만든 스냅샷: 정렬 키, T1 입력 확인, T4 28일 창·Store를 건드리지 않음, T5 형식, T8 리드타임·`BUSINESS_DAY` `null`·빈 행·고른 행 불일치·불리언, 모르는 단계 코드, 스냅샷 불변·같은 값, `decision_of` 복사, 엔진에 트리거 단계·예상일을 넘김, NO_DELAY가 트리거 E를 씀 | 13건 통과 |
+| 단위(엔진·DB 없음) | 손으로 만든 스냅샷: 정렬 키, 실행을 못 찾을 때 안내 문구, T1 입력 확인, T4 28일 창·Store를 건드리지 않음, T5 형식, T8 리드타임·`BUSINESS_DAY` `null`·빈 행·고른 행 불일치·불리언, 모르는 단계 코드, 스냅샷 불변·같은 값, `decision_of` 복사, 엔진에 트리거 단계·예상일을 넘김, NO_DELAY가 트리거 E를 씀 | 14건 통과 |
 | DB(엔진 경로 + overlay) | B NO_DELAY·ON_HOLD, A READY, A 재분석(트리거 없음). 저장된 판정 서명·SHA·의존 범위·보류 코드와 같은지, 도구 교차 확인(T1 트리거 = 실행 값, T8 운영 기준 = 실행 값, T4 ÷ 28 = `mu_ch`, **T8 SKU ⊇ 영향·관찰·선적 SKU**, T5 ⊇ 의존 범위의 약속 주문 줄, T3 ⊇ 의존 범위의 입고 선적) | 3건 통과(약 21초) |
 | 정답 대조 `GLOWSHIP_ENGINE_GOLDEN=1` | overlay 실행 21건(A 13·B 8) 모두 위 대조 | 통과(2분 18초) |
 | 변이 | D 하루 밀기 → 2건 실패 / 재분석 최신 관측을 가장 이른 것으로 → 1건 / T4 창 하루 밀기 → 3건 / T8 `BUSINESS_DAY`도 값 그대로 → 1건 / T5 공여 창고 주문 빼기 → 3건 / 트리거 단계·예상일 무시 → 1건(아래 6절) | 모두 잡힘 |
