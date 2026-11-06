@@ -76,6 +76,12 @@ class DecisionErrorCode(BaseErrorCode):
         "OPTION_NOT_FEASIBLE",
         "실행 가능(FEASIBLE)한 대응안만 최종 선택할 수 있습니다.",
     )
+    # 같은 고객사에서 이미 다른 실행에 쓴 Idempotency-Key (final_decisions_uk3). 명세에 없는 코드(11/05 결정, 명세 반영은 요청)
+    IDEMPOTENCY_KEY_REUSED = (
+        status.HTTP_409_CONFLICT,
+        "IDEMPOTENCY_KEY_REUSED",
+        "이 Idempotency-Key 는 다른 분석 실행의 최종 선택에 이미 쓰였습니다. 새 키로 요청해 주세요.",
+    )
     OPTION_NOT_IN_RUN = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "OPTION_NOT_IN_RUN",
