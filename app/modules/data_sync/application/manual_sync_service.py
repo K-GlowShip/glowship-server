@@ -17,7 +17,11 @@ from app.modules.data_sync.application.ingest.ingest_service import (
     StartedRun,
 )
 from app.modules.data_sync.application.ingest.tms_parser import parse_tms_shipments
-from app.modules.data_sync.application.virtual_clock import SyncClock, SyncWindow
+from app.modules.data_sync.application.virtual_clock import (
+    VIRTUAL_FINISH_AFTER,
+    SyncClock,
+    SyncWindow,
+)
 from app.modules.data_sync.infrastructure.data_sync_enums import (
     ConnectionMethod,
     SourceDomain,
@@ -45,7 +49,8 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
         파싱하고 apply 한다. 응답을 받기 전에 실패하면 fail 로 FAILED 를 남긴다(RUNNING 으로 남으면 다음 수집이 막힘).
         백그라운드라 예외를 받을 호출 측이 없으므로 로그로 남기고, 결과는 화면이 GET /data-sync-runs/latest 로 본다.
       - 세션은 워커 역할 전용 세션(open_worker_session)이다. 요청 세션(get_db)과 따로이며 수집 서비스가 직접 커밋한다.
-      - 수집 서비스 now 는 이번 수집 시각(가상 시각)으로 고정한다. 수집 시작·완료·일정 스냅샷 관측 시각이 모두 이 값이다.
+      - 가상 시각이면 수집 서비스 now 를 이번 수집 시각으로 고정한다. 수집 시작·일정 스냅샷 관측 시각이 이 값이고,
+        완료 시각은 시작 + 30초다(이슈 #39 규칙 3). 실제 시각이면 서버의 지금 시각을 그대로 쓴다.
 """
 
 logger = logging.getLogger(__name__)
@@ -77,7 +82,16 @@ class ManualSyncService:
 
     def _ingest(self, db: AsyncSession, at: datetime) -> DataIngestService:
         stale = StaleJudgmentService(db, StaleChangeRepository(db))
-        return DataIngestService(db, IngestRepository(db), stale, now=lambda: at)
+        if self.virtual_start is None:
+            # 실제 시각: 시작·완료 모두 지금 시각 (완료는 시작보다 늦게, 이슈 #39 규칙 3)
+            return DataIngestService(db, IngestRepository(db), stale, now=self.now)
+        return DataIngestService(
+            db,
+            IngestRepository(db),
+            stale,
+            now=lambda: at,
+            finish_after=VIRTUAL_FINISH_AFTER,
+        )
 
     async def request(
         self, tenant: TenantContext, source_domain: SourceDomain
@@ -90,7 +104,7 @@ class ManualSyncService:
             runs = DataSyncRunRepository(db)
             company_code = await runs.find_company_code(company_id)
             window = await SyncClock(runs, self.virtual_start, self.now).next_window(
-                company_id, source_domain.value
+                company_id, source_domain
             )
             await (
                 db.rollback()

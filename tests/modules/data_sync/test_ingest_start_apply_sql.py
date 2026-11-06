@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -32,6 +32,7 @@ from app.modules.data_sync.infrastructure.repository.ingest_repository import (
 STARTED_AT = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
 SUB_SECOND = datetime(2026, 7, 2, 0, 3, 0, 987654, tzinfo=UTC)
 WHOLE = datetime(2026, 7, 2, 0, 3, 0, tzinfo=UTC)
+ONE_SECOND = timedelta(seconds=1)
 
 
 class NoStale:
@@ -126,9 +127,10 @@ async def test_fail_before_apply_marks_failed_and_reopens_source(db_write_sessio
     await service.fail(started, error)
 
     run = await _run(db, started.data_sync_run_id)
+    # 시계가 멈춰 있어도 완료는 시작 + 1초 (이슈 #39 규칙 3)
     assert (run.status, run.finished_at, run.applied_seq) == (
         "FAILED",
-        STARTED_AT,
+        STARTED_AT + ONE_SECOND,
         None,
     )
     assert not getattr(error, "__notes__", [])
@@ -163,10 +165,45 @@ async def test_times_drop_sub_second(db_write_session):
 
     assert started.started_at == WHOLE
     run = await _run(db, started.data_sync_run_id)
-    assert (run.started_at, run.finished_at) == (WHOLE, WHOLE)
-    assert stale.detected_at == [WHOLE]
+    assert (run.started_at, run.finished_at) == (WHOLE, WHOLE + ONE_SECOND)
+    assert stale.detected_at == [WHOLE + ONE_SECOND]
     failed_run = await _run(db, failed.data_sync_run_id)
-    assert (failed_run.started_at, failed_run.finished_at) == (WHOLE, WHOLE)
+    assert (failed_run.started_at, failed_run.finished_at) == (
+        WHOLE,
+        WHOLE + ONE_SECOND,
+    )
+
+
+async def test_finished_at_is_after_started_at(db_write_session):
+    """이슈 #39 규칙 3: 완료 > 시작. finish_after(가상 시각)면 시작 + 그 값, 아니면 max(지금, 시작 + 1초).
+    검증 이슈 감지·STALE 감지 시각은 완료 시각"""
+    db = db_write_session
+    company_id = await _company(db)
+    stale = RecordingStale()
+    virtual = DataIngestService(
+        db,
+        IngestRepository(db),
+        stale,
+        now=lambda: WHOLE,
+        finish_after=timedelta(seconds=30),
+    )
+    started = await virtual.start(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API
+    )
+    await virtual.apply(started, [])
+    assert (await _run(db, started.data_sync_run_id)).finished_at == WHOLE + timedelta(
+        seconds=30
+    )
+    assert stale.detected_at == [WHOLE + timedelta(seconds=30)]
+
+    # 실제 시각: 지금이 시작보다 충분히 늦으면 지금
+    ticks = iter([WHOLE, WHOLE + timedelta(minutes=2)])
+    real = DataIngestService(db, IngestRepository(db), stale, now=lambda: next(ticks))
+    started = await real.start(company_id, SourceDomain.ORDER, ConnectionMethod.API)
+    await real.apply(started, [])
+    assert (await _run(db, started.data_sync_run_id)).finished_at == WHOLE + timedelta(
+        minutes=2
+    )
 
 
 def test_whole_second():

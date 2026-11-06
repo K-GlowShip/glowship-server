@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,6 +99,8 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
 
     수집 시각 (이슈 #39, 엔진 규칙)
       - 초 단위: now 가 준 시각에서 1초 미만을 버립니다. 엔진 store.iso_ts 가 1초 미만 시각을 거부합니다.
+      - 완료 시각 > 시작 시각: finish_after 가 있으면(가상 시각, 30초) 시작 + finish_after, 없으면 max(지금, 시작 + 1초).
+        FAILED 완료 시각도 같습니다. 검증 이슈 감지·해소 시각과 STALE 감지 시각은 완료 시각입니다.
 """
 
 # 확정 기준선(data_validation_issues.csv)과 같은 이름
@@ -150,6 +152,7 @@ class DataIngestService:
         stale_service: StaleJudgmentService,
         episode_service: EpisodeDetectionService | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        finish_after: timedelta | None = None,
     ):
         self.db = db
         self.repo = repo
@@ -160,6 +163,14 @@ class DataIngestService:
         )
         # 수집이 쓰는 시각(시작·완료, 일정 스냅샷 관측, 검증 이슈 감지·해소, STALE 판정)은 모두 이 값이라 여기서 초 단위로 맞춘다 (이슈 #39 규칙 1)
         self.now = lambda: whole_second(now())
+        # 가상 시각(수동 수집)은 완료 = 시작 + 30초. None 이면 지금 시각 (규칙 3)
+        self.finish_after = finish_after
+
+    def _finished_at(self, started_at: datetime) -> datetime:
+        """완료 시각 > 시작 시각 (이슈 #39 규칙 3). 엔진 stale.judge 는 완료 시각으로 수집을 찾는다."""
+        if self.finish_after is not None:
+            return started_at + self.finish_after
+        return max(self.now(), started_at + timedelta(seconds=1))
 
     async def ingest(
         self,
@@ -221,7 +232,7 @@ class DataIngestService:
             )
             rejections = (*parse_rejections, *applied.rejections)
             # 검증 이슈의 감지·해소 시각과 수집 완료 시각은 같은 값입니다 (확정 기준선 이슈 9행 모두 detected_at = 수집 finished_at)
-            finished_at = self.now()
+            finished_at = self._finished_at(started.started_at)
             await self.repo.resolve_validation_issues(
                 company_id,
                 run_id,
@@ -250,8 +261,9 @@ class DataIngestService:
             # GLOW-18 자리: AUTO 실행 생성·이전 실행 STALE(mark_runs_stale)은 여기, 에피소드를 닫기 전에 한다.
             # 닫힌 에피소드의 실행은 동결이라 mark_runs_stale 이 건너뛰기 때문이다 (episode_service 설명).
             await self.episode_service.close_episodes(company_id, episodes)
+            # STALE 감지 시각도 수집 완료 시각 (검증 이슈 감지 시각과 같은 규칙)
             staled = await self.stale_service.judge_after_sync(
-                company_id, applied_seq, self.now()
+                company_id, applied_seq, finished_at
             )
             await self.db.commit()
         except Exception as error:
@@ -276,7 +288,9 @@ class DataIngestService:
             await self.db.rollback()
             await set_rls_context(self.db, user_id=None, company_id=started.company_id)
             await self.repo.fail_run(
-                started.company_id, started.data_sync_run_id, self.now()
+                started.company_id,
+                started.data_sync_run_id,
+                self._finished_at(started.started_at),
             )
             await self.db.commit()
         except Exception as record_error:  # noqa: BLE001 어떤 기록 실패든 원래 예외를 지킴

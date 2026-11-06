@@ -29,6 +29,9 @@ from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 """
 
 START = datetime(2026, 7, 2, tzinfo=UTC)
+# 첫 SHIPMENT 수동 수집 시각(원천 자리 00:03)과 완료(시작 + 30초), 이슈 #39 규칙 2·3
+AT = datetime(2026, 7, 2, 0, 3, tzinfo=UTC)
+FINISHED = datetime(2026, 7, 2, 0, 3, 30, tzinfo=UTC)
 NEW_CODE = "V-TEST-0702-001"
 
 
@@ -127,17 +130,17 @@ async def test_first_manual_sync_loads_july_2nd_and_opens_delay(db_write_session
 
     ticket = await service.request(tenant, SourceDomain.SHIPMENT)
 
-    assert ticket.window.at == START
+    assert ticket.window.at == AT
     assert ticket.window.after.date().isoformat() == "2026-07-01"
     assert ticket.company_code == "A_BEAUTY"
     run = await _run_row(db, ticket.started.data_sync_run_id)
-    assert (run.status, run.started_at) == ("RUNNING", START)
+    assert (run.status, run.started_at) == ("RUNNING", AT)
 
     result = await service.run(ticket)
 
     assert result is not None and result.status == DataSyncRunStatus.SUCCEEDED
     run = await _run_row(db, ticket.started.data_sync_run_id)
-    assert tuple(run) == ("SUCCEEDED", START, START, 1)
+    assert tuple(run) == ("SUCCEEDED", AT, FINISHED, 1)
     opened = (
         await db.execute(
             text(
@@ -149,11 +152,11 @@ async def test_first_manual_sync_loads_july_2nd_and_opens_delay(db_write_session
         )
     ).one()
     # 열린 에피소드 = 판단 API 18~20 을 시연할 수 있는 지연
-    assert tuple(opened) == (1, None, START)
+    assert tuple(opened) == (1, None, AT)
 
     # 다음 수동 수집은 하루 뒤, 같은 응답은 다시 받지 않는다
     again = await service.request(tenant, SourceDomain.SHIPMENT)
-    assert again.window.at == datetime(2026, 7, 3, tzinfo=UTC)
+    assert again.window.at == datetime(2026, 7, 3, 0, 3, tzinfo=UTC)
     second = await service.run(again)
     assert second.counts.received == 0
 
@@ -213,4 +216,4 @@ async def test_scenario_failure_marks_failed_and_reopens(db_write_session, caplo
     assert "원천 응답을 받지 못해 FAILED" in caplog.text
     # FAILED 는 적재된 수집이 아니므로 다시 누르면 같은 날(07-02)을 다시 시도한다
     retry = await service.request(tenant, SourceDomain.SHIPMENT)
-    assert retry.window.at == START
+    assert retry.window.at == AT
