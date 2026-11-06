@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -100,15 +100,24 @@ async def _lock_in_progress(
     return run
 
 
-async def _write(db: AsyncSession, run: AnalysisRun, rows: ResultRows) -> datetime:
-    """결과 행과 실행 값을 넣고, 끝난 시각(DB 시각)을 돌려준다."""
+async def _write(
+    db: AsyncSession,
+    run: AnalysisRun,
+    rows: ResultRows,
+    now: datetime | None = None,
+) -> datetime:
+    """결과 행과 실행 값을 넣고, 끝난 시각을 돌려준다.
+    끝난 시각: now 가 없으면 DB 시각, 있으면 max(now, 실행 시작 + 1초)(가상 시각, 이슈 #50)."""
     # 위험 주문 → 대응안 → 주문 결과 순서로 넣는다 (주문 결과가 앞의 두 표를 참조)
     db.add_all(InventoryImpactResult(**r) for r in rows.inventory_impact_results)
     db.add_all(AtRiskOrder(**r) for r in rows.at_risk_orders)
     db.add_all(ResponseOption(**r) for r in rows.response_options)
     await db.flush()
     db.add_all(OptionOrderOutcome(**r) for r in rows.option_order_outcomes)
-    now = await db.scalar(select(func.clock_timestamp()))
+    if now is None:
+        now = await db.scalar(select(func.clock_timestamp()))
+    else:
+        now = max(now, run.started_at + timedelta(seconds=1))
     for column, value in rows.run_values.items():
         setattr(run, column, value)
     run.finished_at = now
@@ -123,10 +132,13 @@ async def save_analysis_result(
     analysis_run_id: uuid.UUID,
     result: AnalysisResult,
     recalculator: SignatureRecalculator | None = None,
+    now: datetime | None = None,
 ) -> ResultSaveOutcome:
     """
     정상 완료 결과를 저장하고 바로 다시 판정한다. 실행이 이미 진행 중이 아니면(STALE 등) 아무것도 쓰지 않고 saved=False.
     recalculator 는 재판정 2차(판정 서명 재계산)에 쓴다. 없으면 의존 범위에 걸린 변경이 있으면 STALE(놓치지 않는 쪽).
+    now: 완료 시각(가상 시각 데모, 이슈 #50). 없으면 DB 시각. 완료 시각 = max(now, 실행 시작 + 1초)라 실행 생성과 같은
+    값을 넘겨도 소요 0초가 되지 않는다(이슈 #39 규칙 3 과 같은 모양). STALE 재판정 시각도 이 완료 시각이다.
     """
     # 잠그기 전에 행을 만들어 둔다. 입력이 맞지 않으면(ResultSaveInputError) 잠금도 잡지 않는다.
     _check_explanation(result)
@@ -136,7 +148,7 @@ async def save_analysis_result(
     run = await _lock_in_progress(db, company_id, analysis_run_id)
     if isinstance(run, ResultSaveOutcome):
         return run
-    now = await _write(db, run, rows)
+    now = await _write(db, run, rows, now)
 
     # Q-13a: 확정된 의존 범위로 입력 순번 이후 변경을 다시 판정 (같은 L2·같은 트랜잭션)
     staled = await StaleJudgmentService(

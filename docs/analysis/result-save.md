@@ -24,7 +24,7 @@ outcome = await save_analysis_result(
 1. 행을 먼저 만듭니다. 도구 출력끼리 맞지 않으면 `ResultSaveInputError`이고, 잠금도 잡지 않습니다.
 2. 실행 잠금(L2, `lock_analysis_run`)을 잡고 최신 상태를 다시 읽습니다. 없거나 다른 고객사 실행이면 `AnalysisRunNotFoundError`입니다.
 3. 상태가 진행 중(`DETECTED`~`VALIDATING_OUTPUT`)이 아니면 **아무것도 쓰지 않고** `saved=False`를 돌려줍니다. 분석하는 동안 수집이 실행을 `STALE`로 바꿨을 때입니다. STALE을 덮어쓰지 않고, 결과 행만 남는 반쪽 상태도 만들지 않습니다(티켓 "완료 처리는 진행 중일 때만"). DDL `analysis_runs_ck25`는 STALE에 완료 상태가 비어 있는 것을 허용합니다.
-4. 결과 표 4개를 넣고 `analysis_runs`를 바꿉니다. 끝난 시각은 DB 시각(`clock_timestamp()`)입니다.
+4. 결과 표 4개를 넣고 `analysis_runs`를 바꿉니다. 끝난 시각은 DB 시각(`clock_timestamp()`)입니다. 부르는 쪽이 `now`를 넘기면(가상 시각 데모, 이슈 #50) 끝난 시각 = `max(now, 실행 시작 + 1초)`이고, 재판정의 STALE 감지 시각도 이 값입니다(실행 생성과 같은 값을 넘겨도 소요 0초가 아님).
 5. **같은 트랜잭션에서 다시 판정합니다(serviceflow 5.2 처리 단계 5, Q-13a).** 확정된 의존 범위로 입력 순번 이후 변경 전체를 봅니다(`StaleJudgmentService.recheck_run`). 분석하는 동안 진행 중 실행은 의존 범위가 없어 지연 선적 SKU로만 판정되었고, 수집 쪽 판정은 그 수집의 변경만 보기 때문입니다. 걸리면 저장한 결과는 그대로 두고 `STALE`로 기록하며, 반환값 `status`가 `STALE`입니다. STALE 시각은 끝난 시각과 같은 DB 시각입니다.
    - 2차(판정 서명 재계산)는 `recalculator` 인자로 넣습니다. 아직 서버에 재계산기가 없어서, 넣지 않으면 의존 범위에 걸린 변경이 있을 때 STALE로 봅니다(놓치지 않는 쪽, `stale_service.py`와 같음).
    - 종료된 에피소드·최신이 아닌 실행은 재판정하지 않습니다(동결, `recheck_run` 규칙).

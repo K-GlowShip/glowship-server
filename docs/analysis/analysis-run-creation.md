@@ -51,7 +51,7 @@ await db.commit()  # 커밋도 호출하는 쪽이 한다
 | `trigger_shipment_schedule_snapshot_id` | AUTO만 | ck16. 지연 선적의 스냅샷인지 확인한다 |
 | `requested_by_user_id`·`request_reason`·`requested_at` | REANALYSIS만. `requested_at` = `started_at` | ck2·ck3·ck4 |
 | `status` | `DETECTED` | 진행 중 상태의 시작 |
-| `started_at` | L1을 잡은 뒤의 DB 시각 `clock_timestamp()` | 트랜잭션 시작 시각(`now()`)을 쓰면 먼저 시작했지만 잠금을 늦게 잡은 실행의 시각이 더 이를 수 있다. 그러면 `run_code` 순번과 시각 순서가 어긋난다 |
+| `started_at` | L1을 잡은 뒤의 DB 시각 `clock_timestamp()`. 부르는 쪽이 `started_at`을 넘기면 그 값(이슈 #50, 가상 시각 데모의 7월 초): 고객사 마지막 적재 수집 시작(초 단위)보다 이르면 `RUN_TIME_BEFORE_INPUT` | 트랜잭션 시작 시각(`now()`)을 쓰면 먼저 시작했지만 잠금을 늦게 잡은 실행의 시각이 더 이를 수 있다. 그러면 `run_code` 순번과 시각 순서가 어긋난다. 넘긴 시각이 마지막 적재 수집 시작보다 이르면 엔진이 "시작 ≤ 실행 시각인 적재 수집의 최대 순번"으로 본 입력 순번이 `input_seq`와 달라 분석 입력을 만들 때 멈추므로(PR #36 `check_input_seq`) 조용히 올리지 않고 막는다(rouiv 리뷰). 부르는 쪽은 L1 뒤에 값을 구한다(재분석 API 20: 가상 시각이면 고객사 마지막 적재 수집 시작) |
 | `input_seq` | 고객사의 최대 적용 순번 | STALE 판정과 같은 `find_max_applied_seq`. L1 안이라 엔진 `store.input_seq`(시작 시각 이전 수집의 최대)와 같은 값 |
 | `operating_rule_set_id` | 기준일에 시작한 버전 중 가장 큰 버전 | 엔진 `snapshot.build`. 없으면 실패(`OPERATING_RULE_MISSING`) |
 | `calculation_contract_version` / `allocation_rule_version` | `T14-v1` / `D00-B-b2-v1` | DDL ck34·ck35가 받는 유일한 값 |
@@ -80,6 +80,7 @@ await db.commit()  # 커밋도 호출하는 쪽이 한다
 | `EPISODE_START_MISMATCH` | 위 "첫 실행과 그 뒤 실행" 규칙 위반 |
 | `OPERATING_RULE_MISSING` | 기준일에 적용 중인 운영 기준이 없음 |
 | `RUN_CODE_EXHAUSTED` | 그날 순번 999를 다 씀 |
+| `RUN_TIME_BEFORE_INPUT` | 넘긴 `started_at`이 고객사 마지막 적재 수집 시작(초 단위)보다 이름(이슈 #50) |
 
 지연 에피소드가 종료됐는지와 재분석을 허용하는 상태인지(D10)는 이 함수가 보지 않는다. 부르는 쪽(지연 감지 규칙, 재분석 API)이 정한다.
 

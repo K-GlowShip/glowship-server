@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +41,11 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 값을 바꾸기 전에 모든 검사를 끝낸다. 실패하면 DB 는 바뀌지 않은 채 AnalysisRunCreationError 가 난다.
       - 기록하는 값과 규칙(데이터 팀 엔진 snapshot.build 와 같음)
           started_at: L1 을 잡은 뒤의 DB 시각(clock_timestamp). 잠금 순서와 시각 순서가 같아진다.
+                      부르는 쪽이 started_at 을 넘기면 그 값을 쓴다(이슈 #50: 가상 시각 데모에서 7월 초 시각).
+                      부르는 쪽은 L1 을 잡은 뒤 그 값을 구해야 하고, 고객사 마지막 적재 수집 시작(초 단위)보다
+                      이르면 RUN_TIME_BEFORE_INPUT 으로 막는다. 엔진은 "시작 ≤ 실행 시각인 적재 수집의 최대 순번"을
+                      입력 순번으로 다시 계산하므로(PR #36 check_input_seq), 더 이르면 input_seq 와 어긋나
+                      분석 입력을 만들 때 멈춘다. 조용히 올리지 않는 것은 부르는 쪽 실수를 가리지 않기 위해서다.
           input_seq: 고객사의 최대 적용 순번(STALE 판정과 같은 find_max_applied_seq)
           operating_rule_set_id: 기준일(started_at 의 UTC 날짜)에 시작한 버전 중 가장 큰 버전
           run_code: AN-기준일-고객사·기준일별 순번(D14, 0006)
@@ -102,9 +108,11 @@ async def create_analysis_run(
     trigger_shipment_schedule_snapshot_id: uuid.UUID | None = None,
     requested_by_user_id: uuid.UUID | None = None,
     request_reason: str | None = None,
+    started_at: datetime | None = None,
 ) -> AnalysisRunCreation:
     """
     지연 이벤트의 새 분석 실행을 만들어 DETECTED 상태로 돌려준다 (호출하는 쪽이 L1 을 잡고 있어야 한다).
+      - started_at: 실행 시각(시간대 있는 값). 없으면 L1 뒤 DB 시각. 있으면 고객사 마지막 적재 수집 시작 이상이어야 한다.
       - 첫 실행(version 1)은 EPISODE_STARTED 로만, 그 뒤 실행은 다른 사유로만 만든다 (ck18).
       - 새 실행의 부모는 지금 현재 실행이고, is_latest 는 새 실행으로 옮긴다.
     """
@@ -161,7 +169,16 @@ async def create_analysis_run(
         parent_id = await repo.find_parent_run_id(delay_event_id)
         previous = await lock_analysis_run(db, parent_id)
 
-    started_at = await repo.now()
+    if started_at is None:
+        started_at = await repo.now()
+    else:
+        last_input = await repo.find_last_applied_sync_started_at(company_id)
+        if last_input is not None and started_at < last_input:
+            raise AnalysisRunCreationError(
+                RunCreationErrorCode.RUN_TIME_BEFORE_INPUT,
+                f"실행 시각 {started_at.isoformat()} 이 고객사 마지막 적재 수집 시작"
+                f" {last_input.isoformat()} 보다 이릅니다 (L1 을 잡은 뒤 시각을 구했는지 확인)",
+            )
     basis = basis_date(started_at)
     operating_rule_set_id = await repo.find_operating_rule_set_id(company_id, basis)
     if operating_rule_set_id is None:

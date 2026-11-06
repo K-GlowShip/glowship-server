@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, text
@@ -215,6 +215,83 @@ async def test_user_reanalysis_records_requester(db_write_session):
     assert run.trigger_shipment_schedule_snapshot_id is None
     assert run.requested_by_user_id == user_id
     assert run.requested_at == run.started_at
+
+
+async def test_given_started_at_sets_run_time_basis_and_run_code(db_write_session):
+    """이슈 #50: 부르는 쪽이 넘긴 실행 시각(가상 시각)을 쓰고, 기준일·run_code·운영 기준·요청 시각이 따라온다.
+    고객사 마지막 적재 수집 시작과 같은 시각은 허용한다(엔진은 시작 ≤ 실행 시각이면 입력에 넣음)."""
+    db = db_write_session
+    company_id, delay_event_id, _, _ = await _target(db)
+    user_id = await db.scalar(_CLIENT_USER, {"company_id": company_id})
+    repo = RunCreationRepository(db)
+    last_input = await repo.find_last_applied_sync_started_at(company_id)
+
+    result = await create_analysis_run(
+        db,
+        company_id=company_id,
+        delay_event_id=delay_event_id,
+        trigger_reason="USER_REANALYSIS",
+        requested_by_user_id=user_id,
+        started_at=last_input,
+    )
+
+    run = result.run
+    assert run.started_at == last_input
+    assert run.requested_at == last_input
+    assert run.run_code.startswith(f"AN-{basis_date(last_input):%y%m%d}-")
+    assert run.operating_rule_set_id == await repo.find_operating_rule_set_id(
+        company_id, basis_date(last_input)
+    )
+
+
+async def test_given_started_at_before_last_input_is_rejected(db_write_session):
+    """이슈 #50(rouiv 리뷰): 넘긴 시각이 마지막 적재 수집 시작보다 이르면 막는다. 아무것도 바꾸지 않는다."""
+    db = db_write_session
+    company_id, delay_event_id, _, snapshots = await _target(db)
+    last_input = await RunCreationRepository(db).find_last_applied_sync_started_at(
+        company_id
+    )
+    before = await _run_count(db, delay_event_id)
+    previous = await _latest(db, delay_event_id)
+
+    with pytest.raises(AnalysisRunCreationError) as raised:
+        await create_analysis_run(
+            db,
+            company_id=company_id,
+            delay_event_id=delay_event_id,
+            trigger_reason="SCHEDULE_WORSENED",
+            trigger_shipment_schedule_snapshot_id=snapshots[0],
+            started_at=last_input - timedelta(seconds=1),
+        )
+
+    assert raised.value.code == RunCreationErrorCode.RUN_TIME_BEFORE_INPUT
+    assert await _run_count(db, delay_event_id) == before
+    await db.refresh(previous)
+    assert previous.is_latest is True
+
+
+async def test_last_applied_sync_started_at_is_whole_second_max(db_session):
+    company_id, _, _, _ = await _target(db_session)
+    expected = await db_session.scalar(
+        text(
+            "SELECT date_trunc('second', max(started_at)) FROM data_sync_runs"
+            " WHERE company_id = :c AND applied_seq IS NOT NULL"
+        ),
+        {"c": company_id},
+    )
+
+    got = await RunCreationRepository(db_session).find_last_applied_sync_started_at(
+        company_id
+    )
+
+    assert got == expected
+    assert got.microsecond == 0
+    assert (
+        await RunCreationRepository(db_session).find_last_applied_sync_started_at(
+            uuid.UUID("00000000-0000-7000-8000-000000000000")
+        )
+        is None
+    )
 
 
 async def test_runs_of_one_day_get_consecutive_run_codes(db_write_session):
