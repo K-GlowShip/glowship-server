@@ -7,6 +7,7 @@ import pytest
 
 from app.core.security.tenant import TenantContext
 from app.modules.decision.application import final_decision_service
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
     DecisionException,
@@ -92,7 +93,7 @@ def run(monkeypatch):
 
 
 async def _decide(repo, db):
-    return await FinalDecisionService(db, repo, now=lambda: NOW).decide(
+    return await FinalDecisionService(db, repo, clock=DecisionClock.fixed(NOW)).decide(
         TENANT,
         analysis_run_id=RUN_ID,
         response_option_id=OPTION_ID,

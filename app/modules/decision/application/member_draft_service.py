@@ -1,9 +1,9 @@
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.draft_policy import draft_rejection
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
@@ -23,7 +23,7 @@ from app.modules.delay_analysis.application.exception.analysis_run_query_excepti
       - 요청자 역할(CLIENT_MEMBER)과 고객사 범위·RLS 컨텍스트는 라우터 의존성이 먼저 정합니다.
       - 입력 형식(둘 중 하나 필수, 의견 앞뒤 공백 제거 뒤 1~600자, C25)은 요청 스키마가 먼저 거릅니다.
       - 거부한 시도는 행을 만들지 않습니다(4.6). 커밋은 요청 단위 세션(get_db)이 합니다.
-      - created_at 은 서버의 지금 시각(UTC)입니다.
+      - created_at 은 판단 시각(decision_clock)입니다. 가상 시각이면 고객사의 가장 최근 수집 시작 시각.
 """
 
 
@@ -37,10 +37,10 @@ class MemberDraftService:
     def __init__(
         self,
         repo: MemberDraftRepository,
-        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        clock: DecisionClock | None = None,
     ):
         self.repo = repo
-        self.now = now
+        self.clock = clock or DecisionClock(None, virtual=False)
 
     async def save_draft(
         self,
@@ -67,7 +67,7 @@ class MemberDraftService:
             user_id=tenant.user_id,
             response_option_id=response_option_id,
             opinion_text=opinion_text,
-            created_at=self.now(),
+            created_at=await self.clock.now(tenant.company_id),
         )
         await self.repo.insert_member_draft(tenant.company_id, draft)
         return SavedMemberDraft(

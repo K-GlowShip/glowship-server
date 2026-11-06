@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.draft_policy import DraftTarget
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
@@ -50,7 +51,7 @@ class FakeRepository:
 
 
 async def _save(repo, option=OPTION_ID, opinion=None):
-    return await MemberDraftService(repo, now=lambda: NOW).save_draft(
+    return await MemberDraftService(repo, clock=DecisionClock.fixed(NOW)).save_draft(
         TENANT,
         analysis_run_id=RUN_ID,
         response_option_id=option,

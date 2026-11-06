@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
     DecisionException,
@@ -76,7 +77,9 @@ async def _ready_run(db, *, reopen=True):
 
 
 def _service(db) -> FinalDecisionService:
-    return FinalDecisionService(db, FinalDecisionRepository(db), now=lambda: NOW)
+    return FinalDecisionService(
+        db, FinalDecisionRepository(db), clock=DecisionClock.fixed(NOW)
+    )
 
 
 async def _decide(db, row, *, key="key-1", option_id=None, company_id=None):

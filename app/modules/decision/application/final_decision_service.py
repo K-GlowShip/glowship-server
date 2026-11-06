@@ -1,5 +1,4 @@
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -8,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.locks import lock_analysis_run
 from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
     DecisionException,
@@ -41,7 +41,8 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - checked_seq = 확인 시점 고객사의 최대 적용 순번. 실행의 완료 판정(completed_status READY_FOR_REVIEW)은 그대로 둡니다.
       - 동시에 다른 키로 같은 실행을 고르면 두 번째는 L2 뒤 재확인에서 FINAL_DECISION_EXISTS 입니다. DB 제약(uk2·uk3)에 걸리면
         같은 코드로 바꿉니다.
-      - 판단 시각(now)은 바깥에서 받습니다. 가상 시각 연결은 PR #40 머지 뒤 커밋(판단 시각)에서 합니다.
+      - 판단 시각(선택일·decided_at)은 decision_clock 입니다. 가상 시각이면 고객사의 가장 최근 수집 시작 시각이라
+        7월 데이터의 약속일과 같은 시간축에서 시간을 확인합니다.
 """
 
 
@@ -69,11 +70,11 @@ class FinalDecisionService:
         self,
         db: AsyncSession,
         repo: FinalDecisionRepository,
-        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        clock: DecisionClock | None = None,
     ):
         self.db = db
         self.repo = repo
-        self.now = now
+        self.clock = clock or DecisionClock(None, virtual=False)
 
     async def _replay(
         self, company_id: uuid.UUID, analysis_run_id: uuid.UUID, idempotency_key: str
@@ -99,7 +100,7 @@ class FinalDecisionService:
         if replay is not None:
             return replay
 
-        decided_at = self.now()
+        decided_at = await self.clock.now(company_id)
         day = decided_at.astimezone(UTC).date()
         if (
             await self.repo.find_selection_target(
