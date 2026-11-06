@@ -1,8 +1,13 @@
 import uuid
 from dataclasses import dataclass, field
 
+import pytest
+
 from app.core.pagination import PageParams
 from app.core.security.tenant import TenantContext
+from app.modules.master_data.application.exception.sku_exceptions import (
+    SkuNotFoundException,
+)
 from app.modules.master_data.application.sku_list_service import (
     SkuListService,
     SkuValidationStatus,
@@ -22,10 +27,25 @@ class FakeSkuRepository:
         default_factory=lambda: SkuListPage(rows=[], total_count=0)
     )
     calls: list = field(default_factory=list)
+    detail: SkuListRow | None = None
+    issues: list = field(default_factory=list)
+    affected: list = field(default_factory=list)
 
     async def find_page(self, company_id, **kwargs):
         self.calls.append((company_id, kwargs))
         return self.page
+
+    async def find_detail(self, company_id, sku_id):
+        self.calls.append(("find_detail", company_id, sku_id))
+        return self.detail
+
+    async def find_open_issues(self, company_id, sku_code):
+        self.calls.append(("find_open_issues", company_id, sku_code))
+        return self.issues
+
+    async def find_affected_delay_events(self, company_id, sku_id):
+        self.calls.append(("find_affected_delay_events", company_id, sku_id))
+        return self.affected
 
 
 def _row(**overrides) -> SkuListRow:
@@ -152,3 +172,40 @@ async def test_둘_다면_CODE_MISSING_이_우선이다():
     [item] = (await service.get_page(TENANT)).items
 
     assert item.validation_status == SkuValidationStatus.CODE_MISSING
+
+
+async def test_상세는_목록과_같은_판정에_이슈와_영향_지연을_붙인다():
+    row = _row(has_open_issue=True)
+    repo = FakeSkuRepository(detail=row, issues=["이슈"], affected=["지연"])
+
+    detail = await SkuListService(repo=repo).get_detail(TENANT, row.sku_id)
+
+    assert detail.item.sku_id == row.sku_id
+    assert detail.item.validation_status is SkuValidationStatus.ISSUE_OPEN
+    assert detail.issues == ["이슈"]
+    assert detail.affected_delay_events == ["지연"]
+    assert repo.calls == [
+        ("find_detail", TENANT.company_id, row.sku_id),
+        ("find_open_issues", TENANT.company_id, row.sku_code),
+        ("find_affected_delay_events", TENANT.company_id, row.sku_id),
+    ]
+
+
+async def test_상세의_매핑_누락은_CODE_MISSING_이다():
+    row = _row(has_unmapped=True, has_open_issue=True)
+
+    detail = await SkuListService(repo=FakeSkuRepository(detail=row)).get_detail(
+        TENANT, row.sku_id
+    )
+
+    assert detail.item.validation_status is SkuValidationStatus.CODE_MISSING
+
+
+async def test_없는_상품은_404_예외이고_이어서_조회하지_않는다():
+    repo = FakeSkuRepository(detail=None)
+    sku_id = uuid.uuid7()
+
+    with pytest.raises(SkuNotFoundException):
+        await SkuListService(repo=repo).get_detail(TENANT, sku_id)
+
+    assert repo.calls == [("find_detail", TENANT.company_id, sku_id)]
