@@ -39,7 +39,10 @@ _PRIOR_APPLIED_SHIPMENT_SYNC = text(
 )
 
 # 한 수집은 선적마다 스냅샷을 많아야 하나 남긴다 (ShipmentDiff.schedule_changed).
-# 직전 스냅샷 = 같은 선적의 다른 스냅샷 중 관측 시각이 가장 늦은 것 (관측 시각이 이번보다 늦지 않은 것).
+# 직전 스냅샷 = 같은 선적의 스냅샷 중 그 스냅샷을 남긴 수집의 적용 순번이 이번 수집보다 작은 것 가운데 가장 큰 것.
+# 관측 시각이 아니라 순번으로 고른다(serviceflow 5.2 순번 기준, PR #24 리뷰, 이슈 #34). 이슈 #39 전의 수집은
+# 시작 시각을 L1 전에 정해 동시 수집에서 관측 시각 순서와 적용 순서가 뒤집힐 수 있었다.
+# 이 조회는 수집 완료 기록(적용 순번) 뒤에 부른다(detect_after_sync).
 _RUN_SNAPSHOTS = text(
     """
     SELECT s.shipment_schedule_snapshot_id, s.shipment_id, s.observed_at, s.stage,
@@ -49,13 +52,14 @@ _RUN_SNAPSHOTS = text(
            prev.expected_3pl_inbound_date AS previous_expected_3pl_inbound_date
       FROM shipment_schedule_snapshots s
       JOIN shipments sh ON sh.company_id = s.company_id AND sh.shipment_id = s.shipment_id
+      JOIN data_sync_runs sr ON sr.company_id = s.company_id AND sr.data_sync_run_id = s.data_sync_run_id
       LEFT JOIN LATERAL (
         SELECT p.shipment_schedule_snapshot_id, p.stage, p.expected_3pl_inbound_date
           FROM shipment_schedule_snapshots p
+          JOIN data_sync_runs pr ON pr.company_id = p.company_id AND pr.data_sync_run_id = p.data_sync_run_id
          WHERE p.company_id = s.company_id AND p.shipment_id = s.shipment_id
-           AND p.shipment_schedule_snapshot_id <> s.shipment_schedule_snapshot_id
-           AND p.observed_at <= s.observed_at
-         ORDER BY p.observed_at DESC, p.shipment_schedule_snapshot_id DESC
+           AND pr.applied_seq < sr.applied_seq
+         ORDER BY pr.applied_seq DESC
          LIMIT 1
       ) prev ON true
      WHERE s.company_id = :company_id AND s.data_sync_run_id = :data_sync_run_id

@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
@@ -141,6 +141,49 @@ async def test_이번_수집_스냅샷과_직전_스냅샷을_읽는다(db_sessi
                 assert snapshot.previous_stage == expected_previous.stage
             checked += 1
     assert checked > 0
+
+
+async def test_직전_스냅샷은_관측_시각이_아니라_적용_순번_순(db_write_session):
+    """이슈 #34(PR #24 리뷰): 관측 시각과 적용 순번이 뒤집혀도(이슈 #39 전 동시 수집) 직전 스냅샷은 순번으로 고른다.
+    롤백 트랜잭션에서 한 선적의 직전 스냅샷 관측 시각을 이번 스냅샷보다 늦게 바꾼다."""
+    db = db_write_session
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT s.company_id, s.data_sync_run_id, s.shipment_id, s.observed_at,
+                       p.shipment_schedule_snapshot_id AS previous_id
+                  FROM shipment_schedule_snapshots s
+                  JOIN data_sync_runs sr ON sr.data_sync_run_id = s.data_sync_run_id
+                  JOIN LATERAL (
+                    SELECT p.shipment_schedule_snapshot_id
+                      FROM shipment_schedule_snapshots p
+                      JOIN data_sync_runs pr ON pr.data_sync_run_id = p.data_sync_run_id
+                     WHERE p.shipment_id = s.shipment_id AND pr.applied_seq < sr.applied_seq
+                     ORDER BY pr.applied_seq DESC LIMIT 1
+                  ) p ON true
+                 ORDER BY s.observed_at, s.shipment_schedule_snapshot_id
+                 LIMIT 1
+                """
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return  # 직전 스냅샷이 있는 스냅샷이 없는 DB
+    await db.execute(
+        text(
+            "UPDATE shipment_schedule_snapshots SET observed_at = :later"
+            " WHERE shipment_schedule_snapshot_id = :p"
+        ),
+        {"later": row.observed_at + timedelta(minutes=1), "p": row.previous_id},
+    )
+
+    snapshots = await DelayEventWriteRepository(db).find_run_snapshots(
+        row.company_id, row.data_sync_run_id
+    )
+
+    mine = next(s for s in snapshots if s.shipment_id == row.shipment_id)
+    assert mine.previous_snapshot_id == row.previous_id
 
 
 async def test_선적별_마지막_번호와_열린_에피소드(db_session):
