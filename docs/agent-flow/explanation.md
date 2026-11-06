@@ -67,7 +67,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
 엔진 `assets.load`가 등록부 `registry_v2.json`의 SHA-256과 파일을 하나씩 대조합니다. 파일이 없거나 해시가 다르면 `SystemConfigError`이고, 서버는 `ExplanationAssetError`(같은 `code`)로 바꿔 올립니다.
 
 - **시도로 세지 않음:** 모델 호출 전 시스템 구성 오류라서 설명 시도로 세지 않고, 실행 상태도 바꾸지 않습니다(엔진 generator 머리말, 사용자 확정 4항). 모델 호출 0번, 추적 기록 0건인지 시험이 확인합니다.
-- **시작 단계 확인:** `verify_explanation_assets()`는 엔진 경로가 있으면 대조하고, 없으면 건너뜁니다. 개발 1 `engine_startup.verify_engine_on_startup()`의 엔진 해시 확인 뒤에 부르게 됩니다. 누락·판 어긋남이 첫 설명 때가 아니라 배포 직후에 드러나게 하려는 것입니다. 이 호출 한 줄은 #36(GLOW-125 1부)이 머지된 뒤에 넣습니다.
+- **시작 단계 확인:** `verify_explanation_assets()`는 엔진 경로가 있으면 대조하고, 없으면 건너뜁니다. `engine_startup.verify_engine_on_startup()`이 엔진 해시 확인 뒤에 부릅니다(#36 머지 뒤 11-06에 연결). 누락·판 어긋남이 첫 설명 때가 아니라 배포 직후에 드러나게 하려는 것입니다. 시험은 `test_explanation.py` 7절에 있습니다: 자산 오류면 서버가 뜨지 않고, 엔진 경로가 없으면 엔진 확인과 함께 건너뜁니다.
 - **엔진 로더 목록과의 관계:** 엔진 로더 해시 목록(`engine_manifest.json`)에도 자산 파일이 들어 있어서, 서버가 엔진을 불러올 때 이미 한 번 대조됩니다. 자산 확인은 엔진이 정한 등록부(어떤 판을 쓰는지)까지 맞는지 보는 두 번째 확인입니다.
 
 ## 4. T12 `validate_agent_output`
@@ -99,7 +99,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
 1. **노드 연결:** 그래프 explain·validate 노드 연결은 개발 2 GLOW-129입니다. 노드 순서는 T11 → `decision_of` → explain → validate입니다. 등록표의 `(ctx, payload)` 감싸기도 개발 2가 합니다.
 2. **입력 받는 곳:** `EngineInput`(개발 1 GLOW-125 2부)이 머지되면 `ctx.engine.snap`·`analysis`에서 부르는 감싸기를 붙입니다. 지연 선적 코드를 어디서 받을지는 개발 1과 맞춥니다.
 3. **overlay 회귀:** overlay READY 실행의 저장 설명과 다시 만든 설명이 같은지, 설명 실패 실행의 시도 기록이 같은지 대조합니다. 엔진 입력이 DB에서 만들어진 뒤(2번)에 할 수 있습니다. overlay는 엔진 시도 기록만 저장하고, #28 문구는 "안내 + (시도: 기록)"이라서 시도 기록 부분만 대조합니다.
-4. **시작 단계 확인 연결:** `engine_startup.py`에 `verify_explanation_assets()` 한 줄을 넣습니다. #36이 머지된 뒤에 넣고, push 알림을 남깁니다.
+4. ~~시작 단계 확인 연결~~ 11-06 완료(3절).
 5. **"근거·가정·미확인 정보 구분"(Jira 인수 조건):** `explanation.v1`(명세 7절 U10)에는 이 구분 필드가 없습니다. 지금은 명세대로 다룹니다.
    - 경고 목록(`warnings`)
    - "예측 기준" 문구 필수(없으면 `SCHEMA_INVALID`)

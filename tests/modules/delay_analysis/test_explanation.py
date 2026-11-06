@@ -463,3 +463,76 @@ def test_startup_asset_check_skips_without_engine_dir(monkeypatch):
 
     monkeypatch.setattr(XA, "get_settings", lambda: NoEngine())
     assert XA.verify_explanation_assets() is False
+
+
+# --- 7. 서버 시작 단계 연결(engine_startup)과 결과 저장 모양(#38) ---------------------------------
+
+
+@pytest.fixture
+def startup(monkeypatch, tmp_path):
+    """엔진 해시 확인은 통과한 것으로 두고(엔진 없이 돎), 설명 자산 확인 호출만 기록한다."""
+    from types import SimpleNamespace
+
+    from app.modules.delay_analysis.infrastructure.engine import engine_startup
+
+    calls: list[str] = []
+
+    def use(engine_dir, asset_error=None):
+        settings = SimpleNamespace(glowship_engine_dir=engine_dir)
+        monkeypatch.setattr(engine_startup, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            engine_startup, "load_verified_engine_dir", lambda: tmp_path
+        )
+
+        def fake_assets():
+            calls.append("assets")
+            if asset_error:
+                raise asset_error
+            return True
+
+        monkeypatch.setattr(engine_startup, "verify_explanation_assets", fake_assets)
+        return engine_startup
+
+    return use, calls
+
+
+def test_startup_checks_explanation_assets_after_engine(startup, tmp_path):
+    use, calls = startup
+    engine_startup = use(tmp_path)
+
+    assert engine_startup.verify_engine_on_startup() is True
+    assert calls == ["assets"]
+
+
+def test_startup_stops_when_explanation_assets_are_wrong(startup, tmp_path):
+    """자산 오류면 엔진 해시 확인처럼 예외를 그대로 올려 서버가 뜨지 않는다"""
+    use, _ = startup
+    engine_startup = use(
+        tmp_path,
+        XA.ExplanationAssetError("LABELS_SHA256_MISMATCH", "labels/ko-v1.json"),
+    )
+
+    with pytest.raises(XA.ExplanationAssetError, match="LABELS_SHA256_MISMATCH"):
+        engine_startup.verify_engine_on_startup()
+
+
+def test_startup_skips_assets_without_engine_dir(startup):
+    use, calls = startup
+    engine_startup = use(None)
+
+    assert engine_startup.verify_engine_on_startup() is False
+    assert calls == []
+
+
+def test_passed_explanation_has_result_save_fields():
+    """통과 결과의 필드 이름·형식이 결과 저장(#38 Explanation)과 같아서 그대로 넘길 수 있다"""
+    from dataclasses import fields
+
+    from app.modules.delay_analysis.application.result_save.result_rows import (
+        Explanation,
+    )
+
+    saved = {f.name: f.type for f in fields(Explanation)}
+    passed = {f.name: f.type for f in fields(X.ExplanationPassed)}
+    assert set(saved) <= set(passed)
+    assert {k: passed[k] for k in saved} == saved
