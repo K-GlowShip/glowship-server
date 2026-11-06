@@ -70,7 +70,8 @@ def resolve_engine_dir(configured: Path | None) -> Path:
         raise EngineNotConfiguredError(
             "GLOWSHIP_ENGINE_DIR 이 설정되지 않았습니다. 엔진 폴더(glowship_engine·synth2025_v5 의 부모) 경로를 .env 에 넣으세요"
         )
-    engine_dir = Path(configured)
+    # 상대경로·~ 는 처음 부를 때 한 번 절대 경로로 바꾼다. sys.path 에 상대경로가 들어가면 실행 폴더에 따라 결과가 달라진다
+    engine_dir = configured.expanduser().resolve()
     if not (engine_dir / ENGINE_PACKAGE).is_dir():
         raise EngineNotConfiguredError(
             f"GLOWSHIP_ENGINE_DIR({engine_dir}) 아래에 {ENGINE_PACKAGE} 폴더가 없습니다"

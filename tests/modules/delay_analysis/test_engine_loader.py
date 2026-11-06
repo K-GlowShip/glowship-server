@@ -90,7 +90,23 @@ def test_resolve_requires_configured_dir_with_engine_package(tmp_path):
         resolve_engine_dir(tmp_path)  # glowship_engine 폴더 없음
 
     (tmp_path / ENGINE_PACKAGE).mkdir()
-    assert resolve_engine_dir(tmp_path) == tmp_path
+    assert resolve_engine_dir(tmp_path) == tmp_path.resolve()
+
+
+def test_resolve_turns_relative_and_home_paths_into_absolute(tmp_path, monkeypatch):
+    # 상대경로·~ 가 그대로 sys.path 에 들어가면 실행 폴더에 따라 다른 엔진을 볼 수 있다(PR #25 리뷰)
+    (tmp_path / "engine_root" / ENGINE_PACKAGE).mkdir(parents=True)
+    expected = (tmp_path / "engine_root").resolve()
+
+    monkeypatch.chdir(tmp_path)
+    relative = resolve_engine_dir(Path("engine_root"))
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows 의 expanduser 기준
+    home = resolve_engine_dir(Path("~") / "engine_root")
+
+    assert relative == expected and relative.is_absolute()
+    assert home == expected and home.is_absolute()
 
 
 @pytest.mark.parametrize("raw", ["", "   "])

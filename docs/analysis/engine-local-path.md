@@ -25,7 +25,8 @@
    ```
    GLOWSHIP_ENGINE_DIR=C:/…/00_필수_최신DB_전체재적재/04_적재검증도구
    ```
-4. 확인합니다. 아래가 건너뜀 없이 13건 통과해야 합니다. 값을 비워 둔 `GLOWSHIP_ENGINE_DIR=`는 설정하지 않은 것으로 봅니다.
+   - 절대 경로를 넣으세요. 상대경로·`~`도 받지만, 엔진을 처음 부를 때의 실행 폴더·홈 폴더 기준으로 한 번 절대 경로로 바뀝니다.
+4. 확인합니다. 아래가 건너뜀 없이 14건 통과해야 합니다. 값을 비워 둔 `GLOWSHIP_ENGINE_DIR=`는 설정하지 않은 것으로 봅니다.
    ```
    uv run pytest tests/modules/delay_analysis/test_engine_loader.py -rs
    ```
@@ -33,11 +34,11 @@
 ## 3. 불러오는 방식
 | 단계 | 내용 |
 | --- | --- |
-| 경로 확인 | `GLOWSHIP_ENGINE_DIR`이 비었거나 그 아래에 `glowship_engine`이 없으면 `EngineNotConfiguredError` |
+| 경로 확인 | `GLOWSHIP_ENGINE_DIR`이 비었거나 그 아래에 `glowship_engine`이 없으면 `EngineNotConfiguredError`. 상대경로·`~`는 절대 경로로 바꾼 뒤 봅니다 |
 | 해시 대조 | 목록의 42개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
-| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다 |
+| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다. 이때 엔진이 `synth2025_v5`를 `sys.path` **맨 앞**에 넣습니다(`core.py` 11행·`snapshot.py` 17행, 원본이라 서버에서 못 바꿈). 그래서 서버 코드에서 `allocation_core`·`keys`·`tests`라는 최상위 모듈을 만들거나 import 하지 않습니다(저장소의 `tests/`는 `__init__.py`가 없는 시험 폴더이고, `import tests`를 하는 곳이 없음. 11-05 확인) |
 | 캐시 파일 | 불러올 때 원본 폴더에 `.pyc`를 만들지 않습니다(`sys.dont_write_bytecode`). 공유 묶음을 바꾸지 않기 위해서입니다 |
-| 한 번만 | 해시 대조는 프로세스당 한 번 합니다(`load_verified_engine_dir`) |
+| 한 번만 | 해시 대조는 프로세스당 한 번 합니다(`load_verified_engine_dir`, `lru_cache`). 경로가 설정돼 있으면 **서버 시작 때** 하고(`engine_startup.verify_engine_on_startup`, 6절), 설정이 없으면 엔진을 처음 부를 때 `EngineNotConfiguredError`가 납니다 |
 
 ```python
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
@@ -51,13 +52,14 @@ validator = load_engine_module("explain.validator")
 ## 4. 엔진 새 판을 받을 때
 1. 데이터 팀이 새 이름·새 해시로 낸 판만 받습니다.
 2. 받은 파일로 `engine_manifest.json`을 다시 만들고, 출처 기록(overlay manifest 또는 glowship-plan README)과 대조합니다.
-3. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
+3. 엔진 입력 저장소를 다시 확인합니다. `test_engine_input_store.py`의 엔진 `Store` 소스 해시 시험이 실패하면, 옮겨 적은 색인 코드를 새 판과 맞추고 `GLOWSHIP_ENGINE_GOLDEN=1` 정답 대조를 돌린 뒤 해시를 갱신합니다(`engine-input-store.md` 3절). PR 체크리스트에 정답 대조 결과를 적습니다.
+4. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
 
 ## 5. 시험
 | 시험 | 엔진 없이 | 엔진 있을 때 |
 | --- | --- | --- |
 | 목록 42개·필수 파일 | 돎 | 돎 |
-| 해시 대조(맞음 / 줄바꿈만 바뀜 / 파일 없음), 경로 확인, `.pyc` 안 만듦 | 돎(임시 폴더) | 돎 |
+| 해시 대조(맞음 / 줄바꿈만 바뀜 / 파일 없음), 경로 확인·절대 경로 변환, `.pyc` 안 만듦 | 돎(임시 폴더) | 돎 |
 | 실제 원본이 목록과 같음 | **건너뜀**(사유 표시) | 돎 |
 | 엔진 자체 시험 4개(50·97·57건, Q9 6건) | **건너뜀** | 돎 |
 | 배정 모듈 판정 실행기(`run_g2.py`, G2) | **건너뜀** | 돎 |
@@ -68,7 +70,9 @@ validator = load_engine_module("explain.validator")
 ## 6. 배포
 - 배포 서버에도 같은 폴더 모양으로 원본을 두고 `GLOWSHIP_ENGINE_DIR`을 설정해야 합니다.
 - 이미지나 서버에 원본을 넣는 단계는 배포 작업(인프라)에서 정합니다.
-- 원본이 없거나 다르면 엔진을 쓰는 기능이 시작 단계에서 오류를 냅니다.
+- `GLOWSHIP_ENGINE_DIR`이 설정돼 있으면 **서버 시작 단계**(`app.main.lifespan` → `verify_engine_on_startup`)에서 해시 대조를 한 번 합니다. 원본이 없거나 다르면 서버가 뜨지 않으므로 누락이 배포 직후에 드러납니다.
+- 설정하지 않으면 시작 단계 확인을 건너뛰고(로그 한 줄), 엔진이 필요한 기능을 처음 부를 때 `EngineNotConfiguredError`가 납니다. 엔진이 없는 PC·CI에서도 서버와 다른 시험이 돌아야 하기 때문입니다.
+- 배포 서버에는 반드시 경로를 설정합니다. 설정을 빠뜨리면 시작은 되지만 분석이 첫 요청에서 실패합니다.
 
 ## 7. 작업 중 실패와 결정
 - **처음 방식:** 엔진 원본 41개를 저장소 `vendor/tools/`에 그대로 복사하는 방식으로 만들었습니다(로컬 브랜치, push 안 함). 그 뒤 이 저장소가 공개라는 점을 확인하고, 데이터 팀 허락이 필요 없는 지금 방식으로 바꿨습니다.
@@ -76,3 +80,6 @@ validator = load_engine_module("explain.validator")
 - **`.pyc` 파일:** 공유 묶음 안에 `__pycache__`(`.pyc` 4개, 11-04 새벽 시각)가 있습니다. 이전 작업에서 엔진을 묶음 경로에서 직접 import 할 때 생긴 것으로 보입니다. 지금 불러오기 코드는 `.pyc`를 만들지 않습니다. 남은 4개는 지워도 되는 캐시입니다.
 - **엔진 판(11-04):** 처음 목록은 공유 묶음의 수정 전 `options.py`(`974577bc…`)로 만들었습니다. 설계 담당이 PR #19 리뷰 Q9로 고친 판(glowship-plan `b80fd04`·`11b902e`)이 나와, 목록을 수정판으로 바꾸고 Q9 시험을 더했습니다(41 → 42개). 개발 2 세션 검증에서 찾았습니다.
 - **빈 경로 값(11-05):** `GLOWSHIP_ENGINE_DIR=`처럼 값을 비우면 `Path("")`가 현재 폴더(`.`)가 되어 설정된 것으로 읽혔습니다. 그래서 실제 엔진 시험 6건이 건너뛰지 않고 실패했습니다. develop 병합 뒤 다시 시험하다 찾았습니다. 이제 빈 값과 공백은 설정하지 않은 것(None)으로 보고, 이를 시험 2건으로 확인합니다. 고치기 전 설정으로 되돌리면 이 2건이 실패합니다.
+- **리뷰 반영(11-05, PR #25):**
+  - 6절에 "시작 단계에서 오류"라고 썼지만, 실제 코드는 처음 부를 때 검사합니다(`lru_cache`, 시작 단계 호출 없음). 문구를 코드에 맞췄습니다. PR #25 답글에서 엔진 연결 작업으로 넘기겠다고 한 시작 때 검사는 엔진 입력 저장소(GLOW-125)와 같은 PR에서 넣었습니다(6절).
+  - 상대경로·`~`가 `sys.path`에 그대로 들어가 실행 폴더(uvicorn·pytest 위치)에 따라 결과가 달라질 수 있었습니다. 처음 부를 때 절대 경로로 바꾸고 시험 1건을 더했습니다(13 → 14건). 바꾸기 전 코드로 되돌리면 이 시험이 실패합니다.
