@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -642,6 +642,58 @@ async def test_change_after_input_seq_makes_saved_result_stale(db_write_session)
     )  # 재계산기가 없으면 1차에 처음 걸린 수집
     assert run.stale_detected_at == run.finished_at  # 같은 트랜잭션의 같은 DB 시각
     assert len(await _rows(db, InventoryImpactResult, run_id)) > 0
+
+
+async def test_given_now_sets_finish_after_start(db_write_session):
+    """이슈 #50(rouiv 조건 2): 넘긴 완료 시각을 쓰되 실행 시작 + 1초보다 이르지 않게. STALE 재판정 시각도 같은 값"""
+    db = db_write_session
+    run_id, company_id, *_, result = await _recheck_case(db)
+    started_at = await db.scalar(
+        select(AnalysisRun.started_at).where(AnalysisRun.analysis_run_id == run_id)
+    )
+
+    # 실행 생성과 같은 시각을 넘김 → 시작 + 1초
+    await save_analysis_result(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        result=result,
+        now=started_at,
+    )
+
+    run = await db.scalar(
+        select(AnalysisRun)
+        .where(AnalysisRun.analysis_run_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+    assert run.finished_at == started_at + timedelta(seconds=1)
+    # 이 경우는 재판정으로 STALE(위 시험과 같은 입력) → 감지 시각 = 완료 시각
+    assert (run.status, run.stale_detected_at) == ("STALE", run.finished_at)
+
+
+async def test_given_later_now_is_used_as_is(db_write_session):
+    db = db_write_session
+    run_id, company_id, *_, result = await _recheck_case(db)
+    started_at = await db.scalar(
+        select(AnalysisRun.started_at).where(AnalysisRun.analysis_run_id == run_id)
+    )
+    later = started_at + timedelta(minutes=5)
+
+    await save_analysis_result(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        result=result,
+        recalculator=_SameSignature(),
+        now=later,
+    )
+
+    finished = await db.scalar(
+        select(AnalysisRun.finished_at)
+        .where(AnalysisRun.analysis_run_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+    assert finished == later
 
 
 async def test_recheck_keeps_result_when_signature_is_same(db_write_session):
