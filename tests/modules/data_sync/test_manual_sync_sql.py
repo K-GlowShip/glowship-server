@@ -258,3 +258,37 @@ async def test_scenario_failure_marks_failed_and_reopens(db_write_session, caplo
     assert retry.window.at == AT
     # 같은 날 재시도는 FAILED 수집과 시작 초가 겹치지 않게 1초 뒤 (이슈 #39 규칙 4)
     assert retry.started.started_at == AT + timedelta(seconds=1)
+
+
+async def test_retry_shift_leaves_no_gap_in_next_window(db_write_session):
+    """
+    PR #52 리뷰(rouiv): 재시도로 시작이 00:03:01 로 밀려도, 다음 날 구간은 그날 자리(00:03)부터라
+    fetched_at 00:03:01 응답이 07-02·07-03 어느 수집에서도 빠지지 않는다.
+    """
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    scenario = _scenario(shipment, fetched_at="2026-07-02T00:03:01Z")
+    attempts = iter([OSError("시나리오 파일 없음")])
+
+    def first_fails():
+        error = next(attempts, None)
+        if error is not None:
+            raise error
+        return scenario
+
+    service = _service(db, first_fails)
+    tenant = TenantContext(user_id=None, company_id=company_id)
+    assert (
+        await service.run(await service.request(tenant, SourceDomain.SHIPMENT)) is None
+    )
+    retry = await service.request(tenant, SourceDomain.SHIPMENT)
+    first = await service.run(retry)
+    assert retry.started.started_at == AT + timedelta(seconds=1)
+    assert first.counts.received == 0  # 00:03:01 은 07-02 구간(…, 00:03] 밖
+
+    following = await service.request(tenant, SourceDomain.SHIPMENT)
+    second = await service.run(following)
+
+    assert following.window.after == AT  # 기록된 시작(00:03:01)이 아니라 그날 자리
+    assert second.counts.received == 1

@@ -10,6 +10,7 @@ from app.modules.data_sync.application.virtual_clock import (
     SyncClock,
     SyncWindow,
     next_virtual_sync_at,
+    virtual_window_after,
 )
 from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
 
@@ -66,6 +67,21 @@ def test_each_source_has_its_own_minute_like_overlay(domain, minute):
     assert VIRTUAL_FINISH_AFTER == timedelta(seconds=30)
 
 
+@pytest.mark.parametrize(
+    ("last", "expected"),
+    [
+        (None, None),
+        (JULY_2_SHIPMENT, JULY_2_SHIPMENT),
+        # 같은 날 재시도(규칙 4)·적용 때 확정(규칙 5)으로 밀린 시작도 그날 자리로 → 지난 구간 끝과 이어짐
+        (datetime(2026, 7, 2, 0, 3, 1, tzinfo=UTC), JULY_2_SHIPMENT),
+        (datetime(2026, 7, 2, 0, 7, 12, tzinfo=UTC), JULY_2_SHIPMENT),
+    ],
+)
+def test_virtual_window_after_is_last_day_slot(last, expected):
+    """PR #52 리뷰: 구간 시작 = 지난 적재 수집 날짜의 원천 자리 = 지난 구간의 until"""
+    assert virtual_window_after(last, SourceDomain.SHIPMENT) == expected
+
+
 class FakeRepository:
     def __init__(self, last):
         self.last = last
@@ -83,7 +99,8 @@ async def test_virtual_window_advances_one_day_from_last_applied_sync():
 
     window = await clock.next_window(COMPANY_ID, SourceDomain.SHIPMENT)
 
-    assert window == SyncWindow(after=last, at=JULY_3_SHIPMENT)
+    # 구간 시작은 지난 적재 수집 날짜의 원천 자리(07-02 00:03)
+    assert window == SyncWindow(after=JULY_2_SHIPMENT, at=JULY_3_SHIPMENT)
     assert repo.calls == [(COMPANY_ID, "SHIPMENT")]
 
 
