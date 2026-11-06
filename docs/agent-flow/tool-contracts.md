@@ -372,7 +372,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q8 | `skus.emergency_air_eligible` 형식 | **결정: 제안대로** | boolean. 엔진의 `"true"` 문자열 비교는 CSV를 읽을 때의 형식일 뿐 |
 | Q9 | 다른 권역 출고의 대표 사유가 `DONOR_NO_NEXT_INBOUND`가 되는 경우(6.1절 C) | **결정(설계 담당, PR #19 승인 리뷰)** | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND`(판정 순서 7번). 엔진 참조 구현은 설계 담당이 같은 규칙으로 고침(glowship-plan `b80fd04`, `options.py` `f66e319c6bdd`). agentflow 4절 "실행 가능 조건"에도 반영됨(`1c0eb49`). 모델은 `NOT_FEASIBLE`과의 조합을 거부함 |
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
-| Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장(노드·저장 작업)에서 더하고, 그때 이 문서 4절도 함께 고침 |
+| Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장에서 더함(**11-05 처리:** 출력 계약은 바꾸지 않고 저장할 때 계산. `calculation_status = CALCULATED`, `warehouse_id` = T1 도착 창고, 가용·확정 수요·평균 판매는 T2·T4·T5에서 엔진 식대로, `risk_reason`은 엔진 문구. 서버 `docs/analysis/result-save.md` 4절) |
 | Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
 
 ### 9.1 모델로 옮기며 채운 것
