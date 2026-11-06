@@ -36,11 +36,14 @@ def test_manifest_lists_engine_and_allocation_core_files():
     manifest = read_manifest()
     paths = {entry.path for entry in manifest}
 
-    assert len(manifest) == 42
-    assert len(paths) == 42
+    assert len(manifest) == 44
+    assert len(paths) == 44
     assert "synth2025_v5/allocation_core.py" in paths
     assert "glowship_engine/core.py" in paths
     assert "glowship_engine/tests/test_q9_donor_reason.py" in paths  # Q9 수정판 시험
+    # GLOW-50 평가 시나리오 10건 fixture 와 그 fixture 가 불러오는 episodes (GLOW-58)
+    assert "glowship_engine/tests/fixture_glow50.py" in paths
+    assert "glowship_engine/episodes.py" in paths
     assert all(len(entry.sha256) == 64 for entry in manifest)
 
 
