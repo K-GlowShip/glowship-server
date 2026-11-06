@@ -5,6 +5,9 @@ import pytest
 from sqlalchemy import text
 
 from app.core.security.tenant import TenantContext
+from app.modules.data_sync.application import (
+    manual_sync_service as manual_sync_module,
+)
 from app.modules.data_sync.application.exception.data_sync_exceptions import (
     SourceNotSupportedException,
     SyncInProgressException,
@@ -14,6 +17,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
     DataSyncRunStatus,
     SourceDomain,
 )
+from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
+    DataSyncRunRepository,
+)
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
@@ -21,7 +27,7 @@ from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 
 """
     수동 수집 (API 25) 서비스 통합 테스트 (실제 DB, 끝나면 롤백)
-      - 확정 DB(마지막 SHIPMENT 수집 07-01)에서 첫 수동 수집은 07-02 00:00Z 이고, 가상 TMS 의 그날 응답을 적재한다.
+      - 확정 DB(마지막 SHIPMENT 수집 07-01)에서 첫 수동 수집은 07-02 00:03Z 이고, 가상 TMS 의 그날 응답을 적재한다.
       - 시험용 시나리오: A_BEAUTY 에 확정 선적과 같은 창고·SKU(TMS 코드)로 새 선적 1건, 예상 3PL 입고일을 크게 늦춰 지연.
         첫 관측이 지연이면 에피소드 1번이 열린다(앞선 SHIPMENT 수집이 있으므로 초기 적재 아님, PR #24).
         이 선적·날짜는 동작 확인용이며 데모 시나리오가 아니다.
@@ -159,6 +165,39 @@ async def test_first_manual_sync_loads_july_2nd_and_opens_delay(db_write_session
     assert again.window.at == datetime(2026, 7, 3, 0, 3, tzinfo=UTC)
     second = await service.run(again)
     assert second.counts.received == 0
+
+
+async def test_window_is_read_inside_company_lock(db_write_session, monkeypatch):
+    """이슈 #39 댓글(PR #40 리뷰): 수집 구간을 L1 안에서 읽고, 되돌리지 않고 같은 트랜잭션에서 start 한다"""
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    calls = []
+    original_lock = manual_sync_module.lock_company
+    original_last = DataSyncRunRepository.find_last_applied_started_at
+    original_rollback = db.rollback
+
+    async def lock(session, cid):
+        calls.append("lock")
+        await original_lock(session, cid)
+
+    async def last(self, cid, domain):
+        calls.append("window")
+        return await original_last(self, cid, domain)
+
+    async def rollback():
+        calls.append("rollback")
+        await original_rollback()
+
+    monkeypatch.setattr(manual_sync_module, "lock_company", lock)
+    monkeypatch.setattr(DataSyncRunRepository, "find_last_applied_started_at", last)
+    monkeypatch.setattr(db, "rollback", rollback)
+
+    ticket = await _service(db, lambda: None).request(
+        TenantContext(user_id=None, company_id=company_id), SourceDomain.SHIPMENT
+    )
+
+    assert calls == ["lock", "window"]
+    assert ticket.window.at == AT
 
 
 async def test_only_shipment_is_supported(db_write_session):
