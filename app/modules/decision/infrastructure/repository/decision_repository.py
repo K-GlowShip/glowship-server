@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ARRAY, UUID, Integer, Text, bindparam, text
+from sqlalchemy import ARRAY, UUID, DateTime, Integer, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 """
@@ -87,8 +87,8 @@ _FILTERED = f"""
 
 _FILTER_PARAMS = (
     bindparam("company_id", type_=_UUID),
-    bindparam("decided_from"),
-    bindparam("decided_to"),
+    bindparam("decided_from", type_=DateTime(timezone=True)),
+    bindparam("decided_to", type_=DateTime(timezone=True)),
     bindparam("decision_type", type_=Text()),
     bindparam("status", type_=Text()),
     bindparam("decided_by", type_=_UUID),
