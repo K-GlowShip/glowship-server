@@ -179,13 +179,20 @@ async def test_수집은_판정_종료_STALE_판정_순서로_부른다(db_write
             calls.append("stale")
             return []
 
+    class OrderAutoRuns:
+        async def create_after_sync(self, company_id, outcomes, **_):
+            calls.append("auto_runs")
+            return []
+
     service = DataIngestService(
         db,
         IngestRepository(db),
         OrderStale(),
         episode_service=OrderEpisodes(),
         now=lambda: DAY1,
+        auto_runs=OrderAutoRuns(),
     )
     await service.ingest(company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, [])
 
-    assert calls == ["detect", "close", "stale"]
+    # AUTO 실행 생성(이슈 #34)은 판정 뒤·종료 전
+    assert calls == ["detect", "auto_runs", "close", "stale"]

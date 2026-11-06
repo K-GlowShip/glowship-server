@@ -14,8 +14,8 @@ from app.modules.delay_analysis.infrastructure.delay_event import DelayEvent
         에피소드 행을 추가·종료한다. 판정은 하지 않는다(episode_rules.decide_episode 몫).
       - 데이터 접근 방식(docs/backend/data-access.md): 읽기는 LATERAL·FILTER 를 쓰는 직접 SQL,
         에피소드 한 행 추가는 ORM 엔터티(db.add + flush), 종료는 열린 행만 고치는 조건부 update(DelayEvent) 식.
-      - 종료는 closed_at·close_reason 두 열만 고친다. 운영의 워커 역할에는 이 두 열의 UPDATE 권한이 필요하다
-        (ERD 설명 4절 결정 2026-11-04, 서버 리비전은 개발자 3). 로컬 개발 DB 는 슈퍼유저라 지금도 동작한다.
+      - 종료는 closed_at·close_reason 두 열만 고친다. 워커 역할의 이 두 열 UPDATE 권한은 마이그레이션 0007
+        (GLOW-117, PR #27)이 준다(ERD 설명 4절 결정 2026-11-04).
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
@@ -39,7 +39,10 @@ _PRIOR_APPLIED_SHIPMENT_SYNC = text(
 )
 
 # 한 수집은 선적마다 스냅샷을 많아야 하나 남긴다 (ShipmentDiff.schedule_changed).
-# 직전 스냅샷 = 같은 선적의 다른 스냅샷 중 관측 시각이 가장 늦은 것 (관측 시각이 이번보다 늦지 않은 것).
+# 직전 스냅샷 = 같은 선적의 스냅샷 중 그 스냅샷을 남긴 수집의 적용 순번이 이번 수집보다 작은 것 가운데 가장 큰 것.
+# 관측 시각이 아니라 순번으로 고른다(serviceflow 5.2 순번 기준, PR #24 리뷰, 이슈 #34). 이슈 #39 전의 수집은
+# 시작 시각을 L1 전에 정해 동시 수집에서 관측 시각 순서와 적용 순서가 뒤집힐 수 있었다.
+# 이 조회는 수집 완료 기록(적용 순번) 뒤에 부른다(detect_after_sync).
 _RUN_SNAPSHOTS = text(
     """
     SELECT s.shipment_schedule_snapshot_id, s.shipment_id, s.observed_at, s.stage,
@@ -49,13 +52,14 @@ _RUN_SNAPSHOTS = text(
            prev.expected_3pl_inbound_date AS previous_expected_3pl_inbound_date
       FROM shipment_schedule_snapshots s
       JOIN shipments sh ON sh.company_id = s.company_id AND sh.shipment_id = s.shipment_id
+      JOIN data_sync_runs sr ON sr.company_id = s.company_id AND sr.data_sync_run_id = s.data_sync_run_id
       LEFT JOIN LATERAL (
         SELECT p.shipment_schedule_snapshot_id, p.stage, p.expected_3pl_inbound_date
           FROM shipment_schedule_snapshots p
+          JOIN data_sync_runs pr ON pr.company_id = p.company_id AND pr.data_sync_run_id = p.data_sync_run_id
          WHERE p.company_id = s.company_id AND p.shipment_id = s.shipment_id
-           AND p.shipment_schedule_snapshot_id <> s.shipment_schedule_snapshot_id
-           AND p.observed_at <= s.observed_at
-         ORDER BY p.observed_at DESC, p.shipment_schedule_snapshot_id DESC
+           AND pr.applied_seq < sr.applied_seq
+         ORDER BY pr.applied_seq DESC
          LIMIT 1
       ) prev ON true
      WHERE s.company_id = :company_id AND s.data_sync_run_id = :data_sync_run_id

@@ -47,7 +47,7 @@
 
 ```
 detect_after_sync (판정, 시작만 저장)
-  → (GLOW-18) AUTO 실행 생성 · 회복이면 이전 실행 STALE(mark_runs_stale, DELAY_SCHEDULE_CHANGED)
+  → create_after_sync (GLOW-18, 5절: AUTO 실행 생성 · 후속·회복이면 이전 실행 STALE)
   → close_episodes (입고·회복 종료)
   → judge_after_sync (STALE 판정, 닫힌 에피소드의 실행은 대상 아님)
 ```
@@ -59,14 +59,14 @@ detect_after_sync (판정, 시작만 저장)
 | 단계 | 하는 일 |
 | --- | --- |
 | 초기 적재 확인 | 이 수집 말고 선적을 1건 이상 적재한(`SUCCEEDED`·`PARTIAL_SUCCESS`, `loaded_record_count > 0`) SHIPMENT 수집이 없으면 초기 적재라 아무것도 하지 않음(아래 "초기 적재 예외") |
-| 판정 재료 | 이 수집이 남긴 스냅샷마다 선적의 계획 3PL 입고일, 직전 스냅샷(같은 선적의 다른 스냅샷 중 관측 시각이 가장 늦은 것), 선적의 마지막 에피소드 번호와 열린 에피소드 |
+| 판정 재료 | 이 수집이 남긴 스냅샷마다 선적의 계획 3PL 입고일, 직전 스냅샷(같은 선적의 스냅샷 중 그 스냅샷을 남긴 수집의 적용 순번이 이번 수집보다 작은 것 가운데 가장 큰 것. 관측 시각 순이 아님: 이슈 #39 전 동시 수집은 관측 시각과 적용 순서가 뒤집힐 수 있었음, 이슈 #34), 선적의 마지막 에피소드 번호와 열린 에피소드 |
 | `START` | `delay_events` 한 행: `episode_no` = 마지막 번호 + 1, `dedupe_key` = `{shipment_id}:EP{n}`(ck6), 감지·직전 스냅샷, 단계·계획·예상 입고일, `detected_at` = 스냅샷 `observed_at` |
 | `CLOSE_RECEIVED`·`CLOSE_RECOVERED` | 판정에서는 저장하지 않고 결과로 돌려줌. `close_episodes`가 열린 에피소드의 `closed_at` = 스냅샷 `observed_at`, `close_reason` = `RECEIVED`·`RECOVERED`를 기록. 열린 행만 고치므로 한 번만 기록됨 |
 | `FOLLOW_UP` | `delay_events`에 쓰지 않음 |
 | 돌려주는 값 | 스냅샷마다 판정·지연 ID·원인 스냅샷·관측 시각·AUTO 실행 생성 사유(`CLOSE_RECEIVED`는 `None`)·종료 사유. 실행 생성 연결(5절)과 `close_episodes`가 이 값을 씀 |
 
 - 데이터 접근 방식(`docs/backend/data-access.md`): 읽기는 `LATERAL`·`FILTER`를 쓰는 직접 SQL, 에피소드 한 행 추가는 ORM 엔터티(`db.add` + `flush`), 종료는 열린 행만 고치는 조건부 `update(DelayEvent)` 식입니다.
-- **종료 권한:** 공유 DDL은 워커 역할에 `delay_events` UPDATE를 주지 않습니다(813행). 설계 담당이 2026-11-04에 워커에게 `closed_at`·`close_reason` 두 열만 UPDATE를 주기로 정했고(ERD 설명 4절), 서버 리비전은 개발자 3이 넣습니다. 그 전까지 운영(워커 역할)에서는 종료가 권한 오류이고, 로컬 개발 DB는 슈퍼유저라 동작합니다.
+- **종료 권한:** 공유 DDL은 워커 역할에 `delay_events` UPDATE를 주지 않습니다(813행). 설계 담당이 2026-11-04에 워커에게 `closed_at`·`close_reason` 두 열만 UPDATE를 주기로 정했고(ERD 설명 4절), 마이그레이션 0007(GLOW-117, PR #27)이 그 두 열을 줍니다.
 - **초기 적재 예외(결정 1-10) — 이 절이 이 규칙의 기준입니다.**
   - **무엇이 초기 적재인가:** 고객사의 **선적을 처음 적재한 SHIPMENT 수집**(그 전에 선적을 1건 이상 적재한 `SHIPMENT` 수집 `SUCCEEDED`·`PARTIAL_SUCCESS`가 없음)입니다. 그 수집이 남긴 일정 스냅샷이 결정 1-10의 기준 스냅샷입니다.
   - **0건 수집은 세지 않습니다(`loaded_record_count > 0`).** 연결 시험이나 원천 준비 전 호출로 첫 수집이 선적 0건으로 성공하면 기준 스냅샷이 남지 않습니다. 이 수집을 앞선 수집으로 치면 그다음 수집(실제 초기 데이터)의 지연 선적마다 에피소드가 열리고, GLOW-18 뒤에는 AUTO 실행까지 생깁니다. 결정 1-10이 막으려던 경우라 선적을 실제로 적재한 수집만 셉니다(PR #24 리뷰, 2026-11-05). 확정 데이터의 첫 SHIPMENT 수집은 두 고객사 모두 선적을 적재했으므로(A_BEAUTY 59건) 결과는 같습니다.
@@ -74,9 +74,21 @@ detect_after_sync (판정, 시작만 저장)
   - **`decide_episode`는 이 신호를 받지 않습니다.** 순수 판정이라 받은 스냅샷만 봅니다. `previous is None`으로는 가를 수 없습니다(운영 중 새로 들어온 선적의 첫 스냅샷도 직전 스냅샷이 없음, 3절에 따라 에피소드를 엶).
   - 확정 데이터: 두 고객사의 첫 SHIPMENT 수집(2025-12-31)이 남긴 스냅샷이 각 5건이고, 2026 이전 스냅샷 10건과 정확히 같습니다. 그중 이미 지연인 스냅샷은 없어 223건 재현으로는 이 규칙이 검증되지 않으므로, 별도 테스트(`test_ingest_episode_sql.py`: 첫 수집의 지연 스냅샷 → 에피소드 없음, 다음 수집의 지연 → 시작)로 확인합니다.
 
-## 5. 아직 없는 것
+## 5. AUTO 실행 생성 (`application/run_creation/auto_run_service.py`, GLOW-18, 이슈 #34)
 
-- **실행 생성 연결:** 수집 서비스의 `detect_after_sync`와 `close_episodes` 사이(코드 주석 "GLOW-18 자리")에서, `START`·`FOLLOW_UP`·`CLOSE_RECOVERED`일 때 `create_analysis_run`(개발자 3)을 불러 AUTO 실행을 만들고(원인 스냅샷 필수, ck16), `FOLLOW_UP`·`CLOSE_RECOVERED`는 이전 실행을 `mark_runs_stale`로 `STALE`로 바꿉니다. `CLOSE_RECOVERED`의 실행은 `NO_DELAY`입니다. `CLOSE_RECEIVED`는 실행도 STALE 처리도 없습니다.
+수집 서비스가 `detect_after_sync`와 `close_episodes` 사이에서 `AutoRunService.create_after_sync`를 부릅니다(같은 L1·같은 트랜잭션).
+
+| 판정 | 하는 일 |
+| --- | --- |
+| `START` | `create_analysis_run`(AUTO, `EPISODE_STARTED`) → v1 |
+| `FOLLOW_UP` | 이전 실행(현재 실행)을 `mark_runs_stale`로 STALE → 새 버전(악화·개선·단계 변경 사유) |
+| `CLOSE_RECOVERED` | 이전 실행 STALE → `DELAY_RECOVERED` 실행(분석이 `NO_DELAY`로 끝냄) → 그 뒤 `close_episodes`가 닫음 |
+| `CLOSE_RECEIVED` | 실행 없음, 이전 실행 그대로 |
+
+- **이전 실행 STALE 사유:** 단계 변경(`STAGE_CHANGED`)이면 `DELAY_STAGE_CHANGED`, 그 밖은 `DELAY_SCHEDULE_CHANGED`(엔진 하네스 `run_s1_s5.py` `new_run`, 확정 DB 와 같음). 감지 순번 = 이 수집의 적용 순번, 감지 시각 = 수집 완료 시각.
+- **새 실행:** 원인 스냅샷 = 판정한 스냅샷(ck16), **실행 시각 = 이 수집의 확정 시작 시각**(= 고객사 마지막 적재 수집 시작, 이슈 #50), 데이터 버전 기록, 상태 `DETECTED`. 같은 지연·같은 원인 스냅샷의 AUTO 실행은 `create_analysis_run`이 한 건만 만듭니다. 만든 실행 ID 는 `IngestResult.created_run_ids`에 담깁니다.
+- **분석 보류(GLOW-15)는 여기서 판정하지 않습니다**(사용자 결정 11-06). 분석을 시작할 때 엔진 입력(#53 `EngineHold`)이 같은 "차단 검증 오류" 조건으로 정합니다. 분석 시작(`DETECTED` → 분석)은 GLOW-128(#51)입니다.
+- 지난 날짜를 다시 넣는 재현 시험(`test_ingest_replay_sql.py`)은 실행 시각 확인(`RUN_TIME_BEFORE_INPUT`)에 걸려 실행 생성을 끄는 대역을 씁니다. 실행 생성은 `test_auto_run_sql.py`가 봅니다.
 
 ## 6. 테스트
 
@@ -85,6 +97,7 @@ detect_after_sync (판정, 시작만 저장)
 | `test_episode_rules.py` | 1절 표의 경우마다 하나씩, 입고 완료가 회복보다 먼저, 직전 스냅샷 없음 오류 (DB 없음) |
 | `test_episode_replay_sql.py` | 확정 스냅샷 223건 재현 → `delay_events` 8건·AUTO 실행 19건과 같음 (실제 DB) |
 | `test_episode_service.py` | 초기 적재 건너뜀, 시작(다음 번호·관측 시각), 운영 중 첫 관측 지연 → 1번, 판정은 닫지 않고 `close_episodes`가 입고·회복 종료, 후속은 저장 안 함 (DB 없음) |
-| `test_ingest_episode_sql.py` (data_sync) | 수집 → 지연 선적 에피소드 시작·입고 종료, 초기 적재의 지연 스냅샷은 에피소드 없음·다음 수집에서 시작, 다른 원천은 보지 않음, 판정 → 종료 → STALE 판정 순서 (실제 DB) |
-| `test_ingest_replay_sql.py` (data_sync) | 확정 스냅샷을 수집으로 다시 넣으면 재현 선적의 `delay_events`가 원래와 같고(8건), 판정 사유가 확정 AUTO 실행 19건과 같음 (실제 DB) |
-| `test_delay_event_write_repository_sql.py` | 첫 SHIPMENT 수집만 초기 적재(롤백 트랜잭션), 이번 수집 스냅샷·직전 스냅샷, 선적별 번호·열린 에피소드, 추가·한 번만 종료와 DB 제약 (실제 DB) |
+| `test_ingest_episode_sql.py` (data_sync) | 수집 → 지연 선적 에피소드 시작·입고 종료, 초기 적재의 지연 스냅샷은 에피소드 없음·다음 수집에서 시작, 다른 원천은 보지 않음, 판정 → AUTO 실행 생성 → 종료 → STALE 판정 순서 (실제 DB) |
+| `test_ingest_replay_sql.py` (data_sync) | 확정 스냅샷을 수집으로 다시 넣으면 재현 선적의 `delay_events`가 원래와 같고(8건), 판정 사유가 확정 AUTO 실행 19건과 같음 (실제 DB, 실행 생성은 끔) |
+| `test_auto_run_sql.py` | AUTO 실행: 새 지연 v1(실행 시각·입력 순번·원인 스냅샷·데이터 버전), 악화·단계 변경 → 이전 실행 STALE 사유·감지 순번 + v2, 회복 → `DELAY_RECOVERED` 뒤 닫힘, 입고 → 없음, 재수집 → 그대로, 사유 대응표 (실제 DB) |
+| `test_delay_event_write_repository_sql.py` | 첫 SHIPMENT 수집만 초기 적재(롤백 트랜잭션), 이번 수집 스냅샷·직전 스냅샷(관측 시각이 뒤집혀도 적용 순번 순), 선적별 번호·열린 에피소드, 추가·한 번만 종료와 DB 제약 (실제 DB) |

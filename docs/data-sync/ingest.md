@@ -24,6 +24,7 @@ sequenceDiagram
     S->>S: 업무 필드 비교 → 바뀐 행만 INSERT·UPDATE, 변경 기록 초안
     S->>DB: 행 적용 · 변경 기록 · 선적 일정 스냅샷
     S->>DB: 적용 순번 = 고객사 최대 + 1, 수집 완료(SUCCEEDED·PARTIAL_SUCCESS)
+    S->>DB: (SHIPMENT) 지연 에피소드 판정 → AUTO 분석 실행 생성·이전 실행 STALE → 에피소드 종료 (docs/analysis/delay-detection.md 4·5절)
     S->>S: STALE 판정 judge_after_sync(고객사, 적용 순번)
     S->>DB: 커밋
     S-->>C: IngestResult (건수·적용 순번·거부 사유·STALE 된 실행)
@@ -172,7 +173,6 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 - 수집을 부르는 쪽: 수동 수집 API 25(`POST /data-sync-runs`)가 가상 TMS 응답으로 부릅니다(`manual-sync.md`, 2026-11-05)
 - 분석 보류 판정의 실행 생성 연결(GLOW-15·18). 판정 함수(6절)는 있고, 실행 생성(`create_analysis_run`, 개발자 3)이 입력 확정 때 이 함수를 불러 `ON_HOLD`로 남기는 연결이 남았습니다.
 - **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
-- 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
 - **오래 남은 `RUNNING` 정리(후속 운영 작업).** 지금은 작업이 죽어 남은 `RUNNING`이 그 원천의 다음 수집을 계속 막습니다. 자동 만료를 넣으려면 fencing 이 필요합니다: 만료 실행을 원자적으로 `FAILED`로 바꾸고, 기존 작업은 L1 을 얻은 뒤 자기 실행이 아직 유효한 `RUNNING`인지 다시 확인해 아니면 아무것도 적용하지 않고 끝내며, 예외 처리 중에도 완료 상태를 다시 바꾸지 않아야 합니다. 단순히 오래된 `RUNNING`을 조회에서 빼는 방식은 쓰지 않습니다.
   - **그 전까지 쓰는 수동 복구 (개발 DB).** 서버를 강제로 끝내는 등으로 `RUNNING`이 남아 `SYNC_IN_PROGRESS`로 막히면, 그 수집을 돌리던 프로세스가 **끝났는지 먼저 확인**한 뒤 한 건씩 `FAILED`로 바꿉니다. 살아 있는 수집에 쓰면 그 수집의 완료 기록이 실패합니다(fencing 이 없음). `applied_seq`는 `RUNNING`일 때 이미 비어 있어 `data_sync_runs_ck8`을 어기지 않습니다.
 
