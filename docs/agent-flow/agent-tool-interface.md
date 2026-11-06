@@ -53,12 +53,13 @@ class ToolContext:
     analysis_run_id: uuid.UUID
     base_date: date  # 기준일 D (실행 started_at 의 UTC 날짜)
     input_seq: int  # 실행 입력 순번 (#21)
-    engine: EngineInputLike  # 개발 1 EngineInput (snap·analysis)
+    engine: EngineInputLike  # 개발 1 EngineInput (snap·analysis·store·실행 ID·기준일·입력 순번)
     tracer: ToolAttemptTracer | None = None  # GLOW-124 RunTracer
 ```
 
 - `EngineInputLike`·`ToolAttemptTracer`는 도구·`call_tool`이 쓰는 최소 모양(Protocol)입니다. 실제 타입(개발 1 `EngineInput`, GLOW-124 `RunTracer`)을 import하지 않아 작업 순서가 서로 묶이지 않습니다.
-- `EngineInput`(개발 1): `confirm_t`(엔진 시각), `snap`(`snapshot.build` 결과), `analysis`(`pipeline.analyze(snap)`, 처음 필요할 때 한 번 계산. 키 `status`·`result_class`·`signature`·`sha`·`fc`·`ol`·`k_imp`·`k_watch`·`options`·`scope`), `store`(원값 확인용).
+- `EngineInput`(개발 1): `analysis_run_id`·`company_id`·`delay_event_id`·`shipment_id`·`base_date`·`input_seq`, `confirm_t`(엔진 시각), `snap`(`snapshot.build` 결과), `analysis`(`pipeline.analyze(snap)`, **`build_engine_input` 안에서 스레드로 한 번 계산**(사용자 결정 11-06, DV1-3: 나중에 동기 속성으로 계산하면 이벤트 루프가 멈춤). 키 `status`·`result_class`·`signature`·`sha`·`fc`·`ol`·`k_imp`·`k_watch`·`options`·`scope`), `store`(스냅샷에서 되돌릴 수 없는 원값. 예: T4 정수 합계).
+- `EngineInputLike`가 담는 칸(DV1-5, 11-06): `snap`·`analysis`에 더해 조회 도구가 읽는 `store`와 T1 입력 확인용 `analysis_run_id`·`delay_event_id`·`base_date`·`input_seq`. 가짜 묶음(`fake_runtime.FakeEngineInput`)도 같은 칸을 가집니다.
 - DB 세션은 넣지 않습니다. 도구가 DB를 직접 읽으면 입력 순번 뒤 변경이 섞일 수 있습니다.
 
 ## 4. 도구 함수 모양
@@ -123,7 +124,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 | 도구 시도 | `call_tool`이 `on_attempt=ctx.tracer.tool_attempt`로 감쌈 |
 | 그래프(노드·갈림길·시작·종료) | 그래프 실행 `config["callbacks"] = [tracer.callback_handler()]` |
 | 설명 시도(모델 호출 수·토큰, NFR-008) | 설명 함수가 `ctx.tracer.explanation_attempts(attempts, usage)` |
-| 실행 끝 | `tracer.close()` |
+| 실행 끝 | `try/finally` 안에서 `await tracer.aclose()` (동기 `close()`는 이벤트 루프를 최대 2초 멈춤, #42 리뷰 반영·DV1-4) |
 
 ## 6. 결정 사항
 

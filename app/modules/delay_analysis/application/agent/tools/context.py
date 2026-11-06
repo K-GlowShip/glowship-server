@@ -17,10 +17,17 @@ from app.modules.delay_analysis.application.agent.retry import AttemptRecord
 
 
 class EngineInputLike(Protocol):
-    """개발 1 의 EngineInput 이 갖는 값 중 도구가 읽는 것 (인터페이스 문서 3절)"""
+    """개발 1 의 EngineInput 이 갖는 값 중 도구가 읽는 것 (인터페이스 문서 3절, DV1-5 11-06)"""
 
+    analysis_run_id: uuid.UUID  # T1 입력이 이 실행의 값인지 확인(개발 1 조회 도구)
+    delay_event_id: uuid.UUID
+    base_date: date  # 기준일 D
+    input_seq: int  # 실행 입력 순번
     snap: dict[str, Any]  # 엔진 snapshot.build 결과
-    analysis: dict[str, Any]  # 엔진 pipeline.analyze(snap) 결과
+    analysis: dict[
+        str, Any
+    ]  # 엔진 pipeline.analyze(snap) 결과 (build_engine_input 안에서 한 번 계산)
+    store: Any  # 엔진 Store. 스냅샷에서 되돌릴 수 없는 원값(T4 정수 합계)만 읽는다
 
 
 class ToolAttemptTracer(Protocol):

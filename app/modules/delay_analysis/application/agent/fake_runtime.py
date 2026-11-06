@@ -71,6 +71,7 @@ from app.modules.shipment.infrastructure.shipment_enums import (
 """
 
 BASE_DATE = date(2026, 1, 2)  # 가짜 기준일 D
+_NIL_ID = uuid.UUID(int=0)  # 가짜 실행·지연 이벤트 ID(도구 가짜는 읽지 않음)
 ENGINE_OPTION_FIELDS = (
     "feasibility_status",
     "reason_code",
@@ -97,8 +98,15 @@ class FakeScenario:
 
 @dataclass(frozen=True)
 class FakeEngineInput:
+    """EngineInputLike 와 같은 칸(DV1-5). 실행 ID 들은 가짜 값이고 도구 가짜는 읽지 않는다."""
+
     snap: dict[str, Any]
     analysis: dict[str, Any]
+    analysis_run_id: uuid.UUID = _NIL_ID
+    delay_event_id: uuid.UUID = _NIL_ID
+    base_date: date = BASE_DATE
+    input_seq: int = 1
+    store: Any = None
 
 
 @dataclass(frozen=True)
