@@ -42,6 +42,17 @@ class NoStale:
         return []
 
 
+class ReplayRepository(IngestRepository):
+    """
+    지난 날짜를 그 날짜 시각으로 다시 적재하기 위한 대역. 서비스는 시작 시각을 "고객사의 마지막 적재 수집 시작 + 1초"
+    보다 늦게 확정하므로(이슈 #39 규칙 5) 그대로 두면 재현 수집이 모두 07-01 뒤로 밀린다. 이 시험은 시각 규칙이 아니라
+    관측 이력 재현을 보므로 마지막 적재 수집을 없는 것으로 본다(시작 초 겹침 확인은 그대로).
+    """
+
+    async def last_applied_started_at(self, company_id):
+        return None
+
+
 async def _first_insert_day(db, company_id) -> dict[uuid.UUID, date]:
     rows = await db.execute(
         text(
@@ -83,7 +94,7 @@ async def test_time_ordered_tms_responses_reproduce_schedule_snapshots(
     db_write_session,
 ):
     db = db_write_session
-    repo = IngestRepository(db)
+    repo = ReplayRepository(db)
     companies = list(
         await db.scalars(text("SELECT DISTINCT company_id FROM shipments"))
     )

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.locks import lock_company
 from app.core.rls_context import set_rls_context
 from app.core.security.tenant import TenantContext
 from app.modules.data_sync.application.exception.data_sync_exceptions import (
@@ -17,7 +18,11 @@ from app.modules.data_sync.application.ingest.ingest_service import (
     StartedRun,
 )
 from app.modules.data_sync.application.ingest.tms_parser import parse_tms_shipments
-from app.modules.data_sync.application.virtual_clock import SyncClock, SyncWindow
+from app.modules.data_sync.application.virtual_clock import (
+    VIRTUAL_FINISH_AFTER,
+    SyncClock,
+    SyncWindow,
+)
 from app.modules.data_sync.infrastructure.data_sync_enums import (
     ConnectionMethod,
     SourceDomain,
@@ -38,14 +43,15 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
 
 """
     수동 수집 (API 25 POST /data-sync-runs, 명세 v6.2 4.3·D16, GLOW-13·49)
-      - request(요청 안): SHIPMENT 만 받는다(2026-11-05 결정, 나머지는 422). 가상 시각 구간(virtual_clock)을 정하고
-        수집 서비스 start 로 RUNNING 을 커밋한다. 같은 원천에 RUNNING 이 있으면 409 SYNC_IN_PROGRESS.
+      - request(요청 안): SHIPMENT 만 받는다(2026-11-05 결정, 나머지는 422). L1 을 잡고 가상 시각 구간(virtual_clock)을 정한 뒤
+        같은 트랜잭션에서 수집 서비스 start 로 RUNNING 을 커밋한다. 같은 원천에 RUNNING 이 있으면 409 SYNC_IN_PROGRESS.
         라우터는 이 결과로 202 와 실행 ID 를 응답한다.
       - run(응답 뒤 백그라운드): 새 세션에서 가상 TMS 시나리오의 (지난 수집 시작, 이번 수집 시각] 응답을 받아
         파싱하고 apply 한다. 응답을 받기 전에 실패하면 fail 로 FAILED 를 남긴다(RUNNING 으로 남으면 다음 수집이 막힘).
         백그라운드라 예외를 받을 호출 측이 없으므로 로그로 남기고, 결과는 화면이 GET /data-sync-runs/latest 로 본다.
       - 세션은 워커 역할 전용 세션(open_worker_session)이다. 요청 세션(get_db)과 따로이며 수집 서비스가 직접 커밋한다.
-      - 수집 서비스 now 는 이번 수집 시각(가상 시각)으로 고정한다. 수집 시작·완료·일정 스냅샷 관측 시각이 모두 이 값이다.
+      - 가상 시각이면 수집 서비스 now 를 이번 수집 시각으로 고정한다. 수집 시작·일정 스냅샷 관측 시각이 이 값이고,
+        완료 시각은 시작 + 30초다(이슈 #39 규칙 3). 실제 시각이면 서버의 지금 시각을 그대로 쓴다.
 """
 
 logger = logging.getLogger(__name__)
@@ -77,7 +83,16 @@ class ManualSyncService:
 
     def _ingest(self, db: AsyncSession, at: datetime) -> DataIngestService:
         stale = StaleJudgmentService(db, StaleChangeRepository(db))
-        return DataIngestService(db, IngestRepository(db), stale, now=lambda: at)
+        if self.virtual_start is None:
+            # 실제 시각: 시작·완료 모두 지금 시각 (완료는 시작보다 늦게, 이슈 #39 규칙 3)
+            return DataIngestService(db, IngestRepository(db), stale, now=self.now)
+        return DataIngestService(
+            db,
+            IngestRepository(db),
+            stale,
+            now=lambda: at,
+            finish_after=VIRTUAL_FINISH_AFTER,
+        )
 
     async def request(
         self, tenant: TenantContext, source_domain: SourceDomain
@@ -87,14 +102,15 @@ class ManualSyncService:
         company_id = tenant.company_id
         async with self.open_session() as db:
             await set_rls_context(db, user_id=None, company_id=company_id)
+            # 수집 구간은 L1 안에서 읽는다(이슈 #39 댓글, PR #40 리뷰). 같은 트랜잭션에서 start 가 L1 을 다시 잡고
+            # (같은 세션의 advisory 잠금이라 기다리지 않음) RUNNING 을 커밋할 때 잠금이 풀린다. 그래서 버튼을 빠르게 두 번 눌러도
+            # 두 번째 요청은 첫 수집이 RUNNING 이면 409, 이미 적재됐으면 다음 날 구간을 받는다(같은 날 구간을 두 번 받지 않음).
+            await lock_company(db, company_id)
             runs = DataSyncRunRepository(db)
             company_code = await runs.find_company_code(company_id)
             window = await SyncClock(runs, self.virtual_start, self.now).next_window(
-                company_id, source_domain.value
+                company_id, source_domain
             )
-            await (
-                db.rollback()
-            )  # 읽기 트랜잭션을 닫고 start 가 새 트랜잭션에서 잠금·기록
             started = await self._ingest(db, window.at).start(
                 company_id, source_domain, ConnectionMethod.API
             )

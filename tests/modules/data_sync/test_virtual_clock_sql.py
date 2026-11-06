@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.modules.data_sync.application.virtual_clock import SyncClock
+from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
 from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
     DataSyncRunRepository,
 )
@@ -39,7 +40,7 @@ async def test_last_applied_started_at_follows_applied_seq(db_session):
 
 
 async def test_confirmed_db_first_virtual_sync_is_july_2nd(db_session):
-    """확정 DB 는 마지막 SHIPMENT 수집이 07-01 이라 첫 수동 수집 시각이 07-02 00:00Z"""
+    """확정 DB 는 마지막 SHIPMENT 수집이 07-01 이라 첫 수동 수집 시각이 07-02 00:03Z (SHIPMENT 자리, 이슈 #39 규칙 2)"""
     start = get_settings().virtual_clock_start
     if start is None:
         pytest.skip("VIRTUAL_CLOCK_START 를 비운 환경")
@@ -56,6 +57,6 @@ async def test_confirmed_db_first_virtual_sync_is_july_2nd(db_session):
     clock = SyncClock(DataSyncRunRepository(db_session), start)
 
     for company_id in company_ids:
-        window = await clock.next_window(company_id, "SHIPMENT")
+        window = await clock.next_window(company_id, SourceDomain.SHIPMENT)
         assert window.after.date().isoformat() == "2026-07-01"
-        assert window.at.isoformat() == "2026-07-02T00:00:00+00:00"
+        assert window.at.isoformat() == "2026-07-02T00:03:00+00:00"
