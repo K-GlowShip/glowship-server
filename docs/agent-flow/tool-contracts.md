@@ -362,7 +362,7 @@ T11 출력에는 `feasibility_status`가 없어서 모델은 "순위는 `FEASIBL
 
 ## 8. T12 `validate_agent_output` (C 구현, GLOW-127)
 
-AI 설명(`explanation.v1`)이 계산 결과와 맞는지 검증합니다. agentflow 4절의 입력 "T6·T7·T10·T11 출력과 AI 설명"은 **설명 입력 문서**(`explanation_input.v1`) 한 개로 받습니다. 엔진 `explain/input_doc.build`가 T6·T7·T10·T11에 해당하는 계산 결과(`pipeline.analyze`)에서 만드는 문서이고, 모델이 받는 유일한 입력입니다. 검증 규칙은 엔진 `explain/validator.validate`를 그대로 씁니다. 규칙을 서버에서 다시 만들지 않아서, 설명을 생성하는 동안 시도마다 하는 검증(엔진 `generator`)과 판정이 같습니다. 모델은 `application/agent/tools/validation_schemas.py`, 함수는 `output_validation.py`입니다(동기 순수 함수, 개발 2가 등록표에 감쌈). 설명 생성 흐름은 `docs/agent-flow/explanation.md`에 있습니다.
+AI 설명(`explanation.v1`)이 계산 결과와 맞는지 검증합니다. agentflow 4절의 입력 "T6·T7·T10·T11 출력과 AI 설명"은 **설명 입력 문서**(`explanation_input.v1`) 한 개로 받습니다. 엔진 `explain/input_doc.build`가 T6·T7·T10·T11에 해당하는 계산 결과(`pipeline.analyze`)에서 만드는 문서이고, 모델이 받는 유일한 입력입니다. 검증 규칙은 엔진 `explain/validator.validate`를 그대로 씁니다. 규칙을 서버에서 다시 만들지 않아서, 설명을 생성하는 동안 시도마다 하는 검증(엔진 `generator`)과 판정이 같습니다. 모델은 `application/agent/tools/validation_schemas.py`, 함수는 `output_validation.py`입니다(동기 순수 함수, 노드 연결 GLOW-129에서 등록표에 감쌈). 설명 생성 흐름은 `docs/agent-flow/explanation.md`에 있습니다.
 
 입력
 

@@ -116,7 +116,7 @@ async def generate_explanation(
     tracer: ExplanationTracer | None = None,
 ) -> ExplanationPassed | ExplanationFailed:
     """
-    snap·analysis 는 엔진 입력 스냅샷과 pipeline.analyze 결과다(개발 1 EngineInput.snap·analysis).
+    snap·analysis 는 엔진 입력 스냅샷과 pipeline.analyze 결과다(GLOW-125 EngineInput.snap·analysis).
     shipment_code 는 지연 선적 코드(설명 첫 문장에 씀). now 는 실행이 정한 설명 생성 시각이다.
     """
     generated_at = utc_timestamp(now)
