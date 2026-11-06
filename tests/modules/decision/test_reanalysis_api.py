@@ -113,6 +113,32 @@ async def test_body_is_optional(fake_service, body):
     assert fake_service.calls[0][1]["request_reason"] is None
 
 
+@pytest.mark.parametrize(
+    ("reason", "saved"),
+    [
+        ("  입고일 재확인  ", "입고일 재확인"),  # 앞뒤 공백을 뺀다
+        ("   ", None),  # 공백만이면 없는 것으로 본다(선택 항목)
+        ("", None),
+        ("가" * 600, "가" * 600),  # 600자까지
+    ],
+)
+async def test_request_reason_is_trimmed_and_blank_becomes_null(
+    fake_service, reason, saved
+):
+    response = await _post({"requestReason": reason})
+
+    assert response.status_code == 202
+    assert fake_service.calls[0][1]["request_reason"] == saved
+
+
+async def test_request_reason_over_600_returns_422(fake_service):
+    response = await _post({"requestReason": "가" * 601})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert fake_service.calls == []
+
+
 @pytest.mark.parametrize("body", [{"requestReason": 1}, []])
 async def test_invalid_body_returns_422(fake_service, body):
     response = await _post(body)
