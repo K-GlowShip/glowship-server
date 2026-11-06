@@ -103,6 +103,10 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
         FAILED 완료 시각도 같습니다. 검증 이슈 감지·해소 시각과 STALE 감지 시각은 완료 시각입니다.
       - 겹칠 때: 시작 시각에 그 고객사의 수집이 이미 있으면(원천·상태 무관) 1초씩 밉니다(start, L1 안).
         엔진 store.run_at 이 (company_id, started_at) 키입니다. FAILED 뒤 같은 날 재시도는 00:03:01 이 됩니다.
+      - 시작 순서 = 적용 순번: start 가 RUNNING 에 쓴 시작 시각은 임시입니다. apply 가 L1 을 잡은 뒤
+        max(임시 시각, 고객사 마지막 적재 수집 시작 + 1초)로 확정해 다시 씁니다(겹치면 1초씩 밂). 일정 스냅샷 관측 시각과
+        완료 시각도 확정한 값을 기준으로 합니다. 그래서 수집 도중 GET /data-sync-runs/latest 의 startedAt 은 끝난 뒤와 다를 수 있고,
+        FAILED 수집은 임시 시각 그대로 남습니다(적용 트랜잭션을 되돌리므로).
 """
 
 # 확정 기준선(data_validation_issues.csv)과 같은 이름
@@ -134,7 +138,7 @@ class StartedRun:
     company_id: uuid.UUID
     data_sync_run_id: uuid.UUID
     source_domain: SourceDomain
-    # 수집 시작 시각. SHIPMENT 의 일정 스냅샷 관측 시각(observed_at)이 이 값이다.
+    # 수집 시작 시각(임시). apply 가 L1 안에서 확정해 다시 쓰고, SHIPMENT 의 일정 스냅샷 관측 시각(observed_at)은 확정한 값이다.
     started_at: datetime
 
 
@@ -230,12 +234,13 @@ class DataIngestService:
         try:
             await set_rls_context(self.db, user_id=None, company_id=company_id)
             await lock_company(self.db, company_id)
+            started_at = await self._confirm_started_at(started)
             applied = await self._apply(
-                company_id, run_id, source_domain, records, started.started_at
+                company_id, run_id, source_domain, records, started_at
             )
             rejections = (*parse_rejections, *applied.rejections)
             # 검증 이슈의 감지·해소 시각과 수집 완료 시각은 같은 값입니다 (확정 기준선 이슈 9행 모두 detected_at = 수집 finished_at)
-            finished_at = self._finished_at(started.started_at)
+            finished_at = self._finished_at(started_at)
             await self.repo.resolve_validation_issues(
                 company_id,
                 run_id,
@@ -283,6 +288,26 @@ class DataIngestService:
             staled_run_ids=tuple(run.analysis_run_id for run in staled),
             episode_outcomes=tuple(episodes),
         )
+
+    async def _confirm_started_at(self, started: StartedRun) -> datetime:
+        """
+        시작 시각 확정 (이슈 #39 규칙 5, L1 안). start 가 RUNNING 에 쓴 시각은 임시이고, 적용 순번을 받기 직전인 지금
+        "그 고객사의 마지막 적재 수집 시작 + 1초" 보다 늦게 다시 정합니다(겹치면 1초씩 밂). 그래서 시작 시각 순서가
+        적용 순번(applied_seq) 순서와 같아집니다. 엔진 input_seq 는 "시작 시각 ≤ t 인 적재 수집의 최대 순번"이라
+        먼저 시작해 L1 을 기다린 수집이 늦게 적용되면 PR #36 check_input_seq 가 멈춥니다.
+        """
+        candidate = started.started_at
+        last = await self.repo.last_applied_started_at(started.company_id)
+        if last is not None and candidate <= last:
+            candidate = last + timedelta(seconds=1)
+        confirmed = await self.repo.free_started_at(
+            started.company_id, candidate, exclude_run_id=started.data_sync_run_id
+        )
+        if confirmed != started.started_at:
+            await self.repo.move_started_at(
+                started.company_id, started.data_sync_run_id, confirmed
+            )
+        return confirmed
 
     async def fail(self, started: StartedRun, error: BaseException) -> None:
         """진행 중 트랜잭션을 되돌리고 수집을 FAILED 로 남깁니다. 기록이 또 실패해도 예외를 올리지 않고
