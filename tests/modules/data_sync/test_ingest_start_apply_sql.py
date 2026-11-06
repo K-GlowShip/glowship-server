@@ -10,6 +10,7 @@ from app.modules.data_sync.application.exception.data_sync_exceptions import (
 from app.modules.data_sync.application.ingest.ingest_service import (
     DataIngestService,
     StartedRun,
+    whole_second,
 )
 from app.modules.data_sync.infrastructure.data_sync_enums import (
     ConnectionMethod,
@@ -29,6 +30,8 @@ from app.modules.data_sync.infrastructure.repository.ingest_repository import (
 """
 
 STARTED_AT = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+SUB_SECOND = datetime(2026, 7, 2, 0, 3, 0, 987654, tzinfo=UTC)
+WHOLE = datetime(2026, 7, 2, 0, 3, 0, tzinfo=UTC)
 
 
 class NoStale:
@@ -133,6 +136,42 @@ async def test_fail_before_apply_marks_failed_and_reopens_source(db_write_sessio
         company_id, SourceDomain.SHIPMENT, ConnectionMethod.API
     )
     assert reopened.data_sync_run_id != started.data_sync_run_id
+
+
+class RecordingStale:
+    def __init__(self):
+        self.detected_at = []
+
+    async def judge_after_sync(self, company_id, applied_seq, detected_at):
+        self.detected_at.append(detected_at)
+        return []
+
+
+async def test_times_drop_sub_second(db_write_session):
+    """이슈 #39 규칙 1: 시계가 마이크로초를 줘도 시작·완료·STALE 판정 시각은 초 단위 (엔진 store.iso_ts)"""
+    db = db_write_session
+    company_id = await _company(db)
+    stale = RecordingStale()
+    service = DataIngestService(db, IngestRepository(db), stale, now=lambda: SUB_SECOND)
+
+    started = await service.start(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API
+    )
+    await service.apply(started, [])
+    failed = await service.start(company_id, SourceDomain.ORDER, ConnectionMethod.API)
+    await service.fail(failed, OSError("원천 호출 실패"))
+
+    assert started.started_at == WHOLE
+    run = await _run(db, started.data_sync_run_id)
+    assert (run.started_at, run.finished_at) == (WHOLE, WHOLE)
+    assert stale.detected_at == [WHOLE]
+    failed_run = await _run(db, failed.data_sync_run_id)
+    assert (failed_run.started_at, failed_run.finished_at) == (WHOLE, WHOLE)
+
+
+def test_whole_second():
+    assert whole_second(SUB_SECOND) == WHOLE
+    assert whole_second(WHOLE) == WHOLE
 
 
 async def test_fail_keeps_original_error_when_recording_fails(db_write_session):

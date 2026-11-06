@@ -96,10 +96,18 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
         워커 계정으로 붙고, 비어 있으면 앱 연결(postgres_user)과 같습니다. 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
       - 파서가 레코드로 바꾸지 못해 거부한 원천 레코드(MISSING_REQUIRED·INVALID_DATE, source_payload 의 파서 계약)는
         parse_rejections 로 받습니다. 받은 건수·거부 건수에 넣고 결과의 거부 사유에도 앞에 담습니다.
+
+    수집 시각 (이슈 #39, 엔진 규칙)
+      - 초 단위: now 가 준 시각에서 1초 미만을 버립니다. 엔진 store.iso_ts 가 1초 미만 시각을 거부합니다.
 """
 
 # 확정 기준선(data_validation_issues.csv)과 같은 이름
 DUPLICATE_SOURCE_RECORD = "DUPLICATE_SOURCE_RECORD"
+
+
+def whole_second(value: datetime) -> datetime:
+    """1초 미만을 버린 시각. 엔진은 1초 미만 시각을 거부한다(store.iso_ts, 이슈 #39 규칙 1)."""
+    return value.replace(microsecond=0)
 
 
 @dataclass(frozen=True)
@@ -150,7 +158,8 @@ class DataIngestService:
         self.episode_service = episode_service or EpisodeDetectionService(
             DelayEventWriteRepository(db)
         )
-        self.now = now
+        # 수집이 쓰는 시각(시작·완료, 일정 스냅샷 관측, 검증 이슈 감지·해소, STALE 판정)은 모두 이 값이라 여기서 초 단위로 맞춘다 (이슈 #39 규칙 1)
+        self.now = lambda: whole_second(now())
 
     async def ingest(
         self,
