@@ -7,11 +7,17 @@ from app.modules.data_sync.infrastructure.repository.data_sync_run_repository im
     DataSyncRunRepository,
 )
 from app.modules.decision.application.decision_clock import DecisionClock
+from app.modules.decision.application.decision_list_service import (
+    DecisionListService,
+)
 from app.modules.decision.application.final_decision_service import (
     FinalDecisionService,
 )
 from app.modules.decision.application.member_draft_service import MemberDraftService
 from app.modules.decision.application.reanalysis_service import ReanalysisService
+from app.modules.decision.infrastructure.repository.decision_repository import (
+    DecisionRepository,
+)
 from app.modules.decision.infrastructure.repository.final_decision_repository import (
     FinalDecisionRepository,
 )
@@ -53,3 +59,13 @@ def get_final_decision_service(
     clock: DecisionClock = Depends(get_decision_clock),
 ) -> FinalDecisionService:
     return FinalDecisionService(db=db, repo=FinalDecisionRepository(db), clock=clock)
+
+
+def get_decision_repository(db: AsyncSession = Depends(get_db)) -> DecisionRepository:
+    return DecisionRepository(db)
+
+
+def get_decision_list_service(
+    repo: DecisionRepository = Depends(get_decision_repository),
+) -> DecisionListService:
+    return DecisionListService(repo=repo)

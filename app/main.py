@@ -11,6 +11,9 @@ from app.modules.dashboard.presentation.dashboard_api_router import (
 from app.modules.data_sync.presentation.data_sync_run_api_router import (
     router as data_sync_run_router,
 )
+from app.modules.decision.presentation.decision_api_router import (
+    router as decision_router,
+)
 from app.modules.decision.presentation.final_decision_api_router import (
     router as final_decision_router,
 )
@@ -72,6 +75,7 @@ app.include_router(me_router)
 app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
+app.include_router(decision_router)
 app.include_router(delay_event_router)
 app.include_router(analysis_run_router)
 app.include_router(member_draft_router)

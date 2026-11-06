@@ -94,6 +94,12 @@ class DecisionErrorCode(BaseErrorCode):
         "OPTION_NOT_IN_RUN",
         "이 분석 실행의 대응안이 아닙니다.",
     )
+    # 쿼리 파라미터 형식 오류와 같은 코드(VALIDATION_ERROR)·상태(422, 응답 본문 규칙 6.1 "현재 구현")로 응답한다.
+    INVALID_DECIDED_PERIOD = (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "VALIDATION_ERROR",
+        "판단 기간의 시작(from)은 끝(to)보다 늦을 수 없습니다.",
+    )
 
 
 class DecisionException(BusinessException):
@@ -101,3 +107,8 @@ class DecisionException(BusinessException):
 
     def __init__(self, error_code: DecisionErrorCode):
         super().__init__(error_code)
+
+
+class InvalidDecidedPeriodException(BusinessException):
+    def __init__(self):
+        super().__init__(DecisionErrorCode.INVALID_DECIDED_PERIOD)

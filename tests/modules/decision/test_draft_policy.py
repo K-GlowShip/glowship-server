@@ -156,10 +156,15 @@ def test_error_codes_follow_spec_status():
         DecisionErrorCode.RUN_NOT_READY,
     ]
     assert {code.status_code for code in conflict} == {409}
-    # 코드 이름 = 멤버 이름. 시간 경과만 코드 ANALYSIS_STALE 를 문구만 달리해 씀 (명세 4.6 대응표)
+    # 코드 이름 = 멤버 이름. 시간 경과만 코드 ANALYSIS_STALE 를 문구만 달리해 씀 (명세 4.6 대응표).
+    # 판단 이력 목록(#37)의 기간 오류는 쿼리 형식 오류와 같은 VALIDATION_ERROR 를 씀
     assert all(
         code.code == code.name
         for code in DecisionErrorCode
-        if code is not DecisionErrorCode.ANALYSIS_STALE_TIME_ELAPSED
+        if code
+        not in (
+            DecisionErrorCode.ANALYSIS_STALE_TIME_ELAPSED,
+            DecisionErrorCode.INVALID_DECIDED_PERIOD,
+        )
     )
     assert DecisionErrorCode.OPTION_NOT_IN_RUN.status_code == 422

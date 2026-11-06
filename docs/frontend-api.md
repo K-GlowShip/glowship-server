@@ -24,6 +24,7 @@
 | GET | `/dashboard/inbound-trend` | 입고 추이. 필터 `days`(`7`·`30`·`90`만, 기본 7), `warehouseId`. 응답 `points[]`(`date`, `plannedCount`, `actualCount`, 선적 수). 기간 `[기준일 − days + 1, 기준일]`, 기준일 = `lastSyncedAt`의 UTC 날짜, 0건인 날도 포함. 고객사 사용자 전용. [문서](dashboard/dashboard.md) | GLOW-91 | 2026-11-04 |
 | GET | `/inventory-status` | 거점별 재고 현황(참고값, 입고 예정 미반영). 필터 `warehouseId`, `page`·`size`. 행마다 `warehouse`·`sku` 요약, `availableQuantity`, `averageDailySales`(최근 `salesBasisDays`일 유효 주문 수요 평균, 소수 6자리), `safetyStockBreachDate`, `stockoutDate`(판매량 0이거나 `9999-12-31`을 넘는 먼 날이면 `null`), `status`(`OK`·`CAUTION`·`RISK`). 응답 최상위에 `inventoryDate`, `operatingRuleVersionNo`, `salesBasisDays`, `safetyStockDays`, `salesBasisType`(`ORDER_DEMAND`). 정렬은 `RISK` → `CAUTION` → `OK`, 품절일 빠른 순(`null` 뒤), `skuId`. 고객사 사용자 전용. [문서](inventory/inventory-status.md) | GLOW-90 | 2026-11-04 |
 | GET | `/shipments` | 선적 목록. 필터 `stage`(운송 단계 5종), `transportMode`(`OCEAN`·`AIR`), `warehouseId`(도착 창고), `q`(선적 코드), `page`·`size`. 행마다 `warehouse` 요약과 명세 4.3에 더한 `route`·`representativeSku`(상세 없으면 `null`)·`skuCount`·`delayDays`(지연 목록과 같은 D13 계산). `stage`·`expected3plInboundDate`는 선적의 현재 값, `actual3plInboundDate`는 입고 전이면 `null`. `isDelayed`는 입고 전이면 예상 입고일, 입고 완료면 실제 입고일이 계획 3PL 입고일보다 늦은지이고 `delayDays`는 그 일수(= 0이면 `false`). **대시보드 지연 선적(C22, 열린 에피소드만)과 다른 기준**이라 입고 완료 선적의 지연 입고도 `true`이고 두 숫자는 같지 않음(입고 전은 "지연 위험", 입고 완료는 "지연 입고"로 표시 권장). 정렬은 `planned3plInboundDate` 최신순, 같으면 `shipmentId`. 고객사 사용자 전용. 상세·일정 이력은 `GET /shipments/{shipmentId}`(미구현). [문서](shipment/shipment-list.md) | GLOW-116 | 2026-11-04 (C22와의 차이 명시 2026-11-05) |
+| GET | `/decisions` | 판단 이력 목록(의사결정 이력 화면). 팀원 초안과 팀장 최종 선택을 한 목록으로 합쳐 `decidedAt` 최신순(같으면 `decisionId`). 필터 `from`·`to`(ISO 8601 UTC 시각, `[from, to)`, 형식 오류·`from > to`는 422), `q`(선적 코드·선적의 SKU 코드·상품명), `decisionType`(`DRAFT`·`FINAL`), `status`(`DRAFT`·`FINAL`·`NEEDS_REANALYSIS`), `decidedBy`(사용자 ID), `runId`, `page`·`size`. 행마다 `decisionType`, `decisionId`, `decidedAt`(초안은 작성 시각), `shipment`, `representativeSku`(상세 없으면 `null`), `responseOption`(의견만 쓴 초안이면 `null`), `decidedBy`(사용자 요약), `status`(초안인데 실행이 `STALE`이면 `NEEDS_REANALYSIS`), `run`(`failureCode` 포함), `delayEventId`. 선택 이유·의견 본문과 당시 분석 수치는 없음(`GET /analysis-runs/{runId}` 몫). 고객사 사용자 전용. [문서](decision/decision-list.md) | GLOW-130 | 2026-11-05 |
 
 **목록 API 공통:** 요청 `page`(1부터, 기본 1)·`size`(기본 20, 최대 100). 응답 `items`·`page`·`size`·`totalCount`·`totalPages` (`app/core/pagination.py`)
 
@@ -34,7 +35,9 @@
 | `shipment` | `{ shipmentId, shipmentCode }` |
 | `warehouse` | `{ warehouseId, warehouseCode, regionCode }` |
 | `representativeSku` | `{ skuId, skuCode, productName }` 또는 `null`(선적 상세 없음) |
-| `currentRun` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27) |
+| `currentRun` · `run` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27) |
+| `decidedBy` | `{ userId, displayName, roleCode }` (사용자 요약. `author`처럼 역할 이름으로 담음) |
+| `responseOption` | `{ responseOptionId, optionType }` 또는 `null`(의견만 쓴 초안) |
 
 **지연 목록·상세 필드 메모**
 
