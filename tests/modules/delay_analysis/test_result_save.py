@@ -206,7 +206,7 @@ def _no_risks():
         risks=[],
         delay_induced_sku_codes=[],
         simulation_horizon_end="2026-02-05",
-        expected_plan_simulation={},
+        expected_plan_simulation={"secured_dates": [], "days": []},
     )
 
 
@@ -445,7 +445,7 @@ async def _result_from_db(
         risks=list(orders.values()),
         delay_induced_sku_codes=induced,
         simulation_horizon_end="2099-12-31",
-        expected_plan_simulation={},
+        expected_plan_simulation={"secured_dates": [], "days": []},
     )
 
     outcomes, ranking = None, None

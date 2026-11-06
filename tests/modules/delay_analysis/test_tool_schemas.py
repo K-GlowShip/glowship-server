@@ -725,7 +725,7 @@ def _risks(risks=None, codes=None):
         "risks": [_risk()] if risks is None else risks,
         "delay_induced_sku_codes": ["SKU-1"] if codes is None else codes,
         "simulation_horizon_end": "2026-02-05",
-        "expected_plan_simulation": {},
+        "expected_plan_simulation": {"secured_dates": [], "days": []},
     }
 
 
