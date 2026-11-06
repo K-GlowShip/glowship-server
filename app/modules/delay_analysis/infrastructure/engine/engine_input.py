@@ -151,7 +151,8 @@ async def _run_input(session: AsyncSession, run: AnalysisRunLike) -> _RunInput:
     ).one_or_none()
     if row is None:
         raise LookupError(
-            f"실행 {run.analysis_run_id} 의 지연 이벤트·선적을 고객사 {run.company_id} 범위에서 찾지 못했습니다"
+            f"실행 {run.analysis_run_id} 의 지연 이벤트·선적을 고객사 {run.company_id} 범위에서 찾지 못했습니다."
+            " 워커 역할 세션인지, 고객사가 ACTIVE 인지 확인하세요"
         )
     if run.trigger_shipment_schedule_snapshot_id is not None and row.stage is None:
         raise LookupError(

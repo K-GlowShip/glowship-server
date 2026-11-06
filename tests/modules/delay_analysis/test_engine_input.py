@@ -299,6 +299,25 @@ def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     assert hold == EI.EngineHold(code="REQUIRED_DATA_INVALID", message="재고 행 없음")
 
 
+async def test_run_not_visible_tells_to_check_worker_session_and_active_company(
+    monkeypatch,
+):
+    # 앱 역할 세션이나 ACTIVE 가 아닌 고객사는 RLS 로 0행이 된다. 원인을 메시지에서 바로 알 수 있어야 한다(PR #53 리뷰)
+    async def no_rls(session, *, user_id, company_id):
+        pass
+
+    async def execute(sql, params):
+        return SimpleNamespace(one_or_none=lambda: None)
+
+    monkeypatch.setattr(EI, "set_rls_context", no_rls)
+    run = SimpleNamespace(
+        analysis_run_id=uuid.UUID(int=1), company_id=uuid.UUID(int=2),
+        delay_event_id=uuid.UUID(int=3), trigger_shipment_schedule_snapshot_id=None,
+    )  # fmt: skip
+    with pytest.raises(LookupError, match="워커 역할 세션인지, 고객사가 ACTIVE 인지"):
+        await EI._run_input(SimpleNamespace(execute=execute), run)
+
+
 async def test_no_delay_uses_trigger_expected_date_without_query():
     session = (
         SimpleNamespace()
