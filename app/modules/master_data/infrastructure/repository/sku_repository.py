@@ -1,6 +1,7 @@
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import UUID, Boolean, Integer, Text, bindparam, text
@@ -22,6 +23,10 @@ from app.modules.master_data.infrastructure.sku_code_sources import (
         ('창고코드|상품코드|날짜') 둘째 토막을 sku_code 로 본다. 수집기(GLOW-13)가 sku_id 컬럼을
         채우게 되면 이 파싱을 조인으로 바꾼다. ORDER·SHIPMENT 이슈는 각 탭의 몫이라 여기서 다루지 않는다.
       - 정렬은 sku_code, 같으면 sku_id (명세 4.3, 응답 규칙 6.2).
+      - 상품 상세(GET /skus/{skuId}, GLOW-136)는 목록과 같은 CTE 로 한 건을 읽어 공통 필드·판정이 목록과 어긋나지 않게 한다.
+        영향 지연은 이슈 표를 거치지 않고 shipment_lines 로 찾는다. 매핑이 없는 상품은 이슈 키에 외부 코드가 들어가
+        이슈에서 상품을 찾을 수 없고, 이슈가 없는 경우도 있기 때문이다. "이 상품이 포함되고 보류 중인 지연"이지
+        "이 상품 때문에 보류된 지연"을 증명하지는 않는다.
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 조건을 명시해 로컬(superuser)에서도 같은 결과가 나오게 한다.
 """
 
@@ -84,13 +89,17 @@ _COMMON_CTES = f"""
     )
 """
 
-_LIST_PAGE = text(
-    _COMMON_CTES
-    + """
+_SKU_COLUMNS = """
     SELECT sku_id, sku_code, product_name, brand_name, hs10, category, subcategory,
            popularity_tier, emergency_air_eligible, unit_code, units_per_case, status,
            external_codes, has_unmapped, has_open_issue
       FROM filtered
+"""
+
+_LIST_PAGE = text(
+    _COMMON_CTES
+    + _SKU_COLUMNS
+    + """
      ORDER BY sku_code, sku_id
     OFFSET :offset LIMIT :limit
     """
@@ -109,6 +118,60 @@ _COUNT_PAGE = text(
     bindparam("company_id", type_=UUID(as_uuid=True)),
     bindparam("pattern", type_=Text()),
     bindparam("only_errors", type_=Boolean()),
+)
+
+_SKU_DETAIL = text(_COMMON_CTES + _SKU_COLUMNS + " WHERE sku_id = :sku_id").bindparams(
+    bindparam("company_id", type_=UUID(as_uuid=True)),
+    bindparam("pattern", type_=Text()),
+    bindparam("only_errors", type_=Boolean()),
+    bindparam("sku_id", type_=UUID(as_uuid=True)),
+)
+
+# GET /skus 의 ISSUE_OPEN 판정(open_issue_skus)과 같은 조건이다. 정렬은 GET /validation-issues 와 같다(명세 4.3)
+_OPEN_ISSUES = text(
+    """
+    SELECT data_validation_issue_id, source_record_key, field_name, error_code, error_message,
+           severity, detected_at
+      FROM data_validation_issues
+     WHERE company_id = :company_id
+       AND status = 'OPEN'
+       AND source_entity_type = 'INVENTORY'
+       AND split_part(source_record_key, '|', 2) = :sku_code
+     ORDER BY detected_at DESC, data_validation_issue_id
+    """
+).bindparams(
+    bindparam("company_id", type_=UUID(as_uuid=True)),
+    bindparam("sku_code", type_=Text()),
+)
+
+# 한 지연의 최신 실행은 1건이다. 같은 SKU 의 선적 줄이 여러 개여도 지연이 겹치지 않도록 EXISTS 로 본다
+_AFFECTED_DELAY_EVENTS = text(
+    """
+    SELECT e.delay_event_id, s.shipment_id, s.shipment_code,
+           r.analysis_run_id, r.run_code, r.status, r.result_class, r.failure_code
+      FROM delay_events e
+      JOIN shipments s
+        ON s.company_id = e.company_id
+       AND s.shipment_id = e.shipment_id
+      JOIN analysis_runs r
+        ON r.company_id = e.company_id
+       AND r.delay_event_id = e.delay_event_id
+       AND r.is_latest
+     WHERE e.company_id = :company_id
+       AND e.closed_at IS NULL
+       AND r.status = 'ON_HOLD'
+       AND EXISTS (
+           SELECT 1
+             FROM shipment_lines l
+            WHERE l.company_id = e.company_id
+              AND l.shipment_id = e.shipment_id
+              AND l.sku_id = :sku_id
+       )
+     ORDER BY e.detected_at DESC, e.delay_event_id
+    """
+).bindparams(
+    bindparam("company_id", type_=UUID(as_uuid=True)),
+    bindparam("sku_id", type_=UUID(as_uuid=True)),
 )
 
 
@@ -148,6 +211,33 @@ class SkuListPage:
     total_count: int
 
 
+@dataclass(frozen=True)
+class SkuIssueRow:
+    """이 상품 코드로 열린 재고 검증 이슈 한 건"""
+
+    data_validation_issue_id: uuid.UUID
+    source_record_key: str
+    field_name: str | None
+    error_code: str
+    error_message: str
+    severity: str
+    detected_at: datetime
+
+
+@dataclass(frozen=True)
+class AffectedDelayEventRow:
+    """이 상품이 선적에 포함되고 현재 실행이 ON_HOLD 인 열린 지연 한 건"""
+
+    delay_event_id: uuid.UUID
+    shipment_id: uuid.UUID
+    shipment_code: str
+    analysis_run_id: uuid.UUID
+    run_code: str
+    status: str
+    result_class: str | None
+    failure_code: str | None
+
+
 def _like_pattern(query: str | None) -> str | None:
     """부분 일치 패턴. 사용자 입력의 LIKE 특수문자(\\ % _)는 글자 그대로 찾도록 이스케이프한다."""
     if query is None:
@@ -177,6 +267,26 @@ def _external_codes(
     )
 
 
+def _sku_row(row: Any) -> SkuListRow:
+    return SkuListRow(
+        sku_id=row.sku_id,
+        sku_code=row.sku_code,
+        product_name=row.product_name,
+        brand_name=row.brand_name,
+        hs10=row.hs10,
+        category=row.category,
+        subcategory=row.subcategory,
+        popularity_tier=row.popularity_tier,
+        emergency_air_eligible=row.emergency_air_eligible,
+        unit_code=row.unit_code,
+        units_per_case=row.units_per_case,
+        status=row.status,
+        external_codes=_external_codes(row.external_codes),
+        has_unmapped=row.has_unmapped,
+        has_open_issue=row.has_open_issue,
+    )
+
+
 class SkuRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -202,25 +312,63 @@ class SkuRepository:
         )
         total_count = await self.db.scalar(_COUNT_PAGE, filters)
         return SkuListPage(
-            rows=[
-                SkuListRow(
-                    sku_id=row.sku_id,
-                    sku_code=row.sku_code,
-                    product_name=row.product_name,
-                    brand_name=row.brand_name,
-                    hs10=row.hs10,
-                    category=row.category,
-                    subcategory=row.subcategory,
-                    popularity_tier=row.popularity_tier,
-                    emergency_air_eligible=row.emergency_air_eligible,
-                    unit_code=row.unit_code,
-                    units_per_case=row.units_per_case,
-                    status=row.status,
-                    external_codes=_external_codes(row.external_codes),
-                    has_unmapped=row.has_unmapped,
-                    has_open_issue=row.has_open_issue,
-                )
-                for row in rows
-            ],
+            rows=[_sku_row(row) for row in rows],
             total_count=total_count or 0,
         )
+
+    async def find_detail(
+        self, company_id: uuid.UUID, sku_id: uuid.UUID
+    ) -> SkuListRow | None:
+        """고객사의 상품 한 건. 없거나 다른 고객사 상품이면 None."""
+        result = await self.db.execute(
+            _SKU_DETAIL,
+            {
+                "company_id": company_id,
+                "pattern": None,
+                "only_errors": False,
+                "sku_id": sku_id,
+            },
+        )
+        row = result.first()
+        return _sku_row(row) if row else None
+
+    async def find_open_issues(
+        self, company_id: uuid.UUID, sku_code: str
+    ) -> list[SkuIssueRow]:
+        """이 상품 코드로 열린 재고 검증 이슈(detected_at 최신순, 같으면 이슈 ID)."""
+        rows = await self.db.execute(
+            _OPEN_ISSUES, {"company_id": company_id, "sku_code": sku_code}
+        )
+        return [
+            SkuIssueRow(
+                data_validation_issue_id=row.data_validation_issue_id,
+                source_record_key=row.source_record_key,
+                field_name=row.field_name,
+                error_code=row.error_code,
+                error_message=row.error_message,
+                severity=row.severity,
+                detected_at=row.detected_at,
+            )
+            for row in rows
+        ]
+
+    async def find_affected_delay_events(
+        self, company_id: uuid.UUID, sku_id: uuid.UUID
+    ) -> list[AffectedDelayEventRow]:
+        """이 상품이 포함되고 현재 실행이 ON_HOLD 인 열린 지연(detected_at 최신순, 같으면 지연 ID)."""
+        rows = await self.db.execute(
+            _AFFECTED_DELAY_EVENTS, {"company_id": company_id, "sku_id": sku_id}
+        )
+        return [
+            AffectedDelayEventRow(
+                delay_event_id=row.delay_event_id,
+                shipment_id=row.shipment_id,
+                shipment_code=row.shipment_code,
+                analysis_run_id=row.analysis_run_id,
+                run_code=row.run_code,
+                status=row.status,
+                result_class=row.result_class,
+                failure_code=row.failure_code,
+            )
+            for row in rows
+        ]

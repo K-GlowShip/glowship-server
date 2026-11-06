@@ -4,8 +4,13 @@ from enum import Enum
 
 from app.core.pagination import PageParams
 from app.core.security.tenant import TenantContext
+from app.modules.master_data.application.exception.sku_exceptions import (
+    SkuNotFoundException,
+)
 from app.modules.master_data.infrastructure.repository.sku_repository import (
+    AffectedDelayEventRow,
     ExternalCodeRow,
+    SkuIssueRow,
     SkuListRow,
     SkuRepository,
 )
@@ -53,8 +58,17 @@ class SkuListResult:
     page: PageParams
 
 
+@dataclass(frozen=True)
+class SkuDetail:
+    """상품 상세 모달. item 은 목록 행과 같고, 열린 이슈와 영향 지연이 더 붙는다."""
+
+    item: SkuListItem
+    issues: list[SkuIssueRow]
+    affected_delay_events: list[AffectedDelayEventRow]
+
+
 class SkuListService:
-    """연동 데이터 조회 화면의 상품 탭 한 페이지를 만든다."""
+    """연동 데이터 조회 화면의 상품 탭 한 페이지와 상품 상세를 만든다."""
 
     def __init__(self, repo: SkuRepository):
         self.repo = repo
@@ -80,6 +94,19 @@ class SkuListService:
             items=[self._build_item(row) for row in repo_page.rows],
             total_count=repo_page.total_count,
             page=page,
+        )
+
+    async def get_detail(self, tenant: TenantContext, sku_id: uuid.UUID) -> SkuDetail:
+        """없는 상품과 다른 고객사 상품은 같은 404(SKU_NOT_FOUND)다."""
+        row = await self.repo.find_detail(tenant.company_id, sku_id)
+        if row is None:
+            raise SkuNotFoundException()
+        return SkuDetail(
+            item=self._build_item(row),
+            issues=await self.repo.find_open_issues(tenant.company_id, row.sku_code),
+            affected_delay_events=await self.repo.find_affected_delay_events(
+                tenant.company_id, sku_id
+            ),
         )
 
     @staticmethod
