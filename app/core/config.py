@@ -1,9 +1,9 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.security.jwt import JwtConfig
@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     postgres_password: str
     postgres_db: str
 
+    # 수집 적재 전용 워커 DB 계정 (GLOW-13, 수집 서비스 ingest_service "실행 전제")
+    # 수집은 워커 역할(glowship_v4_worker) 권한으로 돌아야 한다. 운영은 그 역할에 속한 로그인 계정을 넣고,
+    # 연결할 때 역할을 워커 역할로 바꾼다(app/core/database.py create_worker_engine, RLS 가 역할 이름을 비교).
+    # 둘 다 비우면 위 POSTGRES_USER·PASSWORD 로 붙는다 (로컬 superuser 개발 DB 는 지금처럼 동작).
+    # 호스트·포트·DB 이름은 앱 연결과 같다.
+    worker_postgres_user: str | None = None
+    worker_postgres_password: str | None = None
+
     # JWT
     # HS256 은 RFC 7518 3.2 에 따라 32바이트 이상 키를 권장한다. 짧으면 기동 시점에 실패시킨다.
     # 생성 예: python -c "import secrets; print(secrets.token_urlsafe(48))"
@@ -43,6 +51,16 @@ class Settings(BaseSettings):
     # 0 이면 판정하지 않는다 (합성데이터처럼 오래된 이력으로 화면을 확인할 때).
     sync_stale_multiplier: int = Field(default=2, ge=0)
 
+    # 가상 시각 (GLOW-13·49 데모, 2026-11-04 결정). 데이터가 2026-06-30 까지이고 마지막 수집이 07-01 이라 데모의 "지금"은 7월 초다.
+    # 값이 있으면 수동 수집(API 25)은 서버의 지금 시각이 아니라 "마지막 적재 SHIPMENT 수집 날짜 + 1일 00:00Z"(처음은 이 값)로
+    # 수집하고, 수집 현황의 동기화 판정은 수집 멈춤(주기 × 배수)을 보지 않는다 (virtual_clock.py, data_sync_status_service.py).
+    # 비우면(VIRTUAL_CLOCK_START=) 서버의 지금 시각을 쓴다. 실제 원천을 붙이는 환경(운영 배포)에서는 반드시 비운다.
+    virtual_clock_start: datetime | None = datetime(2026, 7, 2, tzinfo=UTC)
+
+    # 가상 TMS 시나리오 파일 (GLOW-49, infrastructure/virtual_tms.py). 수동 수집(API 25) SHIPMENT 가 이 파일에서 응답을 읽는다.
+    # 비우면 원천 응답이 없는 것으로 보고 0건 수집을 남긴다. 요청마다 다시 읽으므로 파일을 고쳐도 재시작이 필요 없다.
+    virtual_tms_scenario_path: Path | None = None
+
     # Analysis engine
     # 데이터 팀 분석 엔진 폴더(glowship_engine·synth2025_v5 의 부모). 엔진 코드는 저장소에 넣지 않고 이 경로에서
     # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
@@ -57,11 +75,69 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("virtual_tms_scenario_path", mode="before")
+    @classmethod
+    def _blank_scenario_path_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("virtual_clock_start", mode="before")
+    @classmethod
+    def _blank_virtual_clock_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("virtual_clock_start")
+    @classmethod
+    def _virtual_clock_needs_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError(
+                "VIRTUAL_CLOCK_START 는 시간대가 있는 시각이어야 합니다 (예: 2026-07-02T00:00:00Z)"
+            )
+        return value
+
+    @field_validator("worker_postgres_user", "worker_postgres_password", mode="before")
+    @classmethod
+    def _blank_worker_credential_is_unset(cls, value: object) -> object:
+        # `WORKER_POSTGRES_USER=` 처럼 비워 두면 설정하지 않은 것(None)으로 본다.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _worker_credentials_come_together(self) -> Settings:
+        # 계정만 있고 비밀번호가 없는(또는 그 반대) 설정은 운영에서 조용히 앱 계정으로 붙지 않도록 기동 시점에 실패시킨다.
+        if (self.worker_postgres_user is None) != (
+            self.worker_postgres_password is None
+        ):
+            raise ValueError(
+                "WORKER_POSTGRES_USER 와 WORKER_POSTGRES_PASSWORD 는 함께 넣거나 함께 비워야 합니다."
+            )
+        return self
+
+    def _postgres_url(self, user: str, password: str) -> str:
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
     @property
     def database_url(self) -> str:
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        return self._postgres_url(self.postgres_user, self.postgres_password)
+
+    @property
+    def uses_separate_worker_account(self) -> bool:
+        return self.worker_postgres_user is not None
+
+    @property
+    def worker_database_url(self) -> str:
+        """수집 적재 전용 연결. 워커 계정이 없으면 앱 연결과 같다"""
+        if self.worker_postgres_user is None or self.worker_postgres_password is None:
+            return self.database_url
+        return self._postgres_url(
+            self.worker_postgres_user, self.worker_postgres_password
         )
 
     @property
