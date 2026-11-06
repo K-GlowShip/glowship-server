@@ -11,6 +11,9 @@ from app.modules.dashboard.presentation.dashboard_api_router import (
 from app.modules.data_sync.presentation.data_sync_run_api_router import (
     router as data_sync_run_router,
 )
+from app.modules.decision.presentation.decision_api_router import (
+    router as decision_router,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_startup import (
     verify_engine_on_startup,
 )
@@ -63,6 +66,7 @@ app.include_router(me_router)
 app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
+app.include_router(decision_router)
 app.include_router(delay_event_router)
 app.include_router(analysis_run_router)
 app.include_router(inventory_router)
