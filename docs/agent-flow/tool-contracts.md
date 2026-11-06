@@ -3,7 +3,7 @@
 분석 에이전트 도구 T1~T12의 **이름과 입력·출력 JSON 모양**을 정합니다. 업무 분장 3절 계약 10이고, agentflow 9절 "팀이 확정할 사항"의 첫 항목("실제 도구 함수명과 도구별 입력·출력 JSON 스키마")입니다.
 
 - **상태:** 모델 반영판(11-04, GLOW-112 두 번째 PR)입니다. 9절 Q2~Q9는 설계 담당 결정을, 조회 기준(순번)과 `NOT_FEASIBLE` 사유 규칙(6.1절)은 A 리뷰를 반영했습니다. 이 문서대로 Pydantic 모델(`app/modules/delay_analysis/application/agent/tools/`)을 만들었고, 문서 표와 모델 필드·코드값이 같은지는 시험(`tests/modules/delay_analysis/test_tool_schemas.py`)이 확인합니다. 문서를 고치면 모델도 같이 고쳐야 시험이 통과합니다.
-- **1차 범위:** T9·T10·T11입니다. 이 세 도구의 입력은 조회 도구 T1~T5·T8과 계산 도구 T6·T7의 출력이라서, 그 출력 모양도 이 문서에서 함께 정합니다. T12는 개요만 적습니다(8절).
+- **1차 범위:** T9·T10·T11입니다. 이 세 도구의 입력은 조회 도구 T1~T5·T8과 계산 도구 T6·T7의 출력이라서, 그 출력 모양도 이 문서에서 함께 정합니다. T12(AI 설명 검증)의 입력·출력·판정·사유 코드는 8절에 있습니다(GLOW-127).
 - **정하지 않는 것:** 계산 방법 자체입니다. 계산은 데이터 팀 엔진 참조 구현을 이식하고(업무 분장 2절), 이 문서는 함수 경계에서 주고받는 값만 정합니다.
 
 ## 0. 근거 자료
@@ -33,7 +33,7 @@
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
 | 배열 | 아래 표마다 적은 정렬 키로 오름차순입니다. 엔진은 SKU를 SKU 코드로 묶어 다루므로, 이 문서도 SKU 배열은 `sku_code` 순으로 둡니다 |
 | 코드값 | DDL CHECK와 같은 값입니다. 서버는 `app/modules/delay_analysis/infrastructure/analysis_enums.py`의 열거형을 씁니다 |
-| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다. 다만 코드·날짜 값 배열(T4 `event_names`·`actual_known_days`, T6 입력 `delay_induced_sku_codes`, T6 `impacted_sku_codes`·`watch_sku_codes`, T7 `delay_induced_sku_codes`, T9 `eligible_sku_codes`)은 엔진이 집합에서 만들므로 같은 값이 두 번 있으면 모델이 거부합니다(`common.UniqueCodes`·`UniqueDates`) |
+| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11, `validation_schemas.py` T12). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다. 다만 코드·날짜 값 배열(T4 `event_names`·`actual_known_days`, T6 입력 `delay_induced_sku_codes`, T6 `impacted_sku_codes`·`watch_sku_codes`, T7 `delay_induced_sku_codes`, T9 `eligible_sku_codes`)은 엔진이 집합에서 만들므로 같은 값이 두 번 있으면 모델이 거부합니다(`common.UniqueCodes`·`UniqueDates`) |
 | 날짜 판정 | 엔진은 시각 값(`promised_delivery_at`, `ordered_at`)을 앞 10자리(UTC 날짜)로 잘라 날짜끼리 비교합니다(`common.d`). 도구도 같은 방식으로 판정합니다 |
 | 평균 수요 | 일평균을 소수로 넘기지 않고, **기간 합계(정수)와 일수**를 넘깁니다. 엔진은 합계 ÷ 28을 부동소수로 계산해 바로 쓰므로, 반올림한 평균을 넘기면 정수화 경계에서 결과가 달라질 수 있습니다 |
 | 이름 | agentflow 4절의 도구 이름(가칭)을 정식 이름으로 씁니다. 새 이름을 만들지 않아 문서·코드가 바뀌는 곳을 줄입니다 |

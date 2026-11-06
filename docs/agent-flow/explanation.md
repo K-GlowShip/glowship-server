@@ -110,7 +110,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
 ## 7. 작업 중 실패와 원인
 
 - **난수 canary 때문에 시험이 가끔 실패함(11-06):** 처음 207건이 통과한 뒤 전체 시험에서 `leak_canary` 결함 비교가 1번 실패했습니다. 서버 감싸기 쪽 시도 1에만 `LEAKAGE_DETECTED@run_summary:LK-05`가 더 붙었습니다.
-  - **원인:** 엔진 생성기는 시도마다 `secrets.token_hex`로 canary를 만듭니다. 그 16진 숫자가 우연히 전화번호 금지 패턴(LK-05, `0\d{1,2}-?\d{3,4}-?\d{4}`)에 맞으면, 유출된 canary가 전화번호로도 잡힙니다.
+  - **원인:** 엔진 생성기는 시도마다 `secrets.token_hex`로 canary를 만듭니다. 그 16진 숫자가 우연히 금지 표현 사전의 전화번호 패턴(LK-05)에 맞으면, 유출된 canary가 전화번호로도 잡힙니다. 사전 내용은 공개 저장소에 적지 않습니다(#45 리뷰).
   - **원인이 이것뿐인지 확인한 방법:**
     - 같은 canary를 주면 결함 18종 × 30번(540번) 모두 감싸기와 엔진 직접 호출이 같았습니다.
     - canary만 바꾸면 결과가 달라지는 결함은 `leak_canary` 하나였고, 더 붙는 코드는 LK-05 하나였습니다.
