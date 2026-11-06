@@ -73,6 +73,8 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → (SHIPMENT 만) 지연 에피소드 판정·시작 저장(detect_after_sync)
          → 에피소드 종료(close_episodes)
          → STALE 판정(judge_after_sync) → 커밋. 지연 감지가 STALE 판정보다 먼저다 (docs/analysis/delay-detection.md 3절).
+         1 은 start, 2·3 은 apply 입니다. ingest 는 둘을 이어 부릅니다. 수동 수집(API 25)은 start 를 요청 안에서,
+         원천 응답 받기와 apply 를 백그라운드에서 합니다 (그 사이 실패는 fail 로 FAILED 를 남김).
       3. 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 FAILED 로 남긴 뒤 예외를 다시 올립니다.
          FAILED 기록이 또 실패해도 원래 예외를 올리고, 기록 실패는 그 예외의 note 로 붙입니다.
       - 같은 값을 다시 수집하면 업무 행·변경 기록은 그대로이고, 적용 순번만 하나 늘어난 SUCCEEDED 수집이 남습니다.
@@ -86,13 +88,12 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
         (user_id=None), 워커 역할의 app_context_allowed 는 고객사가 ACTIVE 인지만 봅니다. 앱 역할(glowship_v4_app)은
         ACTIVE 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고
         INSERT 가 고유 제약 위반으로 실패합니다 (마이그레이션 0001 app_context_allowed).
-        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 포함합니다. 다만 지연 에피소드 종료(delay_events 의
-        closed_at·close_reason UPDATE)는 아직 없고, 두 열만 주기로 정해 별도 리비전(개발자 3)으로 넣습니다 (ERD 설명 4절).
+        워커 역할 권한(0001 GRANT)은 이 서비스가 쓰는 표를 포함하고, 지연 에피소드 종료(delay_events 의
+        closed_at·close_reason UPDATE)는 마이그레이션 0007(GLOW-117)이 두 열만 줍니다 (ERD 설명 4절).
       - 세션: 이 서비스 전용 세션을 넘깁니다. 서비스가 직접 commit·rollback 하므로(RUNNING 기록, 적용, FAILED 기록)
         요청 세션(get_db)을 공유하면 안 됩니다.
-      - 지금 앱 연결은 설정의 postgres_user 하나뿐이고 워커 역할 연결은 아직 없습니다. 수동 수집 API 25
-        (POST /data-sync-runs, 202 뒤 백그라운드 실행)를 붙일 때 워커 역할 전용 세션을 새로 여는 방식으로 연결을 정합니다
-        (아직 확정 아님). 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
+      - 워커 역할 연결은 app/core/database.open_worker_session 입니다(2026-11-05 결정). 설정 WORKER_POSTGRES_USER·PASSWORD 의
+        워커 계정으로 붙고, 비어 있으면 앱 연결(postgres_user)과 같습니다. 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
       - 파서가 레코드로 바꾸지 못해 거부한 원천 레코드(MISSING_REQUIRED·INVALID_DATE, source_payload 의 파서 계약)는
         parse_rejections 로 받습니다. 받은 건수·거부 건수에 넣고 결과의 거부 사유에도 앞에 담습니다.
 """
@@ -112,6 +113,17 @@ class IngestResult:
     staled_run_ids: tuple[uuid.UUID, ...]
     # SHIPMENT 수집의 지연 에피소드 판정 (시작·후속·종료). AUTO 실행 생성 연결이 쓴다. 다른 원천은 ()
     episode_outcomes: tuple[EpisodeOutcome, ...] = ()
+
+
+@dataclass(frozen=True)
+class StartedRun:
+    """RUNNING 으로 기록·커밋한 수집 (start 의 결과, apply 에 넘김)"""
+
+    company_id: uuid.UUID
+    data_sync_run_id: uuid.UUID
+    source_domain: SourceDomain
+    # 수집 시작 시각. SHIPMENT 의 일정 스냅샷 관측 시각(observed_at)이 이 값이다.
+    started_at: datetime
 
 
 @dataclass(frozen=True)
@@ -148,6 +160,22 @@ class DataIngestService:
         records: Sequence[SourceRecord],
         parse_rejections: Sequence[Rejection] = (),
     ) -> IngestResult:
+        """시작(start)과 적용(apply)을 이어서 한 번에 실행합니다 (원천 응답을 이미 받은 호출 측)."""
+        started = await self.start(company_id, source_domain, connection_method)
+        return await self.apply(started, records, parse_rejections)
+
+    async def start(
+        self,
+        company_id: uuid.UUID,
+        source_domain: SourceDomain,
+        connection_method: ConnectionMethod,
+    ) -> StartedRun:
+        """
+        1단계: L1 안에서 같은 고객사·원천에 RUNNING 수집이 있으면 SYNC_IN_PROGRESS 로 거부하고,
+        없으면 수집을 RUNNING 으로 남기고 커밋합니다. 수동 수집(API 25)은 이 단계를 요청 안에서 해
+        실행 ID 와 409 를 바로 응답하고, 원천 응답을 받아 apply 하는 일은 백그라운드에서 합니다.
+        apply 를 부르지 못하고 끝나면(원천 호출 실패 등) fail 로 FAILED 를 남겨야 다음 수집이 막히지 않습니다.
+        """
         started_at = self.now()
         await set_rls_context(self.db, user_id=None, company_id=company_id)
         await lock_company(self.db, company_id)
@@ -158,12 +186,29 @@ class DataIngestService:
             company_id, source_domain, connection_method, started_at
         )
         await self.db.commit()
+        return StartedRun(
+            company_id=company_id,
+            data_sync_run_id=run_id,
+            source_domain=source_domain,
+            started_at=started_at,
+        )
 
+    async def apply(
+        self,
+        started: StartedRun,
+        records: Sequence[SourceRecord],
+        parse_rejections: Sequence[Rejection] = (),
+    ) -> IngestResult:
+        """2단계: 한 트랜잭션에서 적용하고 완료를 기록합니다. 실패하면 되돌리고 FAILED 를 남긴 뒤 예외를 다시 올립니다.
+        start 와 다른 세션(같은 DB)에서 불러도 됩니다."""
+        company_id = started.company_id
+        run_id = started.data_sync_run_id
+        source_domain = started.source_domain
         try:
             await set_rls_context(self.db, user_id=None, company_id=company_id)
             await lock_company(self.db, company_id)
             applied = await self._apply(
-                company_id, run_id, source_domain, records, started_at
+                company_id, run_id, source_domain, records, started.started_at
             )
             rejections = (*parse_rejections, *applied.rejections)
             # 검증 이슈의 감지·해소 시각과 수집 완료 시각은 같은 값입니다 (확정 기준선 이슈 9행 모두 detected_at = 수집 finished_at)
@@ -201,16 +246,7 @@ class DataIngestService:
             )
             await self.db.commit()
         except Exception as error:
-            try:
-                await self.db.rollback()
-                await set_rls_context(self.db, user_id=None, company_id=company_id)
-                await self.repo.fail_run(company_id, run_id, self.now())
-                await self.db.commit()
-            except Exception as record_error:  # noqa: BLE001 어떤 기록 실패든 원래 예외를 지킴
-                # 실패 기록이 또 실패해도(연결 끊김, 이미 RUNNING 아님 등) 원인인 원래 예외를 올립니다
-                error.add_note(
-                    f"수집 {run_id} 의 FAILED 기록도 실패했습니다: {record_error!r}"
-                )
+            await self.fail(started, error)
             raise
 
         return IngestResult(
@@ -223,6 +259,22 @@ class DataIngestService:
             staled_run_ids=tuple(run.analysis_run_id for run in staled),
             episode_outcomes=tuple(episodes),
         )
+
+    async def fail(self, started: StartedRun, error: BaseException) -> None:
+        """진행 중 트랜잭션을 되돌리고 수집을 FAILED 로 남깁니다. 기록이 또 실패해도 예외를 올리지 않고
+        원인 예외(error)에 note 로 붙입니다(호출 측이 원인 예외를 올림)."""
+        try:
+            await self.db.rollback()
+            await set_rls_context(self.db, user_id=None, company_id=started.company_id)
+            await self.repo.fail_run(
+                started.company_id, started.data_sync_run_id, self.now()
+            )
+            await self.db.commit()
+        except Exception as record_error:  # noqa: BLE001 어떤 기록 실패든 원래 예외를 지킴
+            # 실패 기록이 또 실패해도(연결 끊김, 이미 RUNNING 아님 등) 원인인 원래 예외를 올립니다
+            error.add_note(
+                f"수집 {started.data_sync_run_id} 의 FAILED 기록도 실패했습니다: {record_error!r}"
+            )
 
     async def _apply(
         self,

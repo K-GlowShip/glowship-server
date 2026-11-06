@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.core.config import get_settings
@@ -8,6 +10,12 @@ from app.modules.dashboard.presentation.dashboard_api_router import (
 )
 from app.modules.data_sync.presentation.data_sync_run_api_router import (
     router as data_sync_run_router,
+)
+from app.modules.decision.presentation.decision_api_router import (
+    router as decision_router,
+)
+from app.modules.delay_analysis.infrastructure.engine.engine_startup import (
+    verify_engine_on_startup,
 )
 from app.modules.delay_analysis.presentation.agent_dev_api_router import (
     router as agent_dev_router,
@@ -35,8 +43,16 @@ from app.modules.user.presentation.client_account_api_router import (
 )
 from app.modules.user.presentation.me_api_router import router as me_router
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # 엔진 경로가 설정돼 있으면 시작할 때 해시 대조를 한 번 한다(원본이 없거나 다르면 서버가 뜨지 않음)
+    verify_engine_on_startup()
+    yield
+
+
 # 테이블 생성·변경은 Alembic 마이그레이션(make db-migrate)으로만 수행합니다.
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # Middleware
 include_middlewares(app)
@@ -50,6 +66,7 @@ app.include_router(me_router)
 app.include_router(client_account_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
+app.include_router(decision_router)
 app.include_router(delay_event_router)
 app.include_router(analysis_run_router)
 app.include_router(inventory_router)

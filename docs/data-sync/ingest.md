@@ -2,7 +2,7 @@
 
 원천 시스템(ERP·WMS·TMS)에서 받은 레코드를 업무 테이블에 반영하는 **수집 적재 서비스가 현재 어떻게 동작하는지** 설명합니다.
 기준은 serviceflow v6.2 1절 "계획 입고일"·5.2절 "수집 적재"·7절 결정표 "선적 계획 기준"과, 합성데이터 결정 1-10(초기 선적 스냅샷)·H-4(시장 리드타임 대체)입니다. 두 합성데이터 결정은 공유 문서에 없어 원문을 9절에 옮겨 두었습니다.
-수집을 부르는 쪽(가상 API GLOW-49, 수동 수집 API 25)은 아직 없고, 검증 오류에 따른 분석 보류는 판정 함수까지 있습니다(6절, 실행 생성 연결은 7절).
+수집을 부르는 쪽은 수동 수집 API 25(가상 TMS 응답, [manual-sync.md](manual-sync.md))이고, 검증 오류에 따른 분석 보류는 판정 함수까지 있습니다(6절, 실행 생성 연결은 7절).
 
 ## 1. 전체 흐름
 
@@ -28,6 +28,7 @@ sequenceDiagram
     S-->>C: IngestResult (건수·적용 순번·거부 사유·STALE 된 실행)
 ```
 
+- **나눠 부르기(API 25용):** `ingest()`는 `start()`(실행 중 확인 → `RUNNING` 기록·커밋, 결과 `StartedRun`)와 `apply()`(적용 → 완료 기록)를 이어 부릅니다. 수동 수집 API 25는 `start()`를 요청 안에서 불러 실행 ID와 409를 바로 응답하고, 원천 응답 받기와 `apply()`는 백그라운드에서 합니다. 그 사이에 실패해 `apply()`를 못 부르면 `fail()`로 `FAILED`를 남겨야 다음 수집이 막히지 않습니다. `apply()` 안의 실패도 같은 `fail()`을 씁니다.
 - 처리 중 예외가 나면 그 트랜잭션을 되돌리고 수집을 `FAILED`(적용 순번 없음)로 남긴 뒤 예외를 다시 올립니다. `FAILED` 기록이 또 실패해도(연결 끊김, 이미 `RUNNING` 아님 등) **원래 예외**를 올리고, 기록 실패는 그 예외의 note 로 붙입니다. 이때 수집은 `RUNNING`으로 남을 수 있습니다(7절 정리 작업).
 - **같은 고객사·원천의 수집은 한 번에 하나만 돕니다.** 시작할 때 L1 안에서 `RUNNING` 수집이 있으면 시작 시각과 관계없이 `SyncInProgressException`(409 `SYNC_IN_PROGRESS`, 명세 4.3)으로 거부합니다. 그래서 늦게 잠금을 얻은 수집이 먼저 적용된 최신 값을 과거 값으로 덮어쓰지 않습니다.
 - **오래 남은 `RUNNING`(작업이 죽은 경우)도 막습니다.** 시간이 지났다고 무시하지 않습니다. 살아 있는 긴 수집과 새 수집이 둘 다 적용되는 역전을 막기 위해서입니다. 정리 절차는 7절(후속 운영 작업)입니다.
@@ -37,7 +38,9 @@ sequenceDiagram
 - **실행 전제(호출 측 계약):**
   - DB 역할은 워커 역할(`glowship_v4_worker`)입니다. 서비스는 RLS 컨텍스트에 고객사만 넣고(`user_id=None`), 워커 역할의 `app_context_allowed`는 고객사가 `ACTIVE`인지만 봅니다. 앱 역할(`glowship_v4_app`)은 `ACTIVE` 사용자(그 고객사 CLIENT 또는 배정된 ADMIN)도 요구하므로, 앱 역할로 돌리면 행이 모두 숨겨져 조회가 비고 INSERT 가 고유 제약 위반으로 실패합니다(마이그레이션 0001 `app_context_allowed`). 워커 역할 권한은 이 서비스가 쓰는 표를 모두 포함합니다(상품·창고·주문·선적·재고·수집 실행·분석 실행은 SELECT·INSERT·UPDATE, 변경 기록·일정 스냅샷은 SELECT·INSERT, DELETE 없음).
   - 세션은 이 서비스 전용입니다. 서비스가 직접 commit·rollback 하므로(`RUNNING` 기록, 적용, `FAILED` 기록) 요청 세션(`get_db`)을 공유하면 안 됩니다.
-  - **아직 정하지 않은 것:** 지금 앱 연결은 설정의 `postgres_user` 하나뿐이고 워커 역할 연결이 없습니다. 수동 수집 API 25(`POST /data-sync-runs`, 202 뒤 백그라운드 실행)를 붙일 때 워커 역할 전용 세션을 새로 여는 방식으로 연결을 정합니다. 로컬 테스트는 superuser 연결이라 RLS 를 거치지 않습니다.
+  - **워커 역할 연결(2026-11-05 결정):** `app/core/database.py`의 `open_worker_session()`이 수집 전용 세션을 엽니다. 설정 `WORKER_POSTGRES_USER`·`WORKER_POSTGRES_PASSWORD`(워커 역할 `glowship_v4_worker`에 속한 로그인 계정)로 붙고, 둘 다 비우면 앱 연결(`POSTGRES_USER`)과 같은 엔진을 씁니다. 하나만 넣으면 기동이 실패합니다. 수동 수집 API 25(`POST /data-sync-runs`, 202 뒤 백그라운드 실행)가 이 세션을 수집 서비스에 넘깁니다. 운영 배포 때는 워커 로그인 계정을 만들어 `glowship_v4_worker`에 넣어야 합니다(`GRANT glowship_v4_worker TO <계정>`).
+    - **역할은 연결 단계에서 고정합니다(PR #40 리뷰):** RLS 정책은 `app_context_allowed(current_user)`로 역할 이름을 직접 비교합니다(0001). 로그인 계정으로 그냥 붙으면 `current_user`가 로그인 계정 이름이라 모든 행이 숨겨지고 `RUNNING` INSERT 가 RLS 위반이 됩니다. 그래서 워커 엔진(`create_worker_engine`)은 연결할 때 asyncpg `server_settings`로 `role = glowship_v4_worker`를 넣습니다(= `SET ROLE`). 트랜잭션마다 `SET ROLE`을 할 필요가 없고, 워커 역할에 속하지 않은 계정을 넣으면 연결이 실패합니다.
+    - 로컬 개발 DB 는 superuser 연결이라 평소 테스트는 RLS 를 거치지 않습니다. `tests/core/test_worker_database_rls_sql.py`가 워커 역할에 속한 임시 로그인 계정을 만들어 실제로 붙어 보고(행이 보이고 `RUNNING` INSERT 성공, 역할 고정이 없으면 0행·RLS 위반), 끝나면 계정을 지웁니다.
 - 코드: `app/modules/data_sync/application/ingest/`(서비스·규칙), `app/modules/data_sync/infrastructure/repository/ingest_repository.py`(SQL)
 
 ## 2. 원천 레코드 (`source_payload.py`)
@@ -51,6 +54,9 @@ sequenceDiagram
 | `INVENTORY` | WMS | `SourceInventory` | `external_entity_mappings`(`MAPPED`) WMS 코드 |
 
 - 선적은 TMS 응답 그대로입니다(`shipmentNo`·`mode`·`destWh`·`plannedKrRelease`·`stage`·`etaPort`·`eta3pl`·`actual3pl`·`items`). 운송 수단은 `OCEAN`·`AIR`입니다.
+  - 가상 TMS(`infrastructure/virtual_tms.py`, GLOW-49)는 날짜별 TMS 응답 시나리오 파일(census `shipments_api.json`과 같은 모양: `responses[].fetched_at`·`_demo_company`·`data`)에서 `after < fetched_at ≤ until`인 응답을 모으고, 같은 선적은 마지막 관측 값만 남겨 돌려줍니다. `until`은 7월 초 가상 시각이며 서버의 지금 시각을 넘기지 않습니다. 시나리오 내용은 데이터 설계 몫입니다.
+  - 가상 시각(`application/virtual_clock.py`, 설정 `VIRTUAL_CLOCK_START`, 기본 `2026-07-02T00:00:00Z`): 수동 수집 시각은 서버의 지금(11월)이 아니라 "그 원천의 마지막 적재 수집(`applied_seq` 최대) 시작 날짜 + 1일 00:00Z"이고, 처음은 시작값입니다. 누를 때마다 하루씩 나아갑니다. 가상 TMS 에는 (지난 수집 시작, 이번 수집 시각] 응답을 묻고, 수집 서비스 `now`는 이번 수집 시각으로 고정합니다(수집 시작·완료·스냅샷 관측 시각). 비우면 서버 시각입니다. **운영 배포에서는 `VIRTUAL_CLOCK_START=`로 비웁니다**(비우지 않으면 수집 시각이 가상 시각으로 나아가고, 수집 현황은 수집 멈춤을 보지 않습니다. `docs/data-sync/manual-sync.md`).
+  - TMS 응답 파서 `tms_parser.parse_tms_shipments`가 응답 `data[]`를 `SourceShipment`와 거부로 나눕니다. 상세는 `items[].lineNo`·`sku`·`qty`, 날짜는 `YYYY-MM-DD`이고 `_demo`로 시작하는 필드는 읽지 않습니다. 거부 코드는 `MISSING_REQUIRED`·`INVALID_DATE`, 값은 있으나 타입이 다르면(수량이 문자열 등) `INVALID_FORMAT`(기준선에 없는 이름)입니다. 거부 키는 `shipmentNo`, 없으면 `data[i]`입니다.
 - 원천 삭제는 행을 지우지 않고 상태 `REMOVED_AT_SOURCE`로 옵니다(UPDATE). 응답에서 빠진 행·상세는 삭제로 보지 않습니다.
 - **파서가 보장할 조건**(원천 응답 → 레코드, 적재 서비스는 다시 검사하지 않음):
   1. 선언한 타입 그대로 넘깁니다(날짜 `date`, 일시 `datetime`, 수량 `int`, 참거짓 `bool`).
@@ -150,7 +156,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 
 ## 7. 아직 없는 것
 
-- 수집을 부르는 쪽: 가상 API(GLOW-49), 수동 수집 API 25(`POST /data-sync-runs`, 11/04)
+- 수집을 부르는 쪽: 수동 수집 API 25(`POST /data-sync-runs`)가 가상 TMS 응답으로 부릅니다(`manual-sync.md`, 2026-11-05)
 - 분석 보류 판정의 실행 생성 연결(GLOW-15·18). 판정 함수(6절)는 있고, 실행 생성(`create_analysis_run`, 개발자 3)이 입력 확정 때 이 함수를 불러 `ON_HOLD`로 남기는 연결이 남았습니다.
 - **HS10 이 섞인 선적의 운영 규칙(후속 결정).** 확정 데이터에는 없습니다. 실제 운영에서 생기면 선적 분할 또는 대표 HS10 규칙을 정해야 하고, 그 전까지는 `MIXED_HS10_IN_SHIPMENT`로 거부합니다.
 - 지연 감지·후속 AUTO 실행(할 일 9). 지연 이벤트·분석 시나리오는 수집이 아니라 지연 감지·분석 실행이 만듭니다.
@@ -181,6 +187,11 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |
 | `test_ingest_service_sql.py` | 재수집 무변경, 변경 적용, 부분 성공, 중복은 첫 레코드 적재(재고는 변환 뒤 내부 키 기준 포함), 파서 거부 건수 포함, CHECK 위반 레코드만 거부(`FAILED` 아님), 실패 시 롤백·`FAILED`, 실패 기록도 실패하면 원래 예외 유지, 새 선적 스냅샷, 새 선적 혼합 HS10·빈 상세 거부(`PARTIAL_SUCCESS`), 기존 선적 빈 상세 + 일정 변경(상세 유지), 실제 STALE 판정 연결, 같은 원천 `RUNNING` 거부(1초·3일 전), 상세 줄 번호 중복 1건 거부, 거부 → 검증 이슈 `OPEN`(값·재고 키·실패 시 되돌림·4,500건), 해소(정정 적재 → `RESOLVED`, 다시 거부·응답에 없음 → `OPEN`, 원천 유형별, 첫 건 적재 + 중복, 같은 중복 반복 → 첫 이슈 `OPEN` 유지), `OPEN`은 (엔터티 유형, 키, 오류 코드)마다 1건, 매핑 전 재고 이슈의 매핑 뒤 해소 |
+| `test_tms_parser.py` | TMS 응답 파서: 필드 변환, 선택 날짜 생략, 필수값·날짜·타입 거부 위치, 상세 줄 하나로 선적 1건 거부, 값의 의미는 넘김 (DB 없음) |
+| `test_tms_parser_sql.py` | 확정 선적 166건 → TMS 응답 JSON → 파싱 결과가 직접 만든 레코드와 같음, 이름만 바꿔 적재하면 거부 없이 `SUCCEEDED` |
+| `test_virtual_tms.py` | 가상 TMS 시나리오: 고객사별 `after < fetched_at ≤ until` 응답, 같은 선적은 마지막 관측만, 시간대 다른 시각 비교, 파서 통과, 잘못된 시나리오 파일은 설정 오류 (DB 없음) |
+| `test_ingest_start_apply_sql.py` | 나눠 부르기: `start` 뒤 `RUNNING`·실행 ID, 같은 원천 두 번째 `start`는 409(다른 원천은 허용), `apply`로 완료 뒤 다시 시작 가능, 원천 응답 전 실패는 `fail`로 `FAILED`, 기록 실패 시 원래 예외에 note |
+| `test_virtual_clock.py`·`test_virtual_clock_sql.py` | 가상 시각: 마지막 적재 수집 날짜 + 1일 00:00Z(UTC 날짜 기준, 시작값보다 이르지 않음), 시작값 비우면 서버 시각, 설정 기본값·빈 값·시간대 필수, 확정 DB 첫 수동 수집 = 07-02 00:00Z |
 | `test_ingest_replay_sql.py` | 확정 선적 관측을 날짜순 TMS 응답으로 재수집 → 일정 스냅샷 223건과 최종 선적 행이 확정 DB와 같음 |
 
 DB 테스트는 실제 DB 에 쓰고 끝나면 롤백합니다(`tests/conftest.py`의 `db_write_session`, SAVEPOINT 모드). DB 가 없으면 건너뜁니다.
