@@ -30,6 +30,7 @@
 | 계획 입고일 P | `shipments.planned_3pl_inbound_date` |
 | 행사 일정 | 엔진 폴더 `glowship_engine/config/event_calendar_2026h1_v1.json`(하네스 `run_s1_s5.CAL`과 같은 파일, 해시는 엔진 매니페스트가 고정) |
 
+- **전제(11-06, #36 리뷰 후속):** `run.started_at`은 **수집과 같은 시각 기준**이어야 합니다. #40으로 수집 시각은 가상 시각(기본 2026-07-02부터 하루씩)이 됐는데, 실행 생성(GLOW-99 `create_analysis_run`)은 아직 `clock_timestamp()`(실제 시각)입니다. 실제 시각으로 만든 실행을 넘기면 D가 11월이 되어 28일 ORDER 수집이 없다며 **모든 실행이 보류**됩니다(재현: A_BEAUTY 실행을 `2026-11-06T01:43Z`로 넘기면 `REQUIRED_DATA_INVALID "ORDER 수집 결측일 [2026-10-09 …]"`, 마지막 수집 시각 + 1분으로 넘기면 `NO_RISK`). 엔진 하네스는 AUTO 실행을 수집한 날 `00:05Z`, 재분석을 사용자 요청 시각으로 만들어 늘 수집과 같은 날입니다. 고치는 곳은 실행 생성·자동 시작(개발 2)이고, 이 문서의 규칙(`started_at` → D)은 serviceflow 337행과 같아 그대로 둡니다. 기록: `tools/doc-deviations` DV1-9(개발 세션 작업 폴더).
 - NO_DELAY 판정은 저장소 없이 SQL로 E를 읽습니다. 트리거가 없을 때의 "최신 관측"은 엔진 `snapshot_at`과 같게 고릅니다: 입력 순번까지 적재된 관측 중 `observed_at`(초 아래 버림) ≤ `confirm_t`인 마지막 것, 같은 초면 읽은 순서(`ctid`)의 마지막.
 
 ## 4. 정한 것 (11-06)
