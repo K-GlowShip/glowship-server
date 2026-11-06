@@ -105,7 +105,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
    - "예측 기준" 문구 필수(없으면 `SCHEMA_INVALID`)
    - 확정·보장 표현 금지(`FORBIDDEN_EXPRESSION`)
    - 필드를 더하려면 스키마 판을 올려야 하고, 이는 데이터 팀·설계 결정입니다.
-6. **`tools/__init__.py` 머리말:** "T12는 아직 모델이 없다"는 머리말이 남아 있습니다. A의 #43·#44가 같은 파일을 고치고 있어서 충돌을 피하려고 이번에는 고치지 않았습니다. 그 두 PR이 머지된 뒤 한 줄 고칩니다.
+6. ~~`tools/__init__.py` 머리말~~ 11-06 완료(#43·#44 머지 뒤 T12 모델·구현 두 줄로 바꿈).
 7. **실제 모델 연결 전 `location` 정리(#45 리뷰):** 출력에 `explanation.v1`에 없는 키가 있으면, 엔진 스키마 검사가 그 키 이름을 위치(`location`)에 그대로 넣습니다. 예를 들어 키가 이메일이면 `SCHEMA_INVALID@/<그 키>`가 됩니다.
    - 위치는 `failure_message`와 추적으로 이어지므로, "원문을 넣지 않는다"는 규칙과 어긋납니다.
    - mock은 이런 출력을 만들지 않아 지금은 생기지 않습니다.

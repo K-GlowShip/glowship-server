@@ -6,5 +6,6 @@
   - option_schemas: 대응안 도구 T9·T10·T11 (A 구현)
   - option_feasibility: T9 check_option_feasibility 구현
   - option_comparison: T11 compare_options 구현
-  - T12 validate_agent_output 은 2차라 아직 모델이 없다(계약 8절).
+  - validation_schemas: 설명 검증 도구 T12 (C 구현, 계약 8절)
+  - output_validation: T12 validate_agent_output 구현 (엔진 explain.validator 감싸기)
 """
