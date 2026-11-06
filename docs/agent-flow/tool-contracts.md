@@ -3,7 +3,7 @@
 분석 에이전트 도구 T1~T12의 **이름과 입력·출력 JSON 모양**을 정합니다. 업무 분장 3절 계약 10이고, agentflow 9절 "팀이 확정할 사항"의 첫 항목("실제 도구 함수명과 도구별 입력·출력 JSON 스키마")입니다.
 
 - **상태:** 모델 반영판(11-04, GLOW-112 두 번째 PR)입니다. 9절 Q2~Q9는 설계 담당 결정을, 조회 기준(순번)과 `NOT_FEASIBLE` 사유 규칙(6.1절)은 A 리뷰를 반영했습니다. 이 문서대로 Pydantic 모델(`app/modules/delay_analysis/application/agent/tools/`)을 만들었고, 문서 표와 모델 필드·코드값이 같은지는 시험(`tests/modules/delay_analysis/test_tool_schemas.py`)이 확인합니다. 문서를 고치면 모델도 같이 고쳐야 시험이 통과합니다.
-- **1차 범위:** T9·T10·T11입니다. 이 세 도구의 입력은 조회 도구 T1~T5·T8과 계산 도구 T6·T7의 출력이라서, 그 출력 모양도 이 문서에서 함께 정합니다. T12는 개요만 적습니다(8절).
+- **1차 범위:** T9·T10·T11입니다. 이 세 도구의 입력은 조회 도구 T1~T5·T8과 계산 도구 T6·T7의 출력이라서, 그 출력 모양도 이 문서에서 함께 정합니다. T12(AI 설명 검증)의 입력·출력·판정·사유 코드는 8절에 있습니다(GLOW-127).
 - **정하지 않는 것:** 계산 방법 자체입니다. 계산은 데이터 팀 엔진 참조 구현을 이식하고(업무 분장 2절), 이 문서는 함수 경계에서 주고받는 값만 정합니다.
 
 ## 0. 근거 자료
@@ -33,7 +33,7 @@
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
 | 배열 | 아래 표마다 적은 정렬 키로 오름차순입니다. 엔진은 SKU를 SKU 코드로 묶어 다루므로, 이 문서도 SKU 배열은 `sku_code` 순으로 둡니다 |
 | 코드값 | DDL CHECK와 같은 값입니다. 서버는 `app/modules/delay_analysis/infrastructure/analysis_enums.py`의 열거형을 씁니다 |
-| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다. 다만 코드·날짜 값 배열(T4 `event_names`·`actual_known_days`, T6 입력 `delay_induced_sku_codes`, T6 `impacted_sku_codes`·`watch_sku_codes`, T7 `delay_induced_sku_codes`, T9 `eligible_sku_codes`)은 엔진이 집합에서 만들므로 같은 값이 두 번 있으면 모델이 거부합니다(`common.UniqueCodes`·`UniqueDates`) |
+| 모델 | 도구마다 입력·출력 Pydantic 모델이 있습니다(`application/agent/tools/`의 `lookup_schemas.py` T1~T5·T8, `impact_schemas.py` T7·T6, `option_schemas.py` T9~T11, `validation_schemas.py` T12). T7·T10·T11 출력은 저장 표의 DDL CHECK 조합을, T6 출력은 결과 분류(`analysis_runs_ck21`)를 모델이 먼저 확인합니다. T6 저장 열(`inventory_impact_results`)의 CHECK는 그 열이 모델에 없어 저장 단계에서 확인합니다(9절 Q11). 배열 정렬은 도구가 맞추고 모델은 검사하지 않습니다. 다만 코드·날짜 값 배열(T4 `event_names`·`actual_known_days`, T6 입력 `delay_induced_sku_codes`, T6 `impacted_sku_codes`·`watch_sku_codes`, T7 `delay_induced_sku_codes`, T9 `eligible_sku_codes`)은 엔진이 집합에서 만들므로 같은 값이 두 번 있으면 모델이 거부합니다(`common.UniqueCodes`·`UniqueDates`) |
 | 날짜 판정 | 엔진은 시각 값(`promised_delivery_at`, `ordered_at`)을 앞 10자리(UTC 날짜)로 잘라 날짜끼리 비교합니다(`common.d`). 도구도 같은 방식으로 판정합니다 |
 | 평균 수요 | 일평균을 소수로 넘기지 않고, **기간 합계(정수)와 일수**를 넘깁니다. 엔진은 합계 ÷ 28을 부동소수로 계산해 바로 쓰므로, 반올림한 평균을 넘기면 정수화 경계에서 결과가 달라질 수 있습니다 |
 | 이름 | agentflow 4절의 도구 이름(가칭)을 정식 이름으로 씁니다. 새 이름을 만들지 않아 문서·코드가 바뀌는 곳을 줄입니다 |
@@ -362,9 +362,59 @@ T11 출력에는 `feasibility_status`가 없어서 모델은 "순위는 `FEASIBL
 
 비교표(agentflow 4절 "동일 기준 비교표")는 따로 만들지 않습니다. T10 `options[]`와 이 순위를 합친 것이 분석 실행 상세 응답의 `responseOptions`입니다.
 
-## 8. T12 `validate_agent_output` (C 구현, 2차)
+## 8. T12 `validate_agent_output` (C 구현, GLOW-127)
 
-입력은 T6·T7·T10·T11 출력과 AI 설명(`explanation.v1`), 출력은 `통과`·`설명 재요청`·`실패`와 오류 목록입니다(agentflow 4절). 설명 검증 규칙은 데이터 팀 설명 스키마와 엔진 `explain`을 기준으로 2차에 정합니다.
+AI 설명(`explanation.v1`)이 계산 결과와 맞는지 검증합니다. agentflow 4절의 입력 "T6·T7·T10·T11 출력과 AI 설명"은 **설명 입력 문서**(`explanation_input.v1`) 한 개로 받습니다. 엔진 `explain/input_doc.build`가 T6·T7·T10·T11에 해당하는 계산 결과(`pipeline.analyze`)에서 만드는 문서이고, 모델이 받는 유일한 입력입니다. 검증 규칙은 엔진 `explain/validator.validate`를 그대로 씁니다. 규칙을 서버에서 다시 만들지 않아서, 설명을 생성하는 동안 시도마다 하는 검증(엔진 `generator`)과 판정이 같습니다. 모델은 `application/agent/tools/validation_schemas.py`, 함수는 `output_validation.py`입니다(동기 순수 함수, 노드 연결 GLOW-129에서 등록표에 감쌈). 설명 생성 흐름은 `docs/agent-flow/explanation.md`에 있습니다.
+
+입력
+
+| 필드 | 형식 | NULL | 뜻 |
+| --- | --- | --- | --- |
+| `input_document` | 객체 | 아니오 | 설명 입력 문서. `schema_version`이 `explanation_input.v1`이 아니면 거부합니다 |
+| `output` | text | 아니오 | 모델 출력 원문(JSON 문자열). 검증 뒤 실패 원문은 결과·추적·DB 어디에도 남기지 않습니다 |
+| `canary` | text | 예 | 그 시도의 프롬프트에 넣은 확인값. 출력에 나오면 `LEAKAGE_DETECTED`입니다. 모르면 `null`이고, 그때는 이 검사 하나만 빠집니다 |
+| `expected_metadata` | 객체 | 아니오 | 출력이 가져야 할 메타데이터. **모델 출력에서 읽지 않고** 서버가 아는 값으로 만듭니다(아래 필드) |
+| `expected_metadata.schema_version`·`language` | text · text | 아니오 | `explanation.v1` · `ko` |
+| `expected_metadata.analysis_run_id`·`decision_signature_hash` | 식별자 · sha256 | 아니오 | 입력 문서 `run`의 값과 다르면 거부합니다(연결 오류) |
+| `expected_metadata.model_provider`·`model_id` | text · text | 아니오 | 모델 설정(지금은 `mock`·`mock-template-v1`) |
+| `expected_metadata.prompt_template_id`·`prompt_template_version`·`prompt_template_sha256` | text · text · sha256 | 아니오 | 등록 프롬프트(`explain_ready_v1`·`1.0.0`과 해시) |
+| `expected_metadata.generated_at` | 시각 | 아니오 | 실행이 정한 설명 생성 시각(UTC 초) |
+| `expected_metadata.retry_no` | 정수 | 아니오 | 시도 번호 1~3 |
+
+출력
+
+| 필드 | 형식 | NULL | 뜻 |
+| --- | --- | --- | --- |
+| `status` | text | 아니오 | 아래 판정 |
+| `errors[]` | 배열(`code`, `location`) | 아니오 | 검증기가 낸 순서. `location`은 위치(예: `risk_summary#s1`, `evidence:E3`)이고 원문은 넣지 않습니다 |
+
+판정
+
+| 값 | 조건 |
+| --- | --- |
+| `PASSED` | 오류 없음(agentflow "통과") |
+| `RETRY` | 오류가 있고 `retry_no`가 3보다 작음(agentflow "설명 재요청"). 다음 시도에는 이전 출력 원문이 아니라 사유 코드와 위치만 줍니다 |
+| `FAILED` | 3번째 시도에도 오류(agentflow "실패"). 실행은 `FAILED`·`VALIDATING_OUTPUT`·`EXPLANATION_GENERATION_FAILED`가 되고 계산 결과는 남습니다(#28 `explanation_failure`) |
+
+사유 코드(엔진 `validator` 머리말, R-02′ 1.12)
+
+| 코드 | 뜻 |
+| --- | --- |
+| `SCHEMA_INVALID` | JSON이 아니거나 `explanation.v1` 스키마·필수 근거·메타데이터가 맞지 않음 |
+| `SIGNATURE_HASH_MISMATCH` | 판정 서명 해시가 다름 |
+| `EVIDENCE_UNRESOLVED` | 근거 경로가 입력 문서에 없거나 문장의 근거 표지가 근거 목록에 없음 |
+| `VALUE_MISMATCH` | 근거 값·문장의 수치·날짜·코드·라벨이 입력 문서와 다름 |
+| `UNREFERENCED_VALUE` | 근거 표지 없이 수치·날짜·코드를 씀 |
+| `OPTION_SET_MISMATCH` | 대응안 설명의 종류·순서가 입력 문서와 다름 |
+| `RECOMMENDATION_MISMATCH` | 추천 설명이 추천 대응안과 다름 |
+| `FORBIDDEN_EXPRESSION` | 금지 표현(확정·보장 표현 등, `ko-v2`) |
+| `LENGTH_EXCEEDED` | 문장 수·문장 길이(120자)·본문 길이(1200자) 초과 |
+| `LANGUAGE_INVALID` | 언어가 `ko`가 아님 |
+| `LEAKAGE_DETECTED` | 확인값·이메일 같은 내부 정보 유출 |
+| `MODEL_TIMEOUT` | 모델 시간 초과. 검증기가 아니라 생성기가 시도 기록에 붙입니다 |
+| `MODEL_CALL_ERROR` | 모델 호출 오류. 생성기가 시도 기록에 붙입니다 |
+
+설명 자산(프롬프트·스키마·금지 표현·라벨·모델 설정)이 없거나 등록부 해시와 다르면 T12는 검증 결과가 아니라 `ExplanationAssetError`를 냅니다. 모델 호출 전 시스템 구성 오류라서 설명 시도로 세지 않습니다. 서버 시작 단계에서도 같은 확인을 합니다(`explanation.md` 3절).
 
 ## 9. 결정 사항과 남은 질문
 
