@@ -74,6 +74,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
       2. 한 트랜잭션에서: 고객사 잠금(L1) → 같은 수집 안 중복 거부 → 값 검증(DB 제약 위반 거부, record_validation)
          → 외부 코드 변환(못 바꾸면 거부) → 현재 행 읽기 → 바뀐 행만 적용 → 거부 사유를 검증 이슈로 기록
          → 변경 기록 → 적용 순번 → 수집 완료 기록 → (SHIPMENT 만) 지연 에피소드 판정·시작 저장(detect_after_sync)
+         → AUTO 분석 실행 생성·이전 실행 STALE(AutoRunService.create_after_sync, GLOW-18)
          → 에피소드 종료(close_episodes)
          → STALE 판정(judge_after_sync) → 커밋. 지연 감지가 STALE 판정보다 먼저다 (docs/analysis/delay-detection.md 3절).
          1 은 start, 2·3 은 apply 입니다. ingest 는 둘을 이어 부릅니다. 수동 수집(API 25)은 start 를 요청 안에서,

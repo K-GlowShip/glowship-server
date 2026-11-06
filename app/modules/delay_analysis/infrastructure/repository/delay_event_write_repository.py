@@ -14,8 +14,8 @@ from app.modules.delay_analysis.infrastructure.delay_event import DelayEvent
         에피소드 행을 추가·종료한다. 판정은 하지 않는다(episode_rules.decide_episode 몫).
       - 데이터 접근 방식(docs/backend/data-access.md): 읽기는 LATERAL·FILTER 를 쓰는 직접 SQL,
         에피소드 한 행 추가는 ORM 엔터티(db.add + flush), 종료는 열린 행만 고치는 조건부 update(DelayEvent) 식.
-      - 종료는 closed_at·close_reason 두 열만 고친다. 운영의 워커 역할에는 이 두 열의 UPDATE 권한이 필요하다
-        (ERD 설명 4절 결정 2026-11-04, 서버 리비전은 개발자 3). 로컬 개발 DB 는 슈퍼유저라 지금도 동작한다.
+      - 종료는 closed_at·close_reason 두 열만 고친다. 워커 역할의 이 두 열 UPDATE 권한은 마이그레이션 0007
+        (GLOW-117, PR #27)이 준다(ERD 설명 4절 결정 2026-11-04).
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
