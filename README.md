@@ -63,7 +63,8 @@ app/
     └── decision/                  # member_drafts, final_decisions + 판단 이력(의사결정 이력) 목록 조회 API
 migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열, 0006: 표시용 실행 ID run_code, 0007: 워커의 delay_events 종료 열 UPDATE 권한)
 scripts/
-└── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
+├── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
+└── seed_demo_runs.py              # 데모 시드: 7월 초 수동 수집 → 열린 지연 3건 → 엔진 계산 → 선택 대기 (docs/analysis/demo-seed.md)
 ```
 
 > 사용자·고객사·데이터 수집·마스터 데이터·주문·선적·재고·대시보드·지연 분석·판단 모듈을 제외한 모듈(운영 기준)은 현재 `infrastructure/`의 ORM 모델만 있습니다. API를 만들 때 같은 세 계층을 추가합니다.
