@@ -86,3 +86,21 @@ class LatestDataSyncRunsResponse(CamelModel):
             "원천 유형별 마지막 수집 상태. 항상 ORDER·INVENTORY·SHIPMENT·PRODUCT·WAREHOUSE 순서로 다섯 항목"
         )
     )
+
+
+class DataSyncRunCreateRequest(CamelModel):
+    """수동 수집 요청 (명세 v6.2 4.3 POST /data-sync-runs)"""
+
+    source_domain: SourceDomain = Field(
+        description="수집할 원천 유형. 지금은 SHIPMENT(가상 TMS)만 실행하고 나머지는 422",
+        examples=["SHIPMENT"],
+    )
+
+
+class DataSyncRunCreateResponse(CamelModel):
+    """수동 수집 시작 응답 (202). 결과는 GET /data-sync-runs/latest 로 다시 조회한다."""
+
+    data_sync_run_id: uuid.UUID
+    status: DataSyncRunStatus = Field(
+        description="항상 RUNNING (백그라운드에서 적용)", examples=["RUNNING"]
+    )
