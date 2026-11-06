@@ -21,6 +21,8 @@ class RunCreationErrorCode(StrEnum):
         "OPERATING_RULE_MISSING"  # 기준일에 적용 중인 운영 기준이 없음
     )
     RUN_CODE_EXHAUSTED = "RUN_CODE_EXHAUSTED"  # 그날 run_code 순번 999 를 다 씀
+    # 넘겨받은 실행 시각이 고객사 마지막 적재 수집 시작보다 이름 → 엔진 입력 순번과 어긋남(이슈 #50)
+    RUN_TIME_BEFORE_INPUT = "RUN_TIME_BEFORE_INPUT"
 
 
 class AnalysisRunCreationError(Exception):

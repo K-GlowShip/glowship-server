@@ -72,6 +72,15 @@ _LATEST_RUN_CODE_OF_DAY = text(
     """
 ).bindparams(bindparam("company_id", type_=_UUID), bindparam("day_prefix", type_=Text))
 
+# 고객사의 마지막 적재 수집 시작(초 단위, 엔진이 읽는 모양). 넘겨받은 실행 시각 확인에 쓴다(이슈 #50)
+_LAST_APPLIED_SYNC_STARTED_AT = text(
+    """
+    SELECT date_trunc('second', MAX(started_at))
+      FROM data_sync_runs
+     WHERE company_id = :company_id AND applied_seq IS NOT NULL
+    """
+).bindparams(bindparam("company_id", type_=_UUID))
+
 
 @dataclass(frozen=True)
 class DelayEventRef:
@@ -147,6 +156,18 @@ class RunCreationRepository:
     async def now(self) -> datetime:
         """실제 현재 시각(clock_timestamp). 트랜잭션 시작 시각(now())이 아니라 잠금을 잡은 뒤의 시각이다"""
         return await self.db.scalar(text("SELECT clock_timestamp()"))
+
+    async def find_last_applied_sync_started_at(
+        self, company_id: uuid.UUID
+    ) -> datetime | None:
+        """
+        고객사의 적재된(적용 순번 있는) 수집 중 가장 늦은 시작 시각(초 단위). 없으면 None.
+        엔진은 실행 시각 t 에 "시작 ≤ t 인 적재 수집의 최대 순번"을 입력 순번으로 본다(초 아래를 버림,
+        PR #36 check_input_seq). 실행 시각이 이 값보다 이르면 실행의 input_seq 와 어긋난다.
+        """
+        return await self.db.scalar(
+            _LAST_APPLIED_SYNC_STARTED_AT, {"company_id": company_id}
+        )
 
     async def find_domain_latest_sync_run_ids(
         self, company_id: uuid.UUID, input_seq: int
