@@ -27,7 +27,7 @@
 | --- | --- |
 | 도구 유형 | **조회 도구**(T1·T2·T3·T4·T5·T8)는 DB를 읽기만 합니다. **계산·검증 도구**(T6·T7·T9·T10·T11·T12)는 입력만으로 계산하는 순수 함수입니다. DB·현재 시각·난수·언어 모델을 쓰지 않습니다(엔진 `core.py` 머리말, 업무 분장 5절) |
 | 범위 | 조회 도구는 실행의 고객사(`company_id`) 범위에서만 읽습니다. 워커 역할 세션에 `app.company_id`를 설정하고, 조회 조건에도 `company_id`를 넣습니다(GLOW-98 실행 상태 조회기와 같은 방식) |
-| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`) 이하로 적용된 수집**(`data_sync_runs.applied_seq <= input_seq`)이 적재한 값만 읽습니다. serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다. 엔진의 `confirm_t`(시각)는 CSV를 읽는 참조 구현의 대응일 뿐이고, 서버는 순번을 씁니다 |
+| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`)으로 고정한 엔진 입력**에서만 값을 옮깁니다. 엔진 입력 저장소는 `data_sync_runs`와 수집 단위 표(`inventory_daily`·`shipment_schedule_snapshots`·`data_validation_issues`)를 `applied_seq <= input_seq`로 거르고, 변경 기록과 현재 상태 표(주문·선적·SKU 등)는 거르지 않고 엔진의 시각 규칙(`confirm_t`)에 맡깁니다. 엔진이 나중 수집의 변경 기록으로 주문의 과거 상태를 되돌려 보기 때문입니다(사용자 결정 11-05, 문서 차이 DV1-1). 표별 기준은 `docs/analysis/engine-input-store.md` 2절. 입력 순번을 쓰는 이유는 serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다 |
 | 저장 | 도구는 업무 DB에 쓰지 않습니다. 결과 저장은 서비스가 합니다(agentflow 4절 "부작용 없음") |
 | JSON 키 | snake_case입니다. 엔진과 DB 열 이름을 그대로 써서 저장 단계에서 키를 바꾸지 않게 합니다(D20과 같은 방향) |
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
