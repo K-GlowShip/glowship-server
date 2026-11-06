@@ -14,6 +14,15 @@ from app.modules.data_sync.presentation.data_sync_run_api_router import (
 from app.modules.decision.presentation.decision_api_router import (
     router as decision_router,
 )
+from app.modules.decision.presentation.final_decision_api_router import (
+    router as final_decision_router,
+)
+from app.modules.decision.presentation.member_draft_api_router import (
+    router as member_draft_router,
+)
+from app.modules.decision.presentation.reanalysis_api_router import (
+    router as reanalysis_router,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_startup import (
     verify_engine_on_startup,
 )
@@ -69,6 +78,9 @@ app.include_router(data_sync_run_router)
 app.include_router(decision_router)
 app.include_router(delay_event_router)
 app.include_router(analysis_run_router)
+app.include_router(member_draft_router)
+app.include_router(reanalysis_router)
+app.include_router(final_decision_router)
 app.include_router(inventory_router)
 app.include_router(inventory_status_router)
 app.include_router(order_router)

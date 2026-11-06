@@ -87,6 +87,10 @@ _LAST_APPLIED_STARTED_AT = text(
 ).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
 
 
+_LATEST_STARTED_AT = text(
+    "SELECT max(started_at) FROM data_sync_runs WHERE company_id = :company_id"
+).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
+
 _COMPANY_CODE = text(
     "SELECT company_code FROM companies WHERE company_id = :company_id"
 ).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
@@ -128,6 +132,10 @@ class DataSyncRunRepository:
             _LAST_APPLIED_STARTED_AT,
             {"company_id": company_id, "source_domain": source_domain},
         )
+
+    async def find_latest_started_at(self, company_id: uuid.UUID) -> datetime | None:
+        """고객사의 가장 최근 수집 시작 시각(원천·상태 무관). 수집 이력이 없으면 None. 판단 시각(decision)에 씀"""
+        return await self.db.scalar(_LATEST_STARTED_AT, {"company_id": company_id})
 
     async def find_company_code(self, company_id: uuid.UUID) -> str | None:
         """고객사 코드 (가상 TMS 시나리오의 _demo_company 와 맞춤)"""
