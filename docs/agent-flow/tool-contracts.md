@@ -59,7 +59,9 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 
 ## 3. 조회 도구 출력 — 분석 입력 스냅샷
 
-엔진은 분석 입력을 스냅샷 하나(`snapshot.build`)로 고정한 뒤 계산 함수가 그 일부를 읽습니다. 서버에서는 이 스냅샷을 조회 도구 6개의 출력으로 나눕니다. 모든 조회는 **입력 순번까지 적용된 값**만 읽습니다(1절 "입력 기준"). 아래 표의 "최신 관측"도 입력 순번 이하 수집이 적재한 관측 가운데 가장 최근 것입니다.
+엔진은 분석 입력을 스냅샷 하나(`snapshot.build`)로 고정한 뒤 계산 함수가 그 일부를 읽습니다. 서버에서는 이 스냅샷을 조회 도구 6개의 출력으로 나눕니다. 모든 조회는 **입력 순번까지 적용된 값**만 읽습니다(1절 "입력 기준"). 아래 표의 "최신 관측"도 입력 순번 이하 수집이 적재한 관측 가운데 가장 최근 것입니다. T1의 단계·예상일만 AUTO 실행에서 트리거 일정 스냅샷을 씁니다(3.1절).
+
+**구현(GLOW-125 2부):** 서버는 실행마다 엔진 입력을 한 번 만들고(`infrastructure/engine/engine_input.py`, `docs/analysis/engine-input.md`), 조회 도구는 그 스냅샷을 아래 표대로 옮기기만 합니다(`application/agent/tools/lookup_tools.py`). DB를 다시 읽지 않으므로 몇 번 불러도 같은 값입니다. **T2~T5·T8은 입력이 없습니다**(`payload: None`, 인터페이스 결정 3). 창고·SKU·날짜·운영 기준 판은 엔진 입력이 이미 정합니다. T1 입력은 이 실행의 값과 같아야 하고, 다르면 도구가 멈추고 실행은 FAILED가 됩니다(다른 실행을 부른 것이므로 재시도하지 않음).
 
 ### 3.1 T1 `get_delay_context` — 지연 문맥
 
@@ -70,11 +72,11 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 | `shipment_id` | uuid | 아니오 | 지연 선적 | `delay_events.shipment_id` | `delayed_shipment_id` |
 | `base_date` | date | 아니오 | 분석 기준일 D | 입력 | `D` |
 | `planned_3pl_inbound_date` | date | 아니오 | 계획 3PL 입고일 P | `shipments.planned_3pl_inbound_date` | `P` |
-| `expected_3pl_inbound_date` | date | 아니오 | 예상 3PL 입고일 E (입력 순번까지의 최신 관측) | `shipment_schedule_snapshots.expected_3pl_inbound_date` | `E` |
-| `stage` | text | 아니오 | 운송 단계 (입력 순번까지의 최신 관측) | `shipment_schedule_snapshots` | `stage` |
+| `expected_3pl_inbound_date` | date | 아니오 | 예상 3PL 입고일 E (AUTO는 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 9절 Q16) | `shipment_schedule_snapshots.expected_3pl_inbound_date` | `E` |
+| `stage` | text | 아니오 | 운송 단계 (AUTO는 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 9절 Q16) | `shipment_schedule_snapshots` | `stage` |
 | `transport_mode` | text | 아니오 | `OCEAN`·`AIR` | `shipments.transport_mode`(ck1) | `mode` |
 | `planned_kr_release_date` | date | 아니오 | 한국 출고 예정일 (출항 전 항공의 공급일 계산) | `shipments.planned_kr_release_date` | `planned_kr_release` |
-| `trigger_shipment_schedule_snapshot_id` | uuid | 아니오 | 입력 순번까지의 최신 관측 | `shipment_schedule_snapshots` | `trigger_snapshot_id` |
+| `trigger_shipment_schedule_snapshot_id` | uuid | 아니오 | 입력 순번까지의 최신 관측. 이름과 달리 AUTO에서도 엔진이 최신 관측의 ID를 냅니다(9절 Q16) | `shipment_schedule_snapshots` | `trigger_snapshot_id` |
 | `shipment_skus[]` | 배열(`sku_code`) | — | 지연 선적의 SKU = K_SHIPMENT | `shipment_lines` + `skus` | `k_shipment`, `delayed_qty` |
 | `shipment_skus[].sku_id`·`sku_code` | uuid·text | 아니오 | | `skus` | `sku_ids` |
 | `shipment_skus[].delayed_quantity` | 정수 | 아니오 | SKU별 선적 수량 합 | `shipment_lines.shipped_quantity` 합 | `delayed_qty` |
@@ -135,9 +137,18 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 | `…lines[].order_line_id`·`line_no`·`sku_id`·`sku_code` | | 아니오 | | | |
 | `…lines[].ordered_quantity` | 정수 | 아니오 | | `order_lines.ordered_quantity` | |
 | `…lines[].line_status` | text | 아니오 | `ACTIVE`·`REMOVED_AT_SOURCE`(ck3). 배정에는 `ACTIVE`만 씀 | `order_lines.line_status` | |
-| `allocation_state[]` | 창고별 | — | D−1 배정 하루 재생 결과. 배정 모듈 원본은 확보했고(9절 Q1), 필드 형식은 다음 PR(엔진 연결)에서 채웁니다 | 엔진 `allocation_core.allocate_day` | `restore[wh]`의 `carry`·`waiting`·`protection`·`secured_wait`·`line_state` |
+| `allocation_state[]` | 창고별 | — | D−1 배정 하루 재생 결과. 형식은 아래 목록(GLOW-125 2부에서 채움, 9절 Q12) | 엔진 `allocation_core.allocate_day` | `restore[wh]`의 `carry`·`waiting`·`protection`·`secured_wait`·`result_sha256` |
 
 `allocation_state`는 DB에 저장된 값이 아니라 배정기를 하루 다시 돌려 얻는 값입니다. 엔진은 재생 결과의 예약 수량이 DB `reserved_quantity`와 다르면 보류합니다.
+
+`allocation_state[]` 형식(창고마다 한 개, `warehouse_code` 순). 엔진 주문 층(`core.simulate_orders`)이 읽는 값을 엔진 모양 그대로 둡니다. 모델은 아직 `list[dict]`이라 이 목록은 시험(`test_engine_input.py`)이 확인합니다.
+- `warehouse_code`: 도착·공여 창고
+- `replay_result_sha256`: 재생 결과 해시(`allocate_day`의 `result_sha256`)
+- `pending_dispatch[]`(`order_code` 순): D−1에 확보되어 출고를 기다리는 주문 `{order_code, secured_date, lines[]{line_no, sku_code, quantity}}`. 엔진 `restore.carry`(= `next_pending_dispatch`)이고, 주문 층 시뮬레이션의 첫날 `pending_dispatch`로 그대로 들어갑니다
+- `waiting_order_codes[]`: D−1 배정에서 확보하지 못하고 기다리는 주문 코드(`restore.waiting`). 주문 층 시뮬레이션의 대기 주문입니다
+- `blocked_order_protection[]`·`secured_waiting_for_dispatch[]`(`sku_code` 순) `{sku_code, quantity}`: SKU별 보호 수량·확보 뒤 출고 대기 수량(`restore.protection`·`secured_wait`)
+
+재생 결과의 주문 줄별 상태(`line_state`)는 엔진 계산이 읽지 않아 넣지 않았습니다.
 
 ### 3.6 T8 `get_operating_rules` — 운영 기준
 
@@ -153,9 +164,9 @@ T7을 T6보다 먼저 적은 것은 실행 순서 때문입니다(4절). 번호�
 | `lead_times.kr_outbound_handling_days` | 정수 | 예 | 한국 창고 출고 처리 | `OUTBOUND_HANDLING`, 한국 창고 | `lt.oh_kr` |
 | `lead_times.kr_air_transit_days` | 정수 | 예 | 한국 → 도착 권역 항공 | `AIR_TRANSIT`, 한국 창고, 도착 권역 | `lt.air_kr` |
 | `lead_times.dest_inbound_handling_days` | 정수 | 예 | 도착 창고 입고 처리 | `INBOUND_HANDLING`, 도착 창고 | `lt.inbound_dest` |
-| `skus[]` | 배열(`sku_code`) `{sku_id, sku_code, emergency_air_eligible}` | 아니오 | 긴급 항공 가능 여부 | `skus.emergency_air_eligible`(boolean) | `sku_attr` |
+| `skus[]` | 배열(`sku_code`) `{sku_id, sku_code, emergency_air_eligible}` | 아니오 | **고객사 SKU 전체**(아래 문단). 긴급 항공 가능 여부 | `skus.emergency_air_eligible`(boolean) | `sku_attr` |
 
-리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다.
+리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 다만 엔진은 `day_basis`를 보지 않고 그 행의 일수로 계산하므로, 그런 행이 생기면 T8 출력(`null`)과 엔진 계산이 어긋납니다(2026 H1은 없음). 그런 행을 어떻게 다룰지(멈춤·보류)는 입력 검증(GLOW-100)에서 다시 정합니다. 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다. **`skus[]`는 그 고객사의 SKU 전체입니다.** 엔진 `snapshot.build`가 상태 조건 없이 고객사의 `skus` 행을 모두 `sku_attr`로 만들기 때문입니다(`snapshot.py` 120행). 그래서 영향·관찰·선적 SKU(T6 `impacted_sku_codes`·`watch_sku_codes`, T1 `shipment_skus[]`)는 항상 `skus[]` 안에 있습니다. T9처럼 `skus[]`에서 SKU 속성을 찾는 도구는 이 전제를 씁니다. 조회 도구 시험이 overlay 실행 21건에서 이 포함 관계를 확인합니다(`test_engine_input.py`).
 
 ## 4. 재고 영향 계산 도구 출력 (C 구현)
 
@@ -437,6 +448,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132 → 11-06 결정 1에 맞춤)** | 입력 연결 오류다. T9는 `RequiredDataError`를 내지만, 그래프의 도구 호출부(`call_tool`)가 재시도 없이 `FAILED`(`UNEXPECTED_TOOL_ERROR`, 메시지에 원래 코드)로 끝낸다. 보류는 분석 준비 단계(`EngineHold`)에서만 낸다. 엔진 입력의 `sku_attr`는 고객사 SKU 전체라 이 경우는 데이터로는 생기지 않는다 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
+| Q16 | T1 단계·예상일 E의 기준(트리거와 최신 관측) | **결정(PR #53 승인 리뷰)** | AUTO 실행은 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 엔진 하네스(`run_s1_s5.py` 153행)와 같음. AUTO와 트리거 있음은 DDL `analysis_runs_ck16`으로 같은 뜻. AUTO 실행은 지연을 판정한 수집의 적재 트랜잭션 안에서 만들어(이슈 #34) 트리거가 곧 입력 순번까지의 최신 관측이므로, 둘이 갈리는 것은 실행 생성을 적재와 떼어 늦게 할 때뿐임. `trigger_shipment_schedule_snapshot_id`는 다른 기준: 엔진 `snapshot.build`는 넘긴 단계·E와 상관없이 최신 관측의 ID를 내므로(219행), 실행 생성을 떼면 이 ID가 실행의 트리거와 달라짐 |
 
 ### 9.1 모델로 옮기며 채운 것
 
@@ -450,7 +462,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | T9 `eligible_sku_codes[]` | `KR_AIR_REPLENISH`가 아니면 빈 배열 | 1절 "결측은 키를 빼지 않음" |
 | T7 시각 비교 | 배송일 → `T23:59:59Z` | 엔진 `storage.py`, 4.1절 |
 | 식별자·시각 | 문자열로 받음(소문자 UUID, `…Z` 초 단위) | `uuid.UUID`·`datetime`은 대문자·`+09:00`·마이크로초를 받아 다른 모양으로 내보냄(11-04 확인) |
-| 조회 도구 T2~T5·T8의 입력 | **정하지 않음** | 이 문서에 없음. 조회 도구 구현(계산 연결 작업)에서 정함 |
+| 조회 도구 T2~T5·T8의 입력 | **입력 없음(11-06, GLOW-125 2부)** | 범위는 실행마다 한 번 만드는 엔진 입력이 정함(인터페이스 결정 3, 3절 "구현") |
 
 ## 10. 작업 중 실패와 원인
 
