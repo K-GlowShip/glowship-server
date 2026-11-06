@@ -5,6 +5,14 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select, text
 
+from app.modules.delay_analysis.application.agent.retry import (
+    FailureSummary,
+    hold_summary,
+)
+from app.modules.delay_analysis.application.agent.state import (
+    AnalysisOutcome,
+    AnalysisStep,
+)
 from app.modules.delay_analysis.application.agent.tools import (
     impact_schemas as I,
 )
@@ -24,6 +32,8 @@ from app.modules.delay_analysis.application.result_save.result_rows import (
     run_basis_from_tools,
 )
 from app.modules.delay_analysis.application.result_save.result_save_service import (
+    ExplanationModel,
+    save_analysis_failure,
     save_analysis_result,
 )
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
@@ -326,7 +336,7 @@ async def _rows(db, entity, run_id):
     return (await db.scalars(stmt)).all()
 
 
-async def _snapshot(db, run_id):
+async def _snapshot(db, run_id, run_columns=_RUN_COLUMNS):
     """ID 를 빼고 자연 키로 묶은 결과 행 (비교용)"""
     risks = await _rows(db, AtRiskOrder, run_id)
     options = await _rows(db, ResponseOption, run_id)
@@ -338,7 +348,7 @@ async def _snapshot(db, run_id):
         .execution_options(populate_existing=True)
     )
     return {
-        "run": {k: getattr(run, k) for k in _RUN_COLUMNS},
+        "run": {k: getattr(run, k) for k in run_columns},
         "inventory": {r.sku_id: _columns(r, {"inventory_impact_result_id"}) for r in await _rows(db, InventoryImpactResult, run_id)},
         "risks": {r.order_line_id: _columns(r, {"at_risk_order_id"}) for r in risks},
         "options": {o.option_type: _columns(o, {"response_option_id"}) for o in options},
@@ -351,7 +361,9 @@ async def _snapshot(db, run_id):
     }  # fmt: skip
 
 
-async def _result_from_db(db, run_id) -> AnalysisResult:
+async def _result_from_db(
+    db, run_id, *, completed_status=None, result_class=None, dependency_scope=None
+) -> AnalysisResult:
     """저장된 결과 행을 에이전트가 돌려줄 도구 출력 모양으로 되돌린다. 저장하지 않는 값(min_gap·일별 부족·시뮬레이션)은 빈 값."""
     run = await db.scalar(
         select(AnalysisRun).where(AnalysisRun.analysis_run_id == run_id)
@@ -385,8 +397,8 @@ async def _result_from_db(db, run_id) -> AnalysisResult:
         items=items,
         impacted_sku_codes=[i.sku_code for i in items if i.sku_scope == "IMPACTED"],
         watch_sku_codes=[i.sku_code for i in items if i.sku_scope == "WATCH"],
-        completed_status=run.completed_status,
-        result_class=run.result_class,
+        completed_status=completed_status or run.completed_status,
+        result_class=result_class or run.result_class,
     )
     basis = RunBasis(
         destination_warehouse_id=first.warehouse_id,
@@ -466,7 +478,7 @@ async def _result_from_db(db, run_id) -> AnalysisResult:
         ])  # fmt: skip
     return AnalysisResult(
         basis=basis, inventory_impact=impact, at_risk_orders=at_risk, option_outcomes=outcomes, option_ranking=ranking,
-        dependency_scope=run.dependency_scope, decision_signature=run.decision_signature,
+        dependency_scope=dependency_scope or run.dependency_scope, decision_signature=run.decision_signature,
         decision_signature_sha256=run.decision_signature_sha256,
         explanation=Explanation(run.model_name, run.prompt_version, run.final_explanation_json, run.explanation_generated_at)
         if run.final_explanation_json is not None else None,
@@ -656,3 +668,138 @@ async def test_recheck_keeps_result_when_signature_is_same(db_write_session):
         recalculator=_SameSignature(),
     )
     assert (outcome.saved, outcome.status) == (True, "READY_FOR_REVIEW")
+
+
+# --- 5. 실패·보류 (save_analysis_failure) ----------------------------------------------------------
+
+_FAILURE_RUNS = text(
+    "SELECT analysis_run_id, company_id FROM analysis_runs WHERE status IN ('FAILED', 'ON_HOLD') ORDER BY analysis_run_id"
+)
+_FAILURE_COLUMNS = ("status", "completed_status", "result_class", "status_reason", "failed_step", "failure_code", "attempt_count",
+                    "retry_exhausted", "failure_message", "dependency_scope", "decision_signature", "decision_signature_sha256",
+                    "model_name", "prompt_version", "final_explanation_json", "explanation_validation_status", "explanation_generated_at")  # fmt: skip
+# 진행 중 상태로 되돌림: 실패 요약·설명 열도 비운다 (ck10·ck11·ck26)
+_RESET_FAILURE = """UPDATE analysis_runs SET status = 'ANALYZING_IMPACT', completed_status = NULL, result_class = NULL, status_reason = NULL,
+                           failed_step = NULL, failure_code = NULL, attempt_count = NULL, retry_exhausted = NULL, failure_message = NULL,
+                           dependency_scope = NULL, decision_signature = NULL, decision_signature_sha256 = NULL, model_name = NULL,
+                           prompt_version = NULL, explanation_validation_status = NULL, finished_at = NULL
+                     WHERE analysis_run_id = :run_id"""  # fmt: skip
+_SCOPE = {
+    "schema_version": "dependency_scope.v1",
+    "sku_sets": {},
+}  # 설명 실패는 의존 범위를 저장하지 않으므로 아무 값이나 됨
+
+
+async def test_overlay_failures_round_trip(db_write_session):
+    """overlay 의 FAILED 2건(도구 시간 초과·설명 실패)·ON_HOLD 1건을 실패 요약으로 되돌려 다시 저장하면 원래와 같다"""
+    db = db_write_session
+    runs = (await db.execute(_FAILURE_RUNS)).all()
+    if not runs:
+        pytest.skip("실패·보류 실행이 없는 DB 라 건너뜀")
+    seen = []
+    for run_id, company_id in runs:
+        before = await _snapshot(db, run_id, _FAILURE_COLUMNS)
+        r = before["run"]
+        summary = FailureSummary(
+            status=AnalysisOutcome(r["status"]), failed_step=AnalysisStep(r["failed_step"]), failure_code=r["failure_code"],
+            attempt_count=r["attempt_count"], retry_exhausted=r["retry_exhausted"], failure_message=r["failure_message"],
+        )  # fmt: skip
+        computed, model = None, None
+        if before["inventory"]:  # 설명 실패: 계산 결과가 있음
+            computed = await _result_from_db(
+                db,
+                run_id,
+                completed_status="READY_FOR_REVIEW",
+                result_class="FORECAST_ONLY_READY",
+                dependency_scope=_SCOPE,
+            )
+            model = ExplanationModel(r["model_name"], r["prompt_version"])
+        await db.execute(
+            text(_RESET_FAILURE), {"run_id": run_id}
+        )  # 실패 요약을 먼저 비워야 상태를 바꿀 수 있음(ck10)
+        await _clear(db, run_id)
+        db.expire_all()
+        outcome = await save_analysis_failure(
+            db,
+            company_id=company_id,
+            analysis_run_id=run_id,
+            summary=summary,
+            computed=computed,
+            explanation_model=model,
+        )
+        assert (outcome.saved, outcome.status) == (True, r["status"])
+        after = await _snapshot(db, run_id, _FAILURE_COLUMNS)
+        assert after == before, f"{run_id} 가 원래와 다름"
+        seen.append((r["failure_code"], len(after["inventory"]), len(after["options"])))
+    assert sorted(seen) == [
+        ("EXPLANATION_GENERATION_FAILED", 15, 3),
+        ("REQUIRED_DATA_INVALID", 0, 0),
+        ("TOOL_TIMEOUT_EXHAUSTED", 0, 0),
+    ]
+
+
+def test_failure_inputs_must_match_kind():
+    computed = _result(
+        inventory_impact=_impact("READY_FOR_REVIEW", "FORECAST_ONLY_READY")
+    )
+    explanation = FailureSummary(
+        status=AnalysisOutcome.FAILED, failed_step=AnalysisStep.VALIDATING_OUTPUT, failure_code="EXPLANATION_GENERATION_FAILED",
+        attempt_count=3, retry_exhausted=True, failure_message="m",
+    )  # fmt: skip
+    cases = [
+        (explanation, None, ExplanationModel("m", "p")),  # 설명 실패인데 계산 결과 없음
+        (explanation, computed, None),  # 설명 실패인데 모델 버전 없음
+        (
+            hold_summary("REQUIRED_DATA_INVALID", "x"),
+            computed,
+            None,
+        ),  # 보류인데 결과 행
+        (
+            explanation,
+            _result(),
+            ExplanationModel("m", "p"),
+        ),  # 설명 실패인데 계산 결과가 NO_RISK
+    ]
+    for summary, comp, model in cases:
+        with pytest.raises(ResultSaveInputError):
+            import asyncio
+
+            asyncio.run(
+                save_analysis_failure(
+                    None,
+                    company_id=uuid.uuid4(),
+                    analysis_run_id=uuid.uuid4(),
+                    summary=summary,
+                    computed=comp,
+                    explanation_model=model,
+                )
+            )
+
+
+async def test_failure_is_not_saved_over_stale(db_write_session):
+    db = db_write_session
+    runs = (await db.execute(_FAILURE_RUNS)).all()
+    if not runs:
+        pytest.skip("실패·보류 실행이 없는 DB 라 건너뜀")
+    run_id, company_id = runs[0]
+    await db.execute(text(_RESET_FAILURE), {"run_id": run_id})
+    await _clear(db, run_id)
+    await db.execute(
+        text("""UPDATE analysis_runs SET status = 'STALE', stale_primary_reason = 'TIME_ELAPSED', stale_reason_codes = ARRAY['TIME_ELAPSED'],
+                       stale_detected_at = now() WHERE analysis_run_id = :run_id"""),
+        {"run_id": run_id},
+    )  # fmt: skip
+    db.expire_all()
+    outcome = await save_analysis_failure(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        summary=hold_summary("REQUIRED_DATA_INVALID", "x"),
+    )
+    assert (outcome.saved, outcome.status) == (False, "STALE")
+    run = await db.scalar(
+        select(AnalysisRun)
+        .where(AnalysisRun.analysis_run_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+    assert (run.status, run.failed_step, run.finished_at) == ("STALE", None, None)
