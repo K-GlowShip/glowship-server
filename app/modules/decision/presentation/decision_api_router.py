@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/v1/decisions", tags=["판단 이력 (Client)"])
         "시간대가 없는 값·날짜만·Unix 초 같은 숫자를 보내거나 from > to 이면 422 VALIDATION_ERROR 이고, from = to 는 0건입니다(C20). "
         "page·size 로 페이지를 나누고(기본 20, 최대 100), totalCount·totalPages 는 모든 필터를 적용한 값입니다. "
         "고객사 범위는 access_token 쿠키의 company_id 입니다. "
-        "선택 이유·의견 본문과 당시 분석 수치는 GET /analysis-runs/{runId}(미구현) 몫입니다."
+        "선택 이유·의견 본문과 당시 분석 수치는 GET /analysis-runs/{runId} 몫입니다."
     ),
     response_model=DecisionListResponse,
     responses={

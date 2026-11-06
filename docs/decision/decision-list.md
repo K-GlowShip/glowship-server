@@ -144,9 +144,7 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 | 기능 | 비워 둔 자리 |
 | --- | --- |
 | 선택자 드롭다운 목록 `GET /members`(API 24) | user 모듈. 최종 선택자는 팀장이므로 팀원·팀장 모두 돌려주어야 함. 그 전에는 응답의 `decidedBy.userId`로 목록을 만들 수 있음 |
-| 선택 상세·당시 분석 요약 패널 | `GET /analysis-runs/{runId}`(API 17). 선택 이유·팀원 의견·기준 데이터 시각·부족 수량·위험 주문 수 |
 | 초안·최종 선택 저장 | `POST /analysis-runs/{runId}/drafts`(API 18)·`/final-decision`(API 19). 이 목록은 그 결과를 읽기만 함 |
-| 지연 목록 `currentRun.runCode` | 0006 열은 있으나 지연 목록은 아직 `null`로 보냄. 이 작업 범위 밖 |
 
 ## 8. 관련 파일
 
@@ -158,6 +156,6 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 | `app/modules/decision/application/exception/decision_exceptions.py` | `INVALID_DECIDED_PERIOD`(422 `VALIDATION_ERROR`) |
 | `app/modules/decision/infrastructure/repository/decision_repository.py` | UNION·조인·`status` CASE SQL, 상세 줄 조회 |
 | `app/modules/decision/dependencies.py` | 리포지토리·서비스 조립 |
-| `app/core/summary_schemas.py` | `UserSummary`·`ResponseOptionSummary`(신설, 응답 본문 규칙 5.2) |
+| `app/core/summary_schemas.py` | 공통 요약 객체 `UserSummary`·`ResponseOptionSummary`·`RunSummary`(응답 본문 규칙 5.2). #32 정의를 그대로 씀 |
 | `app/modules/delay_analysis/application/delay_display.py` | 대표 상품 계산 `pick_representative_line` |
 | `app/core/security/tenant.py` | `get_tenant_context` |
