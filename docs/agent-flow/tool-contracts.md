@@ -358,6 +358,8 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 
 T11 출력에는 `feasibility_status`가 없어서 모델은 "순위는 `FEASIBLE`만"(`response_options_ck15`)·"추천은 `FEASIBLE`만"(ck4)을 볼 수 없습니다. 출력에 넣지 않고 **T11 도구 구현이 입력(T10 `options[]`)과 맞춰 봅니다**: `FEASIBLE`이면 순위가 있고 아니면 `null`, `KEEP_PLAN`(늘 `FEASIBLE`)은 맨 뒤 순위, 추천은 순위 1(#26 리뷰).
 
+구현(`tools/option_comparison.py`, GLOW-134)은 입력의 `FEASIBLE`로만 순위를 매겨 위 조건을 지킵니다. 출력은 순위순이 아니라 입력과 같은 고정 순서입니다. `KEEP_PLAN` 외 `FEASIBLE` 대응안의 정렬 값이 `null`이면 멈춥니다(9절 Q15).
+
 비교표(agentflow 4절 "동일 기준 비교표")는 따로 만들지 않습니다. T10 `options[]`와 이 순위를 합친 것이 분석 실행 상세 응답의 `responseOptions`입니다.
 
 ## 8. T12 `validate_agent_output` (C 구현, GLOW-127)
@@ -434,6 +436,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132)** | 긴급 항공 가능 여부를 알 수 없으므로 `RequiredDataError`(`MISSING_REQUIRED_DATA`)로 실행을 보류함. 엔진은 `KeyError`로 멈춤. 필수 자료 부족은 실행 전체 `ON_HOLD`라는 Q7과 같은 방향 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
+| Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
 
 ### 9.1 모델로 옮기며 채운 것
 
