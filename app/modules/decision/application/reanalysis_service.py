@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.locks import lock_analysis_run, lock_company
 from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionException,
 )
@@ -27,6 +28,8 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerReas
       - 판정(reanalysis_policy) 을 통과하면 create_analysis_run(USER_REANALYSIS) 으로 새 실행을 만듭니다(개발자 3 함수).
         이전 실행은 is_latest 만 내리고 상태는 그대로입니다(재분석은 STALE 사유가 아님, 명세 4.6).
       - 새 실행은 DETECTED 이고, 분석을 다시 돌리는 일(입력 확정 이후)은 이 서비스 밖입니다(GLOW-128).
+      - 실행 시각(이슈 #50): L1 뒤 DecisionClock.run_started_at 으로 구해 넘깁니다. 가상 시각이면 고객사 마지막 적재 수집 시작
+        (7월 초), 아니면 넘기지 않아 DB 시각입니다. 기준일·run_code·운영 기준·requested_at 이 이 시각을 따릅니다.
       - 고객사에 없는 실행은 잠그기 전에 404 로 거릅니다(로컬 superuser 는 RLS 를 우회하므로 잠금 전에 고객사 조건으로 확인).
       - 커밋은 요청 단위 세션(get_db)이 합니다. 거부하면 아무것도 바꾸지 않습니다.
 """
@@ -41,9 +44,16 @@ class ReanalysisResult:
 
 
 class ReanalysisService:
-    def __init__(self, db: AsyncSession, repo: MemberDraftRepository):
+    def __init__(
+        self,
+        db: AsyncSession,
+        repo: MemberDraftRepository,
+        clock: DecisionClock | None = None,
+    ):
         self.db = db
         self.repo = repo
+        # 없으면 실행 시각을 넘기지 않음(= create_analysis_run 이 DB 시각)
+        self.clock = clock
 
     async def request(
         self,
@@ -63,6 +73,8 @@ class ReanalysisService:
         if rejection is not None:
             raise DecisionException(rejection)
 
+        # 실행 시각은 L1 을 잡은 뒤 구한다(이슈 #50). 가상 시각이면 고객사 마지막 적재 수집 시작, 아니면 None(DB 시각)
+        started_at = await self.clock.run_started_at(company_id) if self.clock else None
         creation = await create_analysis_run(
             self.db,
             company_id=company_id,
@@ -70,6 +82,7 @@ class ReanalysisService:
             trigger_reason=TriggerReason.USER_REANALYSIS,
             requested_by_user_id=tenant.user_id,
             request_reason=request_reason,
+            started_at=started_at,
         )
         new_run = creation.run
         return ReanalysisResult(

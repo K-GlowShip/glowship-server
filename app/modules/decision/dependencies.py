@@ -50,8 +50,9 @@ def get_member_draft_service(
 
 def get_reanalysis_service(
     db: AsyncSession = Depends(get_db),
+    clock: DecisionClock = Depends(get_decision_clock),
 ) -> ReanalysisService:
-    return ReanalysisService(db=db, repo=MemberDraftRepository(db))
+    return ReanalysisService(db=db, repo=MemberDraftRepository(db), clock=clock)
 
 
 def get_final_decision_service(

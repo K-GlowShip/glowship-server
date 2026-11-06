@@ -1,9 +1,14 @@
 import uuid
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import text
 
 from app.core.security.tenant import TenantContext
+from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
+    DataSyncRunRepository,
+)
+from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
     DecisionException,
@@ -118,6 +123,67 @@ async def test_reanalysis_creates_next_version_and_keeps_previous_status(
     previous = await _stored(db, row.analysis_run_id)
     # 재분석은 STALE 사유가 아니다: 상태 그대로, is_latest 만 내려감
     assert (previous.status, previous.is_latest) == (status, False)
+
+
+_NEWER_RULE_SET = text(
+    """
+    INSERT INTO operating_rule_sets (operating_rule_set_id, company_id, version_no, user_id, effective_from,
+           safety_stock_days, sales_basis_days, allow_partial_fulfillment, created_at)
+    SELECT :id, company_id, version_no + 1, user_id, :effective_from,
+           safety_stock_days, sales_basis_days, allow_partial_fulfillment, now()
+      FROM operating_rule_sets
+     WHERE company_id = :c
+     ORDER BY version_no DESC
+     LIMIT 1
+    """
+)
+
+
+async def test_virtual_clock_reanalysis_runs_at_last_applied_sync_start(
+    db_write_session,
+):
+    """
+    이슈 #50: 가상 시각이면 재분석 실행 시각 = 고객사 마지막 적재 수집 시작(7월 초, L1 뒤).
+    기준일·run_code·requested_at 이 그 시각을 따르고, 그 뒤(실제 날짜 전)에 시작하는 운영 기준 버전이 있어도
+    실행은 7월 초에 적용 중인 버전을 고른다(최종 선택의 "선택일에 적용 중인 버전"과 같은 기준일).
+    """
+    db = db_write_session
+    row = await _run(db, status="STALE", is_latest=True)
+    await _reopen(db, row.delay_event_id)
+    last_input = await DataSyncRunRepository(
+        db
+    ).find_last_applied_started_at_of_company(row.company_id)
+    newer_rule = uuid.uuid7()
+    await db.execute(
+        _NEWER_RULE_SET,
+        {
+            "id": newer_rule,
+            "c": row.company_id,
+            "effective_from": last_input.date() + timedelta(days=1),
+        },
+    )
+    service = ReanalysisService(
+        db,
+        MemberDraftRepository(db),
+        DecisionClock(DataSyncRunRepository(db), virtual=True),
+    )
+
+    result = await service.request(
+        _tenant(row), analysis_run_id=row.analysis_run_id, request_reason=None
+    )
+
+    new = (
+        await db.execute(
+            text(
+                "SELECT started_at, requested_at, run_code, operating_rule_set_id"
+                " FROM analysis_runs WHERE analysis_run_id = :r"
+            ),
+            {"r": result.run_id},
+        )
+    ).one()
+    assert (new.started_at, new.requested_at) == (last_input, last_input)
+    assert new.run_code.startswith(f"AN-{last_input:%y%m%d}-")
+    assert new.operating_rule_set_id != newer_rule
 
 
 async def test_closed_episode_is_rejected_without_change(db_write_session):
