@@ -167,10 +167,11 @@ async def test_times_drop_sub_second(db_write_session):
     run = await _run(db, started.data_sync_run_id)
     assert (run.started_at, run.finished_at) == (WHOLE, WHOLE + ONE_SECOND)
     assert stale.detected_at == [WHOLE + ONE_SECOND]
+    # 두 번째 수집은 첫 수집과 시작 초가 겹치지 않게 1초 뒤 (규칙 4)
     failed_run = await _run(db, failed.data_sync_run_id)
     assert (failed_run.started_at, failed_run.finished_at) == (
-        WHOLE,
         WHOLE + ONE_SECOND,
+        WHOLE + 2 * ONE_SECOND,
     )
 
 
@@ -204,6 +205,50 @@ async def test_finished_at_is_after_started_at(db_write_session):
     assert (await _run(db, started.data_sync_run_id)).finished_at == WHOLE + timedelta(
         minutes=2
     )
+
+
+async def test_start_moves_one_second_when_company_already_has_that_start(
+    db_write_session,
+):
+    """이슈 #39 규칙 4: 같은 고객사에 같은 시작 초의 수집이 있으면(원천·상태 무관) 1초씩 민다 (엔진 store.run_at 키)"""
+    db = db_write_session
+    company_id = await _company(db)
+    service = DataIngestService(
+        db, IngestRepository(db), RecordingStale(), now=lambda: WHOLE
+    )
+
+    failed = await service.start(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API
+    )
+    await service.fail(failed, OSError("원천 호출 실패"))
+    # FAILED 뒤 같은 날 재시도 → 00:03:01, 그동안 다른 원천은 00:03:02
+    retry = await service.start(company_id, SourceDomain.SHIPMENT, ConnectionMethod.API)
+    other = await service.start(company_id, SourceDomain.ORDER, ConnectionMethod.API)
+
+    assert failed.started_at == WHOLE
+    assert retry.started_at == WHOLE + ONE_SECOND
+    assert other.started_at == WHOLE + 2 * ONE_SECOND
+    assert (await _run(db, retry.data_sync_run_id)).started_at == WHOLE + ONE_SECOND
+
+
+async def test_sub_second_start_counts_as_taken(db_write_session):
+    """이 규칙 전에 적재된 1초 미만 시작(00:03:00.5)도 엔진은 00:03:00 으로 읽으므로 겹친 것으로 본다"""
+    db = db_write_session
+    company_id = await _company(db)
+    legacy = DataIngestService(
+        db, IngestRepository(db), RecordingStale(), now=lambda: SUB_SECOND
+    )
+    run_id = await IngestRepository(db).start_run(
+        company_id, SourceDomain.ORDER, ConnectionMethod.API, SUB_SECOND
+    )
+    await db.commit()
+
+    started = await legacy.start(
+        company_id, SourceDomain.SHIPMENT, ConnectionMethod.API
+    )
+
+    assert (await _run(db, run_id)).started_at == SUB_SECOND
+    assert started.started_at == WHOLE + ONE_SECOND
 
 
 def test_whole_second():

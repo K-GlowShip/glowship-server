@@ -101,6 +101,8 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_write_repo
       - 초 단위: now 가 준 시각에서 1초 미만을 버립니다. 엔진 store.iso_ts 가 1초 미만 시각을 거부합니다.
       - 완료 시각 > 시작 시각: finish_after 가 있으면(가상 시각, 30초) 시작 + finish_after, 없으면 max(지금, 시작 + 1초).
         FAILED 완료 시각도 같습니다. 검증 이슈 감지·해소 시각과 STALE 감지 시각은 완료 시각입니다.
+      - 겹칠 때: 시작 시각에 그 고객사의 수집이 이미 있으면(원천·상태 무관) 1초씩 밉니다(start, L1 안).
+        엔진 store.run_at 이 (company_id, started_at) 키입니다. FAILED 뒤 같은 날 재시도는 00:03:01 이 됩니다.
 """
 
 # 확정 기준선(data_validation_issues.csv)과 같은 이름
@@ -196,12 +198,13 @@ class DataIngestService:
         실행 ID 와 409 를 바로 응답하고, 원천 응답을 받아 apply 하는 일은 백그라운드에서 합니다.
         apply 를 부르지 못하고 끝나면(원천 호출 실패 등) fail 로 FAILED 를 남겨야 다음 수집이 막히지 않습니다.
         """
-        started_at = self.now()
         await set_rls_context(self.db, user_id=None, company_id=company_id)
         await lock_company(self.db, company_id)
         if await self.repo.has_running_run(company_id, source_domain):
             await self.db.rollback()
             raise SyncInProgressException()
+        # 그 고객사의 다른 수집과 시작 초가 겹치면 1초씩 민다 (규칙 4, L1 안)
+        started_at = await self.repo.free_started_at(company_id, self.now())
         run_id = await self.repo.start_run(
             company_id, source_domain, connection_method, started_at
         )

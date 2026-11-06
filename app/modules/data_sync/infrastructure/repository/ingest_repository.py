@@ -1,7 +1,7 @@
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import bindparam, func, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -645,6 +645,28 @@ class IngestRepository:
                 )
             )
         )
+
+    async def free_started_at(
+        self, company_id: uuid.UUID, candidate: datetime
+    ) -> datetime:
+        """
+        candidate 부터 1초씩 밀어, 그 고객사의 어느 수집(상태 무관)과도 시작 초가 겹치지 않는 첫 시각 (이슈 #39 규칙 4).
+        엔진 store.run_at 이 (company_id, started_at) 키라 RUNNING·FAILED 수집과도 겹치면 안 됩니다.
+        초 단위로 비교합니다(엔진 입력 저장소가 1초 미만을 버리고 읽으므로, 이 규칙 전에 적재된 수집도 초로 봄).
+        L1 안에서 불러야 다른 수집이 그 사이 같은 시각을 잡지 않습니다.
+        """
+        taken = set(
+            await self.db.scalars(
+                select(func.date_trunc("second", DataSyncRun.started_at)).where(
+                    DataSyncRun.company_id == company_id,
+                    DataSyncRun.started_at >= candidate,
+                )
+            )
+        )
+        started_at = candidate
+        while started_at in taken:
+            started_at += timedelta(seconds=1)
+        return started_at
 
     async def start_run(
         self,

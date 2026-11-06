@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -217,3 +217,5 @@ async def test_scenario_failure_marks_failed_and_reopens(db_write_session, caplo
     # FAILED 는 적재된 수집이 아니므로 다시 누르면 같은 날(07-02)을 다시 시도한다
     retry = await service.request(tenant, SourceDomain.SHIPMENT)
     assert retry.window.at == AT
+    # 같은 날 재시도는 FAILED 수집과 시작 초가 겹치지 않게 1초 뒤 (이슈 #39 규칙 4)
+    assert retry.started.started_at == AT + timedelta(seconds=1)
