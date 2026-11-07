@@ -2,7 +2,7 @@ import copy
 import os
 import uuid
 from collections import defaultdict
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -251,9 +251,149 @@ async def test_tools_do_not_change_the_snapshot():
     assert ctx.engine.snap == before
 
 
+# --- 기준일 D (이슈 #51): resolve_base_date 단위 시험 --------------------------------------------
+# 실행 날짜 01-10. 일 수집은 00:10Z 에 시작한다(그날 수집 = 전날 재고·전날 접수 주문)
+OTHER = str(uuid.UUID(int=32))
+
+
+class _FakeStore:
+    """엔진 Store 중 resolve_base_date 가 읽는 것만(runs·inv·runs_until). runs_until 은 엔진 store.py 와 같은 식."""
+
+    def __init__(self, runs, inv):
+        self.runs = {r["data_sync_run_id"]: r for r in runs}
+        self.inv = {(r["company_id"], r["sku_id"], r["inventory_date"], r["data_sync_run_id"]): r for r in inv}  # fmt: skip
+
+    def runs_until(self, company_id, t):
+        return [r for r in self.runs.values() if r["company_id"] == company_id and r["started_at"] <= t]  # fmt: skip
+
+
+def _sync(run_id, domain, started_at, status="SUCCEEDED", company=COMPANY):
+    return {"data_sync_run_id": run_id, "company_id": company, "source_domain": domain,
+            "started_at": started_at, "status": status}  # fmt: skip
+
+
+def _inv(run_id, day, company=COMPANY):
+    return {
+        "company_id": company,
+        "sku_id": SKU_A,
+        "inventory_date": day,
+        "data_sync_run_id": run_id,
+    }
+
+
+def _resolve(runs, inv, confirm_t="2026-01-10T00:30:00Z"):
+    return EI.resolve_base_date(_FakeStore(runs, inv), COMPANY, confirm_t)
+
+
+def _basis(res):
+    return res.base_date, res.late_sources
+
+
+def test_base_date_is_run_date_when_both_sources_are_in():
+    # ① 그날 재고(01-09분)·주문(01-09 접수분) 수집이 끝난 뒤 = 실행 날짜
+    runs = [_sync("i9", "INVENTORY", "2026-01-09T00:10:00Z"), _sync("i10", "INVENTORY", "2026-01-10T00:10:00Z"),
+            _sync("o9", "ORDER", "2026-01-09T00:10:00Z"), _sync("o10", "ORDER", "2026-01-10T00:10:00Z")]  # fmt: skip
+    res = _resolve(runs, [_inv("i9", "2026-01-08"), _inv("i10", "2026-01-09")])
+    assert res == EI.BaseDateResolution(
+        base_date=date(2026, 1, 10), run_date=date(2026, 1, 10),
+        inventory_limit=date(2026, 1, 10), order_limit=date(2026, 1, 10), late_sources=(),
+    )  # fmt: skip
+
+
+def test_base_date_moves_back_when_todays_collections_have_not_started():
+    # ② 00:05 실행: 그날 수집(00:10)은 아직 시작 전 → 두 원천 모두 하루 늦음, D = 전날
+    runs = [_sync("i9", "INVENTORY", "2026-01-09T00:10:00Z"), _sync("i10", "INVENTORY", "2026-01-10T00:10:00Z"),
+            _sync("o9", "ORDER", "2026-01-09T00:10:00Z"), _sync("o10", "ORDER", "2026-01-10T00:10:00Z")]  # fmt: skip
+    res = _resolve(
+        runs,
+        [_inv("i9", "2026-01-08"), _inv("i10", "2026-01-09")],
+        "2026-01-10T00:05:00Z",
+    )
+    assert _basis(res) == (date(2026, 1, 9), ("INVENTORY", "ORDER"))
+    assert res.run_date == date(2026, 1, 10)
+
+
+def test_only_order_late():
+    # ③ 재고는 들어왔고 주문 수집만 늦음
+    runs = [
+        _sync("i10", "INVENTORY", "2026-01-10T00:10:00Z"),
+        _sync("o9", "ORDER", "2026-01-09T00:10:00Z"),
+    ]
+    res = _resolve(runs, [_inv("i10", "2026-01-09")])
+    assert _basis(res) == (date(2026, 1, 9), ("ORDER",))
+    assert (res.inventory_limit, res.order_limit) == (
+        date(2026, 1, 10),
+        date(2026, 1, 9),
+    )
+
+
+def test_only_inventory_late():
+    # ④ 주문은 들어왔고 재고만 늦음(마지막 재고일 01-08)
+    runs = [
+        _sync("i9", "INVENTORY", "2026-01-09T00:10:00Z"),
+        _sync("o10", "ORDER", "2026-01-10T00:10:00Z"),
+    ]
+    res = _resolve(runs, [_inv("i9", "2026-01-08")])
+    assert _basis(res) == (date(2026, 1, 9), ("INVENTORY",))
+
+
+def test_run_date_caps_base_date():
+    # ⑤ 한도가 실행 날짜보다 늦어도(미래 재고일 행, ORDER 수집 없음) D 는 실행 날짜를 넘지 않는다
+    runs = [_sync("i10", "INVENTORY", "2026-01-10T00:10:00Z")]
+    res = _resolve(runs, [_inv("i10", "2026-01-12")])
+    assert _basis(res) == (date(2026, 1, 10), ())
+    assert (res.inventory_limit, res.order_limit) == (date(2026, 1, 13), None)
+
+
+def test_failed_or_running_order_collection_does_not_count():
+    # ⑥ 그날 ORDER 수집이 FAILED·RUNNING 이면 그 전 성공(PARTIAL_SUCCESS 포함) 수집 기준. 엔진 order_collection_ok 와 같음
+    runs = [_sync("i10", "INVENTORY", "2026-01-10T00:10:00Z"),
+            _sync("o9", "ORDER", "2026-01-09T00:10:00Z", "PARTIAL_SUCCESS"),
+            _sync("o10", "ORDER", "2026-01-10T00:10:00Z", "FAILED"),
+            _sync("o10b", "ORDER", "2026-01-10T00:20:00Z", "RUNNING")]  # fmt: skip
+    res = _resolve(runs, [_inv("i10", "2026-01-09")])
+    assert _basis(res) == (date(2026, 1, 9), ("ORDER",))
+
+
+def test_initial_load_covers_all_of_2025():
+    # ⑦ 2026-01-01 전에 시작한 초기 적재는 2025 접수일 전부를 다룸 → ORDER 한도 2026-01-01(시작 날짜 + 0 이 아님)
+    runs = [
+        _sync("init", "ORDER", "2025-12-15T00:00:00Z"),
+        _sync("i10", "INVENTORY", "2026-01-10T00:10:00Z"),
+    ]
+    res = _resolve(runs, [_inv("i10", "2026-01-09")])
+    assert res.order_limit == date(2026, 1, 1)
+    assert _basis(res) == (date(2026, 1, 1), ("ORDER",))
+
+
+def test_rows_after_confirm_time_or_of_other_company_do_not_count():
+    # ⑧ confirm_t 뒤에 시작한 수집의 재고 행은 엔진 inventory_row 처럼 안 셈. 다른 고객사 수집·재고도 안 셈
+    runs = [_sync("i9", "INVENTORY", "2026-01-09T00:10:00Z"), _sync("i10", "INVENTORY", "2026-01-10T00:40:00Z"),
+            _sync("o10", "ORDER", "2026-01-10T00:10:00Z"),
+            _sync("x10", "INVENTORY", "2026-01-10T00:10:00Z", company=OTHER),
+            _sync("xo", "ORDER", "2026-01-10T00:10:00Z", company=OTHER)]  # fmt: skip
+    inv = [
+        _inv("i9", "2026-01-08"),
+        _inv("i10", "2026-01-09"),
+        _inv("x10", "2026-01-09", company=OTHER),
+    ]
+    res = _resolve(runs, inv)
+    assert _basis(res) == (date(2026, 1, 9), ("INVENTORY",))
+    assert res.order_limit == date(2026, 1, 10)
+
+
+def test_no_data_at_all_keeps_run_date_for_engine_hold():
+    # ⑨ 재고 행·성공 ORDER 수집이 하나도 없으면 한도 없음 → D = 실행 날짜, 보류는 엔진 메시지에 맡김
+    res = _resolve([_sync("o10", "ORDER", "2026-01-10T00:10:00Z", "FAILED")], [])
+    assert res == EI.BaseDateResolution(
+        base_date=date(2026, 1, 10), run_date=date(2026, 1, 10),
+        inventory_limit=None, order_limit=None, late_sources=(),
+    )  # fmt: skip
+
+
 def _run_input(stage, expected):
     return EI._RunInput(
-        shipment_id=uuid.UUID(int=42), confirm_t="2026-01-10T00:10:00Z", base_date=date(2026, 1, 10),
+        shipment_id=uuid.UUID(int=42), confirm_t="2026-01-10T00:10:00Z", run_date=date(2026, 1, 10),
         planned=date(2026, 1, 12), stage=stage, expected=expected,
     )  # fmt: skip
 
@@ -261,6 +401,17 @@ def _run_input(stage, expected):
 def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     # overlay 21건은 트리거 스냅샷 = 입력 확정 시각의 최신 관측이라, 트리거 값을 넘기지 않아도 정답 대조가 통과한다
     # (11-06 변이 시험에서 확인). 그래서 엔진에 넘기는 값을 직접 본다. 엔진 하네스는 AUTO 실행에 트리거 값을 넘긴다
+    # ⑩ 엔진에 넘기는 D 는 실행 날짜가 아니라 resolve_base_date 의 D 다(#51)
+    basis = EI.BaseDateResolution(
+        base_date=date(2026, 1, 9), run_date=date(2026, 1, 10),
+        inventory_limit=date(2026, 1, 9), order_limit=date(2026, 1, 10), late_sources=("INVENTORY",),
+    )  # fmt: skip
+    resolved = []
+    monkeypatch.setattr(
+        EI,
+        "resolve_base_date",
+        lambda store, cid, t: resolved.append((store, cid, t)) or basis,
+    )
     calls = []
 
     class Hold(Exception):
@@ -281,20 +432,23 @@ def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     monkeypatch.setattr(EI, "load_engine_module", modules.__getitem__)
     monkeypatch.setattr(EI, "_calendar", lambda: "CAL")
 
-    assert EI._build_and_analyze("STORE", _run_input("AT_SEA", date(2026, 1, 20))) == (
-        {"snap": 1}, {"analysis": {"snap": 1}})  # fmt: skip
+    assert EI._build_and_analyze("STORE", COMPANY, _run_input("AT_SEA", date(2026, 1, 20))) == (
+        {"snap": 1}, {"analysis": {"snap": 1}}, basis)  # fmt: skip
     EI._build_and_analyze(
-        "STORE", _run_input(None, None)
+        "STORE", COMPANY, _run_input(None, None)
     )  # 재분석: 엔진이 최신 관측을 고름
-    hold = EI._build_and_analyze("STORE", _run_input("AT_PORT", date(2026, 1, 20)))
+    hold = EI._build_and_analyze(
+        "STORE", COMPANY, _run_input("AT_PORT", date(2026, 1, 20))
+    )
 
     assert calls[0] == (
         str(uuid.UUID(int=42)),
-        date(2026, 1, 10),
+        date(2026, 1, 9),  # 실행 날짜 01-10 이 아님
         "2026-01-10T00:10:00Z",
         "AT_SEA",
         "2026-01-20",
     )
+    assert resolved[0] == ("STORE", COMPANY, "2026-01-10T00:10:00Z")
     assert calls[1][3:] == (None, None)
     assert hold == EI.EngineHold(code="REQUIRED_DATA_INVALID", message="재고 행 없음")
 
@@ -388,6 +542,15 @@ async def _check_run(session, run: AnalysisRun) -> str:
         )
         return "ON_HOLD"
     assert isinstance(built, EI.EngineInput), (run.run_code, built)
+    # ⑪ overlay 실행은 모두 그날 수집 뒤에 만들어져 새 규칙(#51)으로도 D = 실행 날짜, 늦은 원천 없음
+    run_date = run.started_at.astimezone(UTC).date()
+    basis = built.base_date_resolution
+    assert (built.base_date, basis.run_date, basis.late_sources) == (
+        run_date,
+        run_date,
+        (),
+    ), run.run_code
+    assert built.snap["D"] == built.base_date == basis.base_date, run.run_code
     decision = EI.decision_of(built)
     if (
         run.decision_signature_sha256 is not None
@@ -480,6 +643,40 @@ async def test_reanalysis_without_trigger_uses_latest_observation(
     run = _by_code(runs, "AN-260102-001")
     assert run.trigger_shipment_schedule_snapshot_id is None
     assert await _check_run(db_session, run) == "READY_FOR_REVIEW"
+
+
+async def test_run_before_next_days_collections_uses_last_data_day(
+    db_session, engine_dir
+):
+    # ⑫ 데모 상황 재현(#51, PR #56 검증 PV2-6): 같은 실행을 다음 날 00:05Z(그날 수집 전)에 만든 것으로 바꾼다.
+    #    입력 순번·트리거는 그대로라 엔진이 보는 자료는 같다. 새 규칙은 D 를 마지막 자료 날(원래 D)로 당겨 보류 없이
+    #    같은 판정 서명을 내고, 옛 규칙(D = 실행 날짜)은 엔진이 보류한다(음성 대조)
+    runs = await _runs(db_session, "A_BEAUTY")
+    run = _by_code(runs, "AN-260101-002")
+    run_day = run.started_at.astimezone(UTC).date()
+    later = SimpleNamespace(
+        analysis_run_id=run.analysis_run_id, company_id=run.company_id, delay_event_id=run.delay_event_id,
+        input_seq=run.input_seq, trigger_shipment_schedule_snapshot_id=run.trigger_shipment_schedule_snapshot_id,
+        started_at=datetime.combine(run_day + timedelta(days=1), time(0, 5), tzinfo=UTC),
+    )  # fmt: skip
+
+    built = await EI.build_engine_input(db_session, later)
+
+    assert isinstance(built, EI.EngineInput), built
+    basis = built.base_date_resolution
+    assert (basis.run_date, basis.base_date, basis.late_sources) == (
+        run_day + timedelta(days=1), run_day, ("INVENTORY", "ORDER"))  # fmt: skip
+    assert built.base_date == built.snap["D"] == run_day
+    decision = EI.decision_of(built)
+    assert decision.decision_signature_sha256 == run.decision_signature_sha256
+    assert decision.dependency_scope == run.dependency_scope
+
+    snapshot = EI.load_engine_module("snapshot")
+    with pytest.raises(snapshot.Hold, match="ORDER 수집 결측일"):
+        snapshot.build(
+            built.store, EI._calendar(), str(built.shipment_id), basis.run_date, built.confirm_t,
+            stage=built.snap["stage"], E=built.snap["E"].isoformat(),
+        )  # fmt: skip
 
 
 # --- 정답 대조: overlay 실행 21건 (선택 실행) ---------------------------------------------------
