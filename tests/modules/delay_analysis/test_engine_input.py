@@ -542,7 +542,7 @@ async def _check_run(session, run: AnalysisRun) -> str:
         )
         return "ON_HOLD"
     assert isinstance(built, EI.EngineInput), (run.run_code, built)
-    # ⑪ overlay 실행은 모두 그날 수집 뒤에 만들어져 새 규칙(#51)으로도 D = 실행 날짜, 늦은 원천 없음
+    # ⑪ overlay 실행은 모두 그날 수집이 입력에 들어온 뒤에 만들어져 새 규칙(#51)으로도 D = 실행 날짜, 늦은 원천 없음
     run_date = run.started_at.astimezone(UTC).date()
     basis = built.base_date_resolution
     assert (built.base_date, basis.run_date, basis.late_sources) == (
@@ -648,8 +648,8 @@ async def test_reanalysis_without_trigger_uses_latest_observation(
 async def test_run_before_next_days_collections_uses_last_data_day(
     db_session, engine_dir
 ):
-    # ⑫ 데모 상황 재현(#51, PR #56 검증 PV2-6): 같은 실행을 다음 날 00:05Z(그날 수집 전)에 만든 것으로 바꾼다.
-    #    입력 순번·트리거는 그대로라 엔진이 보는 자료는 같다. 새 규칙은 D 를 마지막 자료 날(원래 D)로 당겨 보류 없이
+    # ⑫ 데모 상황 재현(#51, PR #56 검증 PV2-6): 같은 실행을 다음 날 00:05Z 에 만든 것으로 바꾼다.
+    #    입력 순번·트리거는 그대로라 다음 날 수집(00:02Z 시작)은 입력에 없고 엔진이 보는 자료는 같다(= 그날 자료가 입력에 들어오기 전 실행). 새 규칙은 D 를 마지막 자료 날(원래 D)로 당겨 보류 없이
     #    같은 판정 서명을 내고, 옛 규칙(D = 실행 날짜)은 엔진이 보류한다(음성 대조)
     runs = await _runs(db_session, "A_BEAUTY")
     run = _by_code(runs, "AN-260101-002")

@@ -33,7 +33,7 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 엔진 입력 값(입력 확정 시각·단계·예상일)은 #36 정답 대조와 같은 규칙으로 실행 행에서 정한다.
           · 입력 확정 시각 confirm_t = engine_timestamp(run.started_at), 실행 날짜 = confirm_t 의 UTC 날짜(run_code 날짜)
           · 기준일 D = resolve_base_date: min(실행 날짜, 최신 재고일 + 1, 성공 ORDER 수집이 다룬 마지막 접수일 + 1)
-            (이슈 #51 사용자 결정). 그날 수집이 아직 안 끝난 실행도 마지막 자료 날 기준으로 계산하고, 늦은 원천을 남긴다
+            (이슈 #51 사용자 결정). 그날 재고·주문 자료가 아직 입력(입력 순번)에 없는 실행도 마지막 자료 날 기준으로 계산하고, 늦은 원천을 남긴다
           · 단계·예상 입고일 = 실행의 트리거 일정 스냅샷. 트리거가 없으면(재분석) 엔진처럼 confirm_t 까지의 최신 관측
       - 읽기 전용이다. 커밋하지 않는다.
 """
