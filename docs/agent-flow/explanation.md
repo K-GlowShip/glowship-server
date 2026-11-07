@@ -111,7 +111,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
    - mock은 이런 출력을 만들지 않아 지금은 생기지 않습니다.
    - 실제 모델을 붙이기 전에 데이터 팀과 정리합니다. 엔진 검사가 키 이름 대신 고정 문구를 쓰게 하거나, 서버가 위치를 걸러 냅니다. 서버에서 거르면 계약이 바뀝니다.
 8. **추천안 없는 READY 실행(#45 리뷰):** 입력 문서에 추천안이 없으면 엔진 검증기가 `KeyError`를 냅니다. 지금은 `KEEP_PLAN`이 늘 `FEASIBLE`이라 READY 실행에는 추천안이 항상 있습니다(계약 7절). 엔진의 추천 규칙이 바뀌면 함께 확인합니다.
-9. **SKU 코드에 숫자가 있으면 설명이 늘 실패함(11-06, GLOW-58 1단계에서 발견, 엔진 몫):** 엔진 검증기의 토크나이저(`explain/textcheck.tokens`)가 `CREAM20`·`SKU-001` 같은 코드 안의 숫자를 수치로 세어, "SKU별 지연 증분은 CREAM20 100개입니다" 문장이 인용 값과 달라 `VALUE_MISMATCH@risk_summary#s2`가 됩니다. 평가 시나리오 9건 중 GS-05(`X`·`Y`)만 통과하고, 실제 DB SKU 코드는 모두 숫자를 품고 있습니다. 서버 실패 흐름(#28)은 맞게 돕니다. 자세한 내용과 제안은 `docs/analysis/evaluation-scenarios.md` 4.1절. 엔진이 고쳐지면 `tests/modules/delay_analysis/evaluation/test_evaluation_explanation.py`의 xfail 표시를 지웁니다.
+9. **구분자 없는 SKU 코드면 설명이 실패함(11-06 GLOW-58 1단계에서 발견, 11-07 범위 바로잡음, 엔진 몫):** 엔진 검증기의 토크나이저(`explain/textcheck.tokens`)가 `CREAM20` 처럼 구분자 없이 숫자가 붙은 코드 안의 숫자를 수치로 세어, "SKU별 지연 증분은 CREAM20 100개입니다" 문장이 인용 값과 달라 `VALUE_MISMATCH@risk_summary#s2`가 됩니다. 평가 시나리오 9건 중 GS-05(`X`·`Y`)만 통과합니다. `SKU-001` 처럼 `-`·`_` 가 있는 코드는 코드 토큰으로 빠져 맞게 셉니다(실제 DB 코드 모양, overlay 의 PASSED 설명 13건). 11-06 판의 "실제 DB 코드도 해당"은 틀렸습니다. 서버 실패 흐름(#28)은 맞게 돕니다. 자세한 내용과 제안은 `docs/analysis/evaluation-scenarios.md` 4.1절. 엔진이 고쳐지면 `tests/modules/delay_analysis/evaluation/test_evaluation_explanation.py`의 xfail 표시를 지웁니다.
 
 ## 7. 작업 중 실패와 원인
 

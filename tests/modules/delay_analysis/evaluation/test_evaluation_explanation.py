@@ -24,10 +24,10 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 """
     READY 시나리오 9건의 AI 설명 생성(GLOW-127 generate_explanation, mock 모델)과 T12 재검증
       - 기대(정답표 흐름): 설명이 첫 시도에 통과하고, 추천 대응안·대응안 집합이 정답표와 같으며, T12 로 다시 검증해도 PASSED.
-      - 11-06 발견(엔진 몫): 엔진 explain/textcheck.tokens 가 SKU 코드 안의 숫자를 수치로 센다(CREAM20 → 20).
+      - 11-06 발견(엔진 몫): 엔진 explain/textcheck.tokens 가 구분자 없는 SKU 코드 안의 숫자를 수치로 센다(CREAM20 → 20).
         모의 모델이 쓰는 "SKU별 지연 증분은 CREAM20 100개입니다" 문장은 인용 값 [100] 과 토큰 [20, 100] 이 달라
         VALUE_MISMATCH@risk_summary#s2 로 3번 모두 실패한다. 코드에 숫자가 없는 GS-05(X·Y)만 통과.
-        실제 DB SKU 코드도 전부 숫자를 품고 있어(SKU-001 …) 고치지 않으면 운영에서 설명이 늘 실패한다.
+        SKU-001 처럼 '-'·'_' 가 있는 코드(실제 DB 모양)는 코드 토큰으로 빠져 맞게 센다(11-07 범위 바로잡음).
         → 통과 기대 시험은 strict xfail 로 두고(엔진이 고쳐지면 XPASS 로 실패해 표시를 지우라고 알림),
           지금 동작(3번 실패 → #28 explanation_failure 모양)은 따로 고정한다.
 """
@@ -35,7 +35,7 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 RUN_ID = "5e05f1a0-2026-4c00-9b00-00000000058a"
 NOW = datetime(2026, 3, 10, 0, 5, tzinfo=UTC)
 ENGINE_TOKENIZER_NOTE = (
-    "엔진 textcheck.tokens 가 SKU 코드 안의 숫자를 수치로 세어 모의 설명이 risk_summary#s2 에서 "
+    "엔진 textcheck.tokens 가 구분자 없는 SKU 코드 안의 숫자를 수치로 세어 모의 설명이 risk_summary#s2 에서 "
     "VALUE_MISMATCH 로 실패함(11-06, 엔진 몫). 고쳐지면 이 표시를 지운다"
 )
 DIGIT_CODE_KEYS = [k for k in KEYS if k != "GS-05"]
@@ -110,6 +110,8 @@ def test_engine_tokenizer_counts_digits_inside_sku_codes():
     tokens = load_engine_module("explain.textcheck").tokens
     assert tokens("SKU별 지연 증분은 CREAM20 100개입니다")["numbers"] == [20, 100]
     assert tokens("SKU별 지연 증분은 X 120개, Y 0개입니다")["numbers"] == [120, 0]
+    # 범위: '-'·'_' 로 이어진 코드(실제 DB 모양)는 코드 토큰으로 빠져 숫자로 세지 않는다(11-07 바로잡음)
+    assert tokens("SKU별 지연 증분은 SKU-005 31개입니다")["numbers"] == [31]
 
 
 @pytest.mark.parametrize("key", DIGIT_CODE_KEYS)
