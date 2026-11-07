@@ -116,6 +116,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 
 - 개발 1·3 함수의 실제 타입을 import하지 않고 모양(Protocol)만 씁니다: `EngineHoldLike(code, message)`, `ExplanationFailedLike(model_name, prompt_version, failure_summary())`.
 - 엔진 대조가 다르거나 최종 확인(T12)에서 떨어지면 노드가 `code_error`로 `FAILED`(`UNEXPECTED_TOOL_ERROR`, `VALIDATING_OUTPUT`)를 올립니다.
+- **도구 밖 함수의 예외(이슈 #57 1번, 결정 6):** 분석 준비·`decide`·`explain`·`final_check_input`·STALE 조회처럼 등록표를 거치지 않는 함수가 예외를 내도, 노드 래퍼(`graph.with_failure_stop`)가 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1·소진 아님 실패 요약으로 바꿉니다. 실패 단계는 그 노드의 단계(조정 에이전트는 재고 영향 결과 전·NO_RISK 판정까지 `ANALYZING_IMPACT`, 그 뒤 `ANALYZING_OPTIONS`)이고, 문구는 고정(`UNEXPECTED_ERROR_MESSAGE`)이며 예외 내용은 서버 로그로만 보냅니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`: 묶음 없음·다른 형식·실행 둘에 씀·분석 준비 전 도구 문맥)는 부르는 코드의 버그라 바꾸지 않고 올립니다.
 
 ### 5.2 추적 연결 (GLOW-124)
 
@@ -135,6 +136,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 | 3 | 조회 도구 T2~T5·T8 입력 | **확정:** 입력 없음(`payload: None`) |
 | 4 | 추적 설정 오류(`TraceConfigError`, LangChain 자동 추적 환경 변수가 켜져 있으면 냄) 때 | 대기. 추천: 추적 없이 분석을 계속하고 서버 로그에 경고(GLOW-124 "추적 장애가 분석에 영향 없음") |
 | 5 | 설명 자산·모델 설정 오류(`SystemConfigError`) 때 | 대기. 추천: 서버 시작 때 한 번 확인해 막음(GLOW-127 PR이 `engine_startup.verify_engine_on_startup()`에 한 줄, `GLOWSHIP_ENGINE_DIR` 없으면 건너뜀). 실행 도중이면 FAILED `UNEXPECTED_TOOL_ERROR` |
+| 6 | 도구 밖 함수의 예외(이슈 #57 1번, #55 리뷰 후속) | **확정(사용자 11-07):** 노드에서 실패 요약으로 바꿈(5.1절). 서비스에서만 잡으면 그래프 상태가 사라져 실패 단계를 정확히 남길 수 없고 계산 결과도 잃기 때문입니다(agentflow 7.1: 실패 요약 5칸은 에이전트 실행 코드가 만듦). 코드는 agentflow 7.1 "분류되지 않은 오류" `UNEXPECTED_TOOL_ERROR`를 그대로 씁니다(새 코드 없음). 그래프 밖으로 나가는 나머지(연결 실수 `RuntimeWiringError`, LangGraph 자체 오류)는 자동 시작(#51)이 마지막에 잡아 실행을 진행 중으로 남기지 않습니다 |
 
 - 계약 문서 9절의 새 결정 번호: A가 Q13~Q15를 더했으므로 세 개발 세션의 새 결정은 **Q16부터** 씁니다(9절은 개발 2 몫).
 - **확인할 것(개발 3):** 설명 함수가 통과시킨 설명이 최종 확인(T12)에서 떨어지면 지금은 연결 오류 `FAILED`(`UNEXPECTED_TOOL_ERROR`)로 멈춥니다. "3회 실패"(`EXPLANATION_GENERATION_FAILED`)는 DDL ck26이 3회·소진만 허용하고 실제 시도 수와 달라 쓰지 않았습니다. 계산 결과까지 저장할지는 실제 T12를 연결할 때 개발 3과 정합니다.
@@ -147,11 +149,15 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 | READY_FOR_REVIEW·NO_RISK | `save_analysis_result` | `AnalysisResult`(T6·T7·T10·T11 출력, `run_basis_from_tools(…)`, `decision_of` 결과, READY면 `Explanation`) |
 | 설명 3회 실패 | `save_analysis_failure` | `explanation_failure(시도 기록)`, 계산 결과(설명 없이), `ExplanationModel`. 의존 범위는 비우고 판정 서명은 저장 |
 | 도구 실패 | `save_analysis_failure` | `ToolFailure.summary` |
+| 도구 밖 함수 예외(결정 6) | `save_analysis_failure` | 상태의 `failure`(노드 래퍼가 만든 `UNEXPECTED_TOOL_ERROR` 요약). 도구 실패와 같은 길 |
+| 그래프 밖으로 나간 예외(연결 실수·LangGraph 자체 오류) | `save_analysis_failure` (자동 시작 #51이 할 일) | 마지막 잡기: 실행을 진행 중으로 남기지 않음. 그래프 상태가 없어 실패 단계는 #51에서 정함 |
 | 엔진 입력 보류 | `save_analysis_failure` | `hold_summary(code, message)` |
 | NO_DELAY | `save_no_delay` | `judge_no_delay` 결과의 판정 서명·SHA-256 |
 | 노드 경계 STALE | 저장 안 함 | 상태는 서비스가 이미 STALE로 바꿈 |
 
 ## 8. 작업 중 실패와 원인
+
+- **노드가 직접 낸 취소를 그대로 올라온다고 짐작함(이슈 #57 1번):** 시험에서 설명 함수가 `asyncio.CancelledError`를 던지면 그대로 올라올 것으로 보았지만, LangGraph(`pregel/_retry.py`)는 노드 안에서 생긴 취소를 `NodeCancelledError`로 바꿔 올립니다. 확인하려던 것은 "밖에서 실행을 취소하면 실패 요약으로 삼키지 않는다"라서, 실제 취소(`task.cancel()`)로 시험을 바꿨습니다.
 
 - **음성 시험이 적용되지 않은 채 통과로 보일 뻔함:** "보류 → FAILED 바꿈 빼기" 변경이 ruff가 줄 모양을 바꿔 적용되지 않았는데 시험은 그대로 통과했습니다. 적용 여부를 출력으로 확인해 다시 했고, 그때는 해당 시험이 실패했습니다.
 - **가짜 출력이 다음 도구 입력에서 다시 검사됨(GLOW-129 노드 연결):** Pydantic은 이미 만든 모델을 다른 모델에 넣을 때 모델 뒤 검사(`model_validator(mode="after")`)를 다시 돌립니다. 도구가 내는 출력은 다음 도구 입력에 들어가므로, 도구 출력은 계약 모델의 뒤 검사를 통과해야 합니다(가짜 도구도 마찬가지). 자세한 것은 [그래프 문서](delay-analysis-graph.md) 9절.

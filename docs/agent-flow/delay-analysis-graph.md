@@ -168,6 +168,7 @@ sequenceDiagram
 | 결과 검증 | `nodes/validate.py` | 통과한 설명을 T12로 한 번 더 확인 → `READY_FOR_REVIEW`. 떨어지면 연결 오류 `FAILED`(`UNEXPECTED_TOOL_ERROR`) | `VALIDATING_OUTPUT` |
 
 - **실패 처리:** 도구는 노드가 직접 부르지 않고 등록표(`call_tool`)로 부릅니다. 등록 확인·입출력 형식 확인·재시도(최초 1 + 재시도 2)·추적 훅이 그 안에 있습니다(인터페이스 문서 5절). 도구가 멈추면 `call_tool`이 `ToolFailure`(실패 요약)를 올리고, `graph.with_failure_stop`이 `outcome = FAILED`·`failure`·`step`을 남기고 `<노드>:failed`를 `visited_nodes`에 적습니다. 그 전까지 채운 결과는 상태에 그대로 있습니다.
+  - 이 래퍼는 **7개 노드 모두**에 있고, STALE 확인(`with_stale_check`)은 래퍼 안쪽입니다(이슈 #57 1번). 그래서 도구 밖 함수(분석 준비·`decide`·`explain`·`final_check_input`)나 실행 상태 조회가 예외를 내도 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1로 끝납니다. 문구는 고정이고 예외 내용은 서버 로그로만 갑니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`)와 작업 취소는 바꾸지 않고 올립니다([인터페이스 문서](agent-tool-interface.md) 5.1절·6절 결정 6).
 - **엔진 대조(비교 노드):** 대응안 T9~T11은 A의 함수가 계약 입력으로 계산하지만, 판정 서명은 엔진 결과로 만들어집니다. 두 값이 다르면 화면에 보일 대응안과 STALE 판정 서명이 어긋나므로 멈춥니다. 대조하는 값은 판정 서명에 들어가는 것과 같습니다: 대응안마다 `feasibility_status`·`reason_code`·`delay_induced_recovered_orders`·`reduction_committed_total`, 그리고 추천 대응안(엔진 `pipeline.signature`, 공유 묶음 `glowship_engine/pipeline.py` 49~52행).
 - **최종 확인(T12)에서 떨어질 때:** 설명 함수가 이미 같은 검증으로 통과시킨 설명이 떨어지면 두 검증이 어긋난 연결 오류로 봅니다. 실제 시도가 3번이 아니라 "3회 실패"(`EXPLANATION_GENERATION_FAILED`, DDL ck26은 3회·소진만 허용)로 적지 않습니다. 이 처리는 개발 3과 실제 T12를 연결할 때 다시 확인합니다.
 
