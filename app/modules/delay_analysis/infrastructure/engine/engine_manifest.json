@@ -34,6 +34,11 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
+      "path": "glowship_engine/episodes.py",
+      "sha256": "40da20129aeaa7714e5cc2931103361425fe4aa9bbb1eea76d0c4307640ba273",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
       "path": "glowship_engine/explain/__init__.py",
       "sha256": "21eadc9d2292519be080f0e637e6fb191898a935413fc7a35f6488489cbb2bf4",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
@@ -161,6 +166,11 @@
     {
       "path": "glowship_engine/tests/__init__.py",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/tests/fixture_glow50.py",
+      "sha256": "c0af3ddeaffe2f2a51bd584a4083fd912782c286e31a3f095f1760fdf1b34fe4",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
