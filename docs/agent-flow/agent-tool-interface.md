@@ -116,7 +116,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 
 - 개발 1·3 함수의 실제 타입을 import하지 않고 모양(Protocol)만 씁니다: `EngineHoldLike(code, message)`, `ExplanationFailedLike(model_name, prompt_version, failure_summary())`.
 - 엔진 대조가 다르거나 최종 확인(T12)에서 떨어지면 노드가 `code_error`로 `FAILED`(`UNEXPECTED_TOOL_ERROR`, `VALIDATING_OUTPUT`)를 올립니다.
-- **도구 밖 함수의 예외(이슈 #57 1번, 결정 6):** 분석 준비·`decide`·`explain`·`final_check_input`·STALE 조회처럼 등록표를 거치지 않는 함수가 예외를 내도, 노드 래퍼(`graph.with_failure_stop`)가 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1·소진 아님 실패 요약으로 바꿉니다. 실패 단계는 그 노드의 단계(조정 에이전트는 재고 영향 결과 전·NO_RISK 판정까지 `ANALYZING_IMPACT`, 그 뒤 `ANALYZING_OPTIONS`)이고, 문구는 고정(`UNEXPECTED_ERROR_MESSAGE`)이며 예외 내용은 서버 로그로만 보냅니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`: 묶음 없음·다른 형식·실행 둘에 씀·분석 준비 전 도구 문맥)는 부르는 코드의 버그라 바꾸지 않고 올립니다.
+- **도구 밖 함수의 예외(이슈 #57 1번, 결정 6):** 분석 준비·`decide`·`explain`·`final_check_input`·STALE 조회처럼 등록표를 거치지 않는 함수가 예외를 내도, 노드 래퍼(`graph.with_failure_stop`)가 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1·소진 아님 실패 요약으로 바꿉니다. 실패 단계는 그 노드의 단계(조정 에이전트는 재고 영향 결과 전·NO_RISK 판정까지 `ANALYZING_IMPACT`, 그 뒤 `ANALYZING_OPTIONS`)이고, 문구는 고정(`UNEXPECTED_ERROR_MESSAGE`)이며 예외 내용은 서버 로그로만 보냅니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`: 묶음 없음·다른 형식·실행 둘에 씀·분석 준비 전 도구 문맥)는 부르는 코드의 버그라 바꾸지 않고 올립니다. LangGraph 제어 신호(`GraphBubbleUp`: `interrupt`·`Command` 등)도 `Exception` 하위지만 오류가 아니라 LangGraph가 받아야 하므로 그대로 올립니다(지금은 쓰지 않음).
 
 ### 5.2 추적 연결 (GLOW-124)
 
@@ -157,6 +157,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 
 ## 8. 작업 중 실패와 원인
 
+- **넓게 잡은 `except Exception`이 LangGraph 제어 신호까지 삼킬 뻔함(이슈 #57 1번, 다시 점검에서 찾음):** 첫 구현은 `RuntimeWiringError`만 올렸는데, `GraphInterrupt`·`ParentCommand`(`GraphBubbleUp` 하위)도 `Exception` 하위라 노드 안에서 쓰면 FAILED로 바뀌었을 것입니다. 지금은 쓰지 않아 시험이 모두 통과했습니다. `langgraph.errors`의 예외 계층을 확인해 `GraphBubbleUp`도 올리게 하고, 시험과 변이(삼키게 바꾸면 실패)를 더했습니다.
 - **노드가 직접 낸 취소를 그대로 올라온다고 짐작함(이슈 #57 1번):** 시험에서 설명 함수가 `asyncio.CancelledError`를 던지면 그대로 올라올 것으로 보았지만, LangGraph(`pregel/_retry.py`)는 노드 안에서 생긴 취소를 `NodeCancelledError`로 바꿔 올립니다. 확인하려던 것은 "밖에서 실행을 취소하면 실패 요약으로 삼키지 않는다"라서, 실제 취소(`task.cancel()`)로 시험을 바꿨습니다.
 
 - **음성 시험이 적용되지 않은 채 통과로 보일 뻔함:** "보류 → FAILED 바꿈 빼기" 변경이 ruff가 줄 모양을 바꿔 적용되지 않았는데 시험은 그대로 통과했습니다. 적용 여부를 출력으로 확인해 다시 했고, 그때는 해당 시험이 실패했습니다.

@@ -2,6 +2,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -44,7 +45,7 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import CompletedSt
     도구 실패(ToolFailure): 도구를 부르는 노드에서 나면 FAILED 와 실패 요약을 남기고 종료(agentflow 5.4·7.1)
     도구 밖 함수의 예외(엔진 입력·판정 서명·설명·최종 확인 입력·STALE 조회 등): 모든 노드에서 같은 방식으로
       FAILED·UNEXPECTED_TOOL_ERROR 실패 요약으로 바꿔 종료(이슈 #57 1번). 실행 도구 묶음 연결 실수
-      (RuntimeWiringError)만 그대로 올린다.
+      (RuntimeWiringError)와 LangGraph 제어 신호(GraphBubbleUp)만 그대로 올린다.
     실행 도구(등록표·엔진 입력 등)는 config["configurable"]["analysis_runtime"] (runtime.py)
 """
 
@@ -116,6 +117,8 @@ def with_failure_stop(name: str, node: Node, step: StepOf) -> Node:
       - 그 밖의 예외(Exception): FAILED·UNEXPECTED_TOOL_ERROR·시도 1. 실패 단계는 step
         (노드마다 고정, 조정 에이전트는 들어올 때의 상태로 정함).
       - 실행 도구 묶음 연결 실수(RuntimeWiringError)는 바꾸지 않고 올린다(부르는 코드의 버그).
+      - LangGraph 제어 신호(GraphBubbleUp: interrupt·Command 등)는 Exception 하위지만 오류가 아니라
+        LangGraph 가 받아 처리해야 하므로 그대로 올린다(지금은 쓰지 않지만 삼키면 그 기능이 조용히 실패로 바뀜).
       - 작업 취소(asyncio.CancelledError)는 Exception 이 아니라 그대로 올라간다.
     """
 
@@ -124,7 +127,7 @@ def with_failure_stop(name: str, node: Node, step: StepOf) -> Node:
             return await node(state, config)
         except ToolFailure as failure:
             summary = failure.summary
-        except RuntimeWiringError:
+        except RuntimeWiringError, GraphBubbleUp:
             raise
         except Exception:
             logger.exception(

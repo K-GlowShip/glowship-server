@@ -5,7 +5,9 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph import END
+from langgraph.types import Command
 
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
@@ -26,6 +28,7 @@ from app.modules.delay_analysis.application.agent.graph import (
     route_after_prepare,
     route_from_coordinator,
     route_to_coordinator,
+    with_failure_stop,
 )
 from app.modules.delay_analysis.application.agent.nodes.compare import (
     option_differences,
@@ -593,6 +596,22 @@ async def test_밖에서_실행을_취소하면_실패_요약으로_삼키지_�
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [GraphInterrupt(), ParentCommand(Command(goto=END))],
+    ids=["GraphInterrupt", "ParentCommand"],
+)
+async def test_LangGraph_제어_신호는_실패_요약으로_바꾸지_않고_올린다(signal):
+    # GraphBubbleUp(interrupt·Command 등)은 Exception 하위지만 LangGraph 가 받아야 하는 신호다
+    async def node(state, config):
+        raise signal
+
+    wrapped = with_failure_stop(EXPLAIN, node, AnalysisStep.VALIDATING_OUTPUT)
+
+    with pytest.raises(type(signal)):
+        await wrapped(_input(), {})
 
 
 async def test_실행_도구_묶음_연결_실수는_실패_요약으로_바꾸지_않고_올린다():
