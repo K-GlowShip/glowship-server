@@ -16,7 +16,10 @@ from app.modules.delay_analysis.application.agent.retry import (
     TransientToolError,
     call_with_retry,
 )
-from app.modules.delay_analysis.application.agent.runtime import RUNTIME_KEY
+from app.modules.delay_analysis.application.agent.runtime import (
+    RUNTIME_KEY,
+    RuntimeWiringError,
+)
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
 from app.modules.delay_analysis.application.agent.tracing import (
     AUTO_TRACING_ENV,
@@ -175,11 +178,14 @@ async def test_stale_stop_and_node_error_are_traced():
     error_tracer = RunTracer(
         state["analysis_run_id"], state["company_id"], [error_sink]
     )
-    with pytest.raises(RuntimeError):
-        await _run(state, error_tracer, reader=Broken())
+    # 상태 조회 오류는 도구 밖 예외라 조정 에이전트에서 FAILED 로 끝난다(이슈 #57 1번). 그래프 밖으로 나가지 않으므로
+    # NODE_ERROR 대신 그 노드의 끝과 RUN_END(FAILED)가 남고, 예외 내용은 서버 로그로만 간다.
+    error_result = await _run(state, error_tracer, reader=Broken())
     error_tracer.close()
+    assert error_result["outcome"] == "FAILED"
     kinds = [e.kind for e in error_sink.events]
-    assert "NODE_ERROR" in kinds and kinds[-1] == "RUN_ERROR"
+    assert "NODE_ERROR" not in kinds and kinds[-1] == "RUN_END"
+    assert error_sink.events[-1].summary["outcome"] == "FAILED"
     assert "A-ORD-20260613-0040" not in json.dumps(
         [e.to_json_dict() for e in error_sink.events]
     )
@@ -190,18 +196,19 @@ async def test_node_error_keeps_only_error_type_not_message():
     state = _state()
     secret = "postgresql+asyncpg://glowship:s3cret@localhost:5432/db password=hunter2 Bearer abc.def"
 
+    # 그래프 밖으로 나가는 오류(노드가 실패 요약으로 바꾸지 않는 연결 실수, 이슈 #57 1번)로 NODE_ERROR·RUN_ERROR 를 낸다
     class Broken:
         async def get_status(self, analysis_run_id):
-            raise RuntimeError(secret)
+            raise RuntimeWiringError(secret)
 
     sink = MemorySink()
     tracer = RunTracer(state["analysis_run_id"], state["company_id"], [sink])
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeWiringError):
         await _run(state, tracer, reader=Broken())
     tracer.close()
 
     errors = [e for e in sink.events if e.kind in ("NODE_ERROR", "RUN_ERROR")]
-    assert errors and all(e.error_code == "RuntimeError" for e in errors)
+    assert errors and all(e.error_code == "RuntimeWiringError" for e in errors)
     assert all("message" not in e.summary for e in errors)
     dumped = json.dumps([e.to_json_dict() for e in sink.events])
     assert (

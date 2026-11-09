@@ -74,6 +74,14 @@ DecisionMaker = Callable[[EngineInputLike], Any]
 FinalCheckInput = Callable[[Any], BaseModel]
 
 
+class RuntimeWiringError(RuntimeError):
+    """
+    실행 도구 묶음을 잘못 연결함: config 에 없음·다른 형식·실행 둘에 씀·분석 준비 전에 도구 문맥을 씀.
+    분석 실행 하나의 실패가 아니라 부르는 코드의 연결 버그라, 노드가 실패 요약(FAILED)으로 바꾸지 않고
+    그대로 올린다(사용자 결정 11-07, 이슈 #57 1번). 그 실행은 자동 시작의 마지막 잡기가 FAILED 로 남긴다(#51).
+    """
+
+
 def utc_now_seconds() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
@@ -107,7 +115,7 @@ class AnalysisRuntime:
         engine: EngineInputLike,
     ) -> ToolContext:
         if self._ctx is not None:
-            raise RuntimeError(
+            raise RuntimeWiringError(
                 "실행 도구 묶음은 실행 하나에만 씁니다(엔진 입력을 이미 담음)"
             )
         self._ctx = ToolContext(
@@ -123,7 +131,7 @@ class AnalysisRuntime:
     @property
     def ctx(self) -> ToolContext:
         if self._ctx is None:
-            raise RuntimeError("분석 준비(엔진 입력) 전에는 도구 문맥이 없습니다")
+            raise RuntimeWiringError("분석 준비(엔진 입력) 전에는 도구 문맥이 없습니다")
         return self._ctx
 
     async def call(
@@ -138,11 +146,11 @@ def runtime_of(config: RunnableConfig) -> AnalysisRuntime:
     """노드가 실행 도구 묶음을 꺼낸다. 없으면 오류: 설정이 빠진 실행이 빈 결과로 끝나 저장되는 일을 막는다."""
     runtime = (config.get("configurable") or {}).get(RUNTIME_KEY)
     if runtime is None:
-        raise RuntimeError(
+        raise RuntimeWiringError(
             f'그래프 실행에 config["configurable"]["{RUNTIME_KEY}"](AnalysisRuntime)가 없습니다'
         )
     if not isinstance(runtime, AnalysisRuntime):
-        raise TypeError(
+        raise RuntimeWiringError(
             f'config["configurable"]["{RUNTIME_KEY}"] 는 AnalysisRuntime 이어야 합니다: {type(runtime).__name__}'
         )
     return runtime

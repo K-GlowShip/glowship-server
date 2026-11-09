@@ -1,9 +1,13 @@
+import asyncio
+import logging
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph import END
+from langgraph.types import Command
 
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
@@ -16,6 +20,7 @@ from app.modules.delay_analysis.application.agent.graph import (
     EXPLAIN,
     INVENTORY_IMPACT,
     RESPONSE_OPTIONS,
+    UNEXPECTED_ERROR_MESSAGE,
     VALIDATE,
     build_analysis_graph,
     route_after_compare,
@@ -23,6 +28,7 @@ from app.modules.delay_analysis.application.agent.graph import (
     route_after_prepare,
     route_from_coordinator,
     route_to_coordinator,
+    with_failure_stop,
 )
 from app.modules.delay_analysis.application.agent.nodes.compare import (
     option_differences,
@@ -36,7 +42,10 @@ from app.modules.delay_analysis.application.agent.retry import (
     PermissionDeniedError,
     TransientToolError,
 )
-from app.modules.delay_analysis.application.agent.runtime import RUNTIME_KEY
+from app.modules.delay_analysis.application.agent.runtime import (
+    RUNTIME_KEY,
+    RuntimeWiringError,
+)
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
     AnalysisStep,
@@ -55,7 +64,8 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
 """
     지연 분석 그래프 흐름 시험 (GLOW-129, docs/agent-flow/delay-analysis-graph.md)
     가짜 실행 도구 묶음(fake_runtime)으로 종료 갈래마다 하나씩: READY, NO_DELAY, ON_HOLD, NO_RISK, 예측 부족만(READY),
-    도구 실패(노드별 실패 단계), 엔진 판정 서명과 다름, 설명 3회 실패, 최종 확인 실패, STALE 경계 4곳, 실행 도구 빠짐.
+    도구 실패(노드별 실패 단계), 엔진 판정 서명과 다름, 설명 3회 실패, 최종 확인 실패, STALE 경계 4곳, 실행 도구 빠짐,
+    도구 밖 함수의 예외 8곳(이슈 #57 1번: FAILED·UNEXPECTED_TOOL_ERROR, 연결 실수·취소는 그대로 올림).
     도구를 부른 순서는 call_tool 의 추적 훅(첫 시도만)으로 본다.
 """
 
@@ -436,3 +446,178 @@ def test_하위_에이전트_비교_설명_뒤에는_종료_상태가_있으면_
 def test_가짜_도구는_도구_12개를_모두_등록한다():
     assert set(fake_tools(FakeScenario())) == set(ToolName)
     assert all(isinstance(s, ToolSpec) for s in fake_tools(FakeScenario()).values())
+
+
+# --- 도구 밖 함수의 예외 (이슈 #57 1번) ---------------------------------------------------
+SECRET = "db down A-ORD-20260613-0040"  # 예외 문구는 Client 문구(failure_message)에 들어가면 안 됨
+
+NO_RISK = FakeScenario(
+    completed_status=CompletedStatus.NO_RISK,
+    result_class=ResultClass.PURE_NO_RISK,
+    has_at_risk_orders=False,
+)
+
+
+def _raise(error: BaseException):
+    def fail(*_args, **_kwargs):
+        raise error
+
+    return fail
+
+
+async def _raise_async_on(method: str, runtime, error: BaseException):
+    """runtime.preparer 의 한 메서드만 예외를 내게 바꾼다."""
+    preparer = runtime.preparer
+    original = getattr(preparer, method)
+
+    async def broken():
+        await original()
+        raise error
+
+    object.__setattr__(preparer, method, broken)
+    return runtime
+
+
+class _BrokenReader:
+    """fail_on_call 번째 실행 상태 조회에서 예외(DB 장애 흉내)"""
+
+    def __init__(self, fail_on_call: int):
+        self.fail_on_call = fail_on_call
+        self.calls = 0
+
+    async def get_status(self, analysis_run_id: uuid.UUID) -> str:
+        self.calls += 1
+        if self.calls >= self.fail_on_call:
+            raise ConnectionError(SECRET)
+        return "ANALYZING_IMPACT"
+
+
+def _broken_explain(runtime, error: BaseException):
+    async def explain(ctx, now):
+        raise error
+
+    return replace(runtime, explain=explain)
+
+
+async def _broken_runtime(where: str, error: BaseException):
+    if where == "judge_no_delay":
+        return None, await _raise_async_on("judge_no_delay", fake_runtime(), error)
+    if where == "build_engine_input":
+        return None, await _raise_async_on("build_engine_input", fake_runtime(), error)
+    if where == "decide@no_risk":
+        return None, replace(fake_runtime(NO_RISK), decide=_raise(error))
+    if where == "decide@compare":
+        return None, replace(fake_runtime(), decide=_raise(error))
+    if where == "explain":
+        return None, _broken_explain(fake_runtime(), error)
+    if where == "final_check_input":
+        return None, replace(fake_runtime(), final_check_input=_raise(error))
+    if where == "stale@coordinator":
+        return _BrokenReader(1), fake_runtime()
+    if where == "stale@explain":
+        return _BrokenReader(4), fake_runtime()
+    raise AssertionError(where)
+
+
+@pytest.mark.parametrize(
+    ("where", "node", "failed_step", "kept"),
+    [
+        ("judge_no_delay", "prepare", AnalysisStep.VALIDATING, None),
+        ("build_engine_input", "prepare", AnalysisStep.VALIDATING, None),
+        ("stale@coordinator", COORDINATOR, AnalysisStep.ANALYZING_IMPACT, None),
+        (
+            "decide@no_risk",
+            COORDINATOR,
+            AnalysisStep.ANALYZING_IMPACT,
+            "inventory_impact",
+        ),
+        ("decide@compare", COMPARE, AnalysisStep.VALIDATING_OUTPUT, "option_outcomes"),
+        ("stale@explain", EXPLAIN, AnalysisStep.VALIDATING_OUTPUT, "decision"),
+        ("explain", EXPLAIN, AnalysisStep.VALIDATING_OUTPUT, "decision"),
+        ("final_check_input", VALIDATE, AnalysisStep.VALIDATING_OUTPUT, "explanation"),
+    ],
+)
+async def test_도구_밖_함수가_예외를_내면_그_노드에서_FAILED_실패_요약으로_끝난다(
+    where, node, failed_step, kept, caplog
+):
+    reader, runtime = await _broken_runtime(where, ConnectionError(SECRET))
+
+    with caplog.at_level(logging.ERROR):
+        result, _, _ = await _run(runtime=runtime, reader=reader)
+
+    assert result["outcome"] == AnalysisOutcome.FAILED
+    failure = result["failure"]
+    assert (
+        failure.status,
+        failure.failed_step,
+        failure.failure_code,
+        failure.attempt_count,
+        failure.retry_exhausted,
+    ) == (AnalysisOutcome.FAILED, failed_step, UNEXPECTED_TOOL_ERROR, 1, False)
+    assert failure.failure_message == UNEXPECTED_ERROR_MESSAGE  # 고정 문구
+    assert SECRET not in failure.failure_message
+    assert result["step"] == failed_step
+    assert result["visited_nodes"][-1] == f"{node}:failed"
+    if kept:  # 그때까지 채운 결과는 남아 서비스가 함께 저장할 수 있음
+        assert kept in result
+    if node != VALIDATE:
+        assert "validate" not in result["visited_nodes"]
+    # 예외 내용은 서버 로그로(노드 이름·실행 ID·원래 예외)
+    logged = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(logged) == 1
+    assert node in logged[0].getMessage()
+    assert isinstance(logged[0].exc_info[1], ConnectionError)
+
+
+async def test_도구_밖_예외로_끝난_실패_요약은_저장_열_5개를_채운다():
+    reader, runtime = await _broken_runtime("explain", ValueError("bug"))
+    result, _, _ = await _run(runtime=runtime, reader=reader)
+
+    columns = result["failure"].columns()
+    assert columns["status"] == "FAILED"
+    assert columns["failed_step"] == "VALIDATING_OUTPUT"
+    assert columns["failure_code"] == UNEXPECTED_TOOL_ERROR
+    assert columns["attempt_count"] == 1
+    assert columns["retry_exhausted"] is False
+
+
+async def test_밖에서_실행을_취소하면_실패_요약으로_삼키지_않고_취소된다():
+    started = asyncio.Event()
+
+    async def explain(
+        ctx, now
+    ):  # 설명 생성 중에 서비스가 실행을 취소함(종료·시간 예산)
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_run(runtime=replace(fake_runtime(), explain=explain)))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [GraphInterrupt(), ParentCommand(Command(goto=END))],
+    ids=["GraphInterrupt", "ParentCommand"],
+)
+async def test_LangGraph_제어_신호는_실패_요약으로_바꾸지_않고_올린다(signal):
+    # GraphBubbleUp(interrupt·Command 등)은 Exception 하위지만 LangGraph 가 받아야 하는 신호다
+    async def node(state, config):
+        raise signal
+
+    wrapped = with_failure_stop(EXPLAIN, node, AnalysisStep.VALIDATING_OUTPUT)
+
+    with pytest.raises(type(signal)):
+        await wrapped(_input(), {})
+
+
+async def test_실행_도구_묶음_연결_실수는_실패_요약으로_바꾸지_않고_올린다():
+    with pytest.raises(RuntimeWiringError, match="AnalysisRuntime 이어야"):
+        await build_analysis_graph().ainvoke(
+            _input(), {"configurable": {RUNTIME_KEY: object()}}
+        )
+    with pytest.raises(RuntimeWiringError, match="analysis_runtime"):
+        await build_analysis_graph().ainvoke(_input(), {"configurable": {}})
