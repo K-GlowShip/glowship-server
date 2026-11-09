@@ -1,3 +1,4 @@
+import dataclasses
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -826,6 +827,142 @@ def test_failure_inputs_must_match_kind():
                     explanation_model=model,
                 )
             )
+
+
+async def test_explanation_failure_rejects_computed_with_explanation(db_write_session):
+    """#48 리뷰 후속: 설명 실패인데 계산 결과에 설명이 붙어 있으면 거부하고 아무것도 쓰지 않는다.
+    다른 검사는 모두 통과하는 계산 결과(overlay 설명 실패 실행을 되돌린 것)에 설명만 붙여, 이 분기만 시험한다."""
+    db = db_write_session
+    rows = (
+        await db.execute(
+            text(
+                "SELECT analysis_run_id, company_id, model_name, prompt_version FROM analysis_runs"
+                " WHERE failure_code = 'EXPLANATION_GENERATION_FAILED' ORDER BY analysis_run_id LIMIT 1"
+            )
+        )
+    ).all()
+    if not rows:
+        pytest.skip("설명 실패 실행이 없는 DB 라 건너뜀")
+    run_id, company_id, model_name, prompt_version = rows[0]
+    computed = await _result_from_db(
+        db,
+        run_id,
+        completed_status="READY_FOR_REVIEW",
+        result_class="FORECAST_ONLY_READY",
+        dependency_scope=_SCOPE,
+    )
+    await db.execute(text(_RESET_FAILURE), {"run_id": run_id})
+    await _clear(db, run_id)
+    db.expire_all()
+    summary = FailureSummary(
+        status=AnalysisOutcome.FAILED, failed_step=AnalysisStep.VALIDATING_OUTPUT, failure_code="EXPLANATION_GENERATION_FAILED",
+        attempt_count=3, retry_exhausted=True, failure_message="m",
+    )  # fmt: skip
+    attached = dataclasses.replace(
+        computed,
+        explanation=Explanation(
+            model_name,
+            prompt_version,
+            {"schema_version": "explanation.v1"},
+            datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+
+    with pytest.raises(ResultSaveInputError, match="설명이 없어야"):
+        await save_analysis_failure(
+            db,
+            company_id=company_id,
+            analysis_run_id=run_id,
+            summary=summary,
+            computed=attached,
+            explanation_model=ExplanationModel(model_name, prompt_version),
+        )
+    assert await _finished_at(db, run_id) is None
+    assert await _rows(db, InventoryImpactResult, run_id) == []
+
+    # 같은 계산 결과에서 설명만 빼면 저장된다(위 거부가 설명 때문이라는 확인)
+    outcome = await save_analysis_failure(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        summary=summary,
+        computed=computed,
+        explanation_model=ExplanationModel(model_name, prompt_version),
+    )
+    assert (outcome.saved, outcome.status) == (True, "FAILED")
+
+
+async def _in_progress_failure_run(db):
+    """overlay 의 실패·보류 실행 하나를 진행 중으로 되돌려 (실행 ID, 고객사, 시작 시각)을 돌려준다. 모두 롤백된다"""
+    runs = (await db.execute(_FAILURE_RUNS)).all()
+    if not runs:
+        pytest.skip("실패·보류 실행이 없는 DB 라 건너뜀")
+    run_id, company_id = runs[0]
+    await db.execute(text(_RESET_FAILURE), {"run_id": run_id})
+    await _clear(db, run_id)
+    db.expire_all()
+    started_at = await db.scalar(
+        select(AnalysisRun.started_at).where(AnalysisRun.analysis_run_id == run_id)
+    )
+    return run_id, company_id, started_at
+
+
+async def _finished_at(db, run_id):
+    return await db.scalar(
+        select(AnalysisRun.finished_at)
+        .where(AnalysisRun.analysis_run_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+
+
+async def test_failure_given_start_time_finishes_one_second_later(db_write_session):
+    """이슈 #50 후속: 실패·보류 저장도 정상 저장과 같은 규칙. 실행 시작과 같은 값을 넘기면 끝난 시각 = 시작 + 1초"""
+    db = db_write_session
+    run_id, company_id, started_at = await _in_progress_failure_run(db)
+
+    outcome = await save_analysis_failure(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        summary=hold_summary("REQUIRED_DATA_INVALID", "x"),
+        now=started_at,
+    )
+
+    assert (outcome.saved, outcome.status) == (True, "ON_HOLD")
+    assert await _finished_at(db, run_id) == started_at + timedelta(seconds=1)
+
+
+async def test_failure_given_later_time_is_used_as_is(db_write_session):
+    db = db_write_session
+    run_id, company_id, started_at = await _in_progress_failure_run(db)
+    later = started_at + timedelta(minutes=5)
+
+    await save_analysis_failure(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        summary=hold_summary("REQUIRED_DATA_INVALID", "x"),
+        now=later,
+    )
+
+    assert await _finished_at(db, run_id) == later
+
+
+async def test_failure_without_time_uses_db_clock(db_write_session):
+    """now 를 넘기지 않으면 지금처럼 DB 시각(clock_timestamp)"""
+    db = db_write_session
+    run_id, company_id, _ = await _in_progress_failure_run(db)
+    before = await db.scalar(text("SELECT clock_timestamp()"))
+
+    await save_analysis_failure(
+        db,
+        company_id=company_id,
+        analysis_run_id=run_id,
+        summary=hold_summary("REQUIRED_DATA_INVALID", "x"),
+    )
+
+    after = await db.scalar(text("SELECT clock_timestamp()"))
+    assert before <= await _finished_at(db, run_id) <= after
 
 
 async def test_failure_is_not_saved_over_stale(db_write_session):

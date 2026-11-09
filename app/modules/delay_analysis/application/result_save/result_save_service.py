@@ -175,6 +175,7 @@ async def save_analysis_failure(
     summary: FailureSummary,
     computed: AnalysisResult | None = None,
     explanation_model: ExplanationModel | None = None,
+    now: datetime | None = None,
 ) -> ResultSaveOutcome:
     """
     실패·보류를 저장한다 (agentflow 5.5 "필수 자료 부족·검증 오류"·"도구 실패"·"설명 검증 계속 실패" 행).
@@ -182,6 +183,8 @@ async def save_analysis_failure(
       - 설명 실패(EXPLANATION_GENERATION_FAILED): 계산 결과(computed)의 결과 표 행과 판정 서명은 저장하고,
         의존 범위·결과 분류는 비운다(ck36·ck21). 설명을 만들려 한 모델·프롬프트 버전도 남긴다(엔진 하네스와 같음).
       - 실행이 이미 진행 중이 아니면(STALE 등) 아무것도 쓰지 않고 saved=False.
+      - now: 끝난 시각(가상 시각 데모, 이슈 #50). 정상 완료 저장과 같은 규칙이다. 없으면 DB 시각,
+        있으면 max(now, 실행 시작 + 1초). 시각을 정하는 것은 부르는 쪽이고, 이 함수는 가상 시각 설정을 보지 않는다.
     """
     columns: dict[str, Any] = summary.columns()
     if summary.failure_code == EXPLANATION_GENERATION_FAILED:
@@ -217,5 +220,5 @@ async def save_analysis_failure(
     run = await _lock_in_progress(db, company_id, analysis_run_id)
     if isinstance(run, ResultSaveOutcome):
         return run
-    await _write(db, run, rows)
+    await _write(db, run, rows, now)
     return ResultSaveOutcome(saved=True, status=run.status)
