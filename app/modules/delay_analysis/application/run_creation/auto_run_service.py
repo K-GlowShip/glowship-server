@@ -49,6 +49,9 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 분석 보류(GLOW-15)는 여기서 판정하지 않는다. 실행은 DETECTED 로 남고, 보류는 분석을 시작할 때 엔진 입력
         (#53 EngineHold, 같은 "차단 검증 오류" 조건)이 정한다(사용자 결정 11-06).
       - 분석 시작(DETECTED → 분석)은 이 서비스 밖이다(GLOW-128, #51).
+      - 실행 생성 실패는 수집을 막지 않는다(#63 리뷰 [권장], serviceflow 5.2절): 판정마다 SAVEPOINT, SKIPPABLE 오류는 건너뛰고
+        IngestResult.skipped_auto_runs 로 알린다. 실행 없는 열린 지연의 후속 판정은 첫 실행을 EPISODE_STARTED 로 만든다
+        (docs/analysis/delay-detection.md 5절).
 """
 
 logger = logging.getLogger(__name__)
