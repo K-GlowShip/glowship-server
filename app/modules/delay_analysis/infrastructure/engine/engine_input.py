@@ -3,7 +3,7 @@ import copy
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -30,8 +30,10 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 엔진 계산(pipeline.analyze)은 실행마다 한 번, 만들 때 스레드에서 한다.
         처음 읽을 때 계산하면(동기 속성) 이벤트 루프가 그동안 멈추므로 미리 계산한다(사용자 결정 11-06).
         보류가 아닌 실행은 어차피 T6·T7·판정 서명에 계산 결과가 필요하다.
-      - 엔진 입력 값(D·입력 확정 시각·단계·예상일)은 #36 정답 대조와 같은 규칙으로 실행 행에서 정한다.
-          · 입력 확정 시각 confirm_t = engine_timestamp(run.started_at), D = confirm_t 의 UTC 날짜
+      - 엔진 입력 값(입력 확정 시각·단계·예상일)은 #36 정답 대조와 같은 규칙으로 실행 행에서 정한다.
+          · 입력 확정 시각 confirm_t = engine_timestamp(run.started_at), 실행 날짜 = confirm_t 의 UTC 날짜(run_code 날짜)
+          · 기준일 D = resolve_base_date: min(실행 날짜, 최신 재고일 + 1, 성공 ORDER 수집이 다룬 마지막 접수일 + 1)
+            (이슈 #51 사용자 결정). 그날 재고·주문 자료가 아직 입력(입력 순번)에 없는 실행도 마지막 자료 날 기준으로 계산하고, 늦은 원천을 남긴다
           · 단계·예상 입고일 = 실행의 트리거 일정 스냅샷. 트리거가 없으면(재분석) 엔진처럼 confirm_t 까지의 최신 관측
       - 읽기 전용이다. 커밋하지 않는다.
 """
@@ -79,6 +81,23 @@ class EngineDecision:
 
 
 @dataclass(frozen=True)
+class BaseDateResolution:
+    """기준일 D 와 그 근거 (이슈 #51 사용자 결정). D = min(실행 날짜, 재고 한도, ORDER 한도).
+
+    한도는 그 원천 자료로 엔진이 계산할 수 있는 가장 늦은 D 다(snapshot.build 가 D−1 재고 행과
+    D−28~D−1 ORDER 수집 성공을 요구한다). 자료가 하나도 없는 원천은 한도 없음(None)으로 두고 엔진 보류에 맡긴다."""
+
+    base_date: date  # D
+    run_date: date  # 실행 날짜 = confirm_t 의 UTC 날짜(run_code 날짜와 같음)
+    # confirm_t 까지 적재된 최신 재고일 + 1
+    inventory_limit: date | None
+    # confirm_t 까지 시작한 성공 ORDER 수집이 다룬 마지막 접수일 + 1
+    order_limit: date | None
+    # 한도가 실행 날짜보다 이른 원천("INVENTORY"·"ORDER", 이름순). dataWarnings 용
+    late_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class EngineInput:
     """실행 하나의 엔진 입력. 도구·설명은 snap·analysis 를 읽기만 한다(고치지 않는다)."""
 
@@ -86,7 +105,8 @@ class EngineInput:
     company_id: uuid.UUID
     delay_event_id: uuid.UUID
     shipment_id: uuid.UUID
-    base_date: date  # D
+    base_date: date  # D (= base_date_resolution.base_date = snap["D"])
+    base_date_resolution: BaseDateResolution
     input_seq: int
     confirm_t: str  # 엔진 시각 'YYYY-MM-DDTHH:MM:SSZ'
     snap: dict[str, Any]  # snapshot.build 결과
@@ -131,7 +151,8 @@ _LATEST_SNAPSHOT_SQL = text(
 class _RunInput:
     shipment_id: uuid.UUID
     confirm_t: str
-    base_date: date
+    # confirm_t 의 UTC 날짜. D 는 저장소를 읽은 뒤 resolve_base_date 가 정한다
+    run_date: date
     planned: date  # P
     stage: str | None  # None 이면 엔진이 confirm_t 까지의 최신 관측을 쓴다
     expected: date | None  # E. None 이면 위와 같음
@@ -162,7 +183,7 @@ async def _run_input(session: AsyncSession, run: AnalysisRunLike) -> _RunInput:
     return _RunInput(
         shipment_id=row.shipment_id,
         confirm_t=confirm_t,
-        base_date=date.fromisoformat(confirm_t[:10]),
+        run_date=date.fromisoformat(confirm_t[:10]),
         planned=row.planned_3pl_inbound_date,
         stage=row.stage,
         expected=row.expected_3pl_inbound_date,
@@ -207,21 +228,72 @@ async def judge_no_delay(session: AsyncSession, run: AnalysisRunLike) -> NoDelay
     )
 
 
-def _build_and_analyze(store, ri: _RunInput) -> tuple[dict, dict] | EngineHold:
+# 엔진 store.order_collection_ok 와 같은 규칙
+ORDER_OK_STATUSES = ("SUCCEEDED", "PARTIAL_SUCCESS")
+# 이 시각 전에 시작한 수집 = 2025 초기 적재(2025 접수일 전부를 다룸)
+INITIAL_LOAD_BEFORE = "2026-01-01"
+_INITIAL_LOAD_LIMIT = date(2026, 1, 1)  # 2025-12-31 + 1
+
+
+def resolve_base_date(store, company_id: str, confirm_t: str) -> BaseDateResolution:
+    """기준일 D (이슈 #51). 저장소를 읽기만 하는 순수 함수. company_id 는 엔진 저장소 열쇠(문자열 UUID).
+
+    저장소는 이미 실행의 입력 순번까지 거른 것이라(#36) 입력 순번 기준이 저절로 지켜진다.
+      · 재고 한도: 엔진 inventory_row 처럼 그 행을 만든 수집의 started_at ≤ confirm_t 인 행만 센다(고객사 전체 최대 재고일)
+      · ORDER 한도: 엔진 order_collection_ok 처럼 성공 ORDER 수집만, h+1 에 시작한 수집이 h 를 다룬다
+        → 다룬 마지막 접수일 + 1 = 시작 날짜. 2026-01-01 전에 시작한 초기 적재는 2025-12-31 까지 다뤄 2026-01-01
+    """
+    run_date = date.fromisoformat(confirm_t[:10])
+    runs = store.runs
+    inventory_days = [
+        row["inventory_date"]
+        for row in store.inv.values()
+        if row["company_id"] == company_id
+        and runs[row["data_sync_run_id"]]["started_at"] <= confirm_t
+    ]
+    inventory_limit = (
+        date.fromisoformat(max(inventory_days)) + timedelta(days=1)
+        if inventory_days
+        else None
+    )
+    order_limits = [
+        _INITIAL_LOAD_LIMIT
+        if r["started_at"] < INITIAL_LOAD_BEFORE
+        else date.fromisoformat(r["started_at"][:10])
+        for r in store.runs_until(company_id, confirm_t)
+        if r["source_domain"] == "ORDER" and r["status"] in ORDER_OK_STATUSES
+    ]
+    order_limit = max(order_limits) if order_limits else None
+    limits = {"INVENTORY": inventory_limit, "ORDER": order_limit}
+    return BaseDateResolution(
+        base_date=min([run_date, *(v for v in limits.values() if v is not None)]),
+        run_date=run_date,
+        inventory_limit=inventory_limit,
+        order_limit=order_limit,
+        late_sources=tuple(
+            sorted(k for k, v in limits.items() if v is not None and v < run_date)
+        ),
+    )
+
+
+def _build_and_analyze(
+    store, company_id: str, ri: _RunInput
+) -> tuple[dict, dict, BaseDateResolution] | EngineHold:
     snapshot = load_engine_module("snapshot")
+    basis = resolve_base_date(store, company_id, ri.confirm_t)
     try:
         snap = snapshot.build(
             store,
             _calendar(),
             str(ri.shipment_id),
-            ri.base_date,
+            basis.base_date,
             ri.confirm_t,
             stage=ri.stage,
             E=ri.expected.isoformat() if ri.expected is not None else None,
         )
     except snapshot.Hold as hold:
         return EngineHold(code=hold.code, message=hold.message)
-    return snap, load_engine_module("pipeline").analyze(snap)
+    return snap, load_engine_module("pipeline").analyze(snap), basis
 
 
 async def build_engine_input(
@@ -233,16 +305,17 @@ async def build_engine_input(
     ri = await _run_input(session, run)
     store = await load_company_engine_store(session, run.company_id, run.input_seq)
     check_input_seq(store, run.company_id, ri.confirm_t, run.input_seq)
-    built = await asyncio.to_thread(_build_and_analyze, store, ri)
+    built = await asyncio.to_thread(_build_and_analyze, store, str(run.company_id), ri)
     if isinstance(built, EngineHold):
         return built
-    snap, analysis = built
+    snap, analysis, basis = built
     return EngineInput(
         analysis_run_id=run.analysis_run_id,
         company_id=run.company_id,
         delay_event_id=run.delay_event_id,
         shipment_id=ri.shipment_id,
-        base_date=ri.base_date,
+        base_date=basis.base_date,
+        base_date_resolution=basis,
         input_seq=run.input_seq,
         confirm_t=ri.confirm_t,
         snap=snap,
