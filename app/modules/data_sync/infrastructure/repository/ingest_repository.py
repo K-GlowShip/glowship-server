@@ -44,6 +44,9 @@ from app.modules.data_sync.infrastructure.data_sync_run import DataSyncRun
 from app.modules.data_sync.infrastructure.data_validation_issue import (
     DataValidationIssue,
 )
+from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
+    last_applied_sync_started_at,
+)
 from app.modules.inventory.infrastructure.inventory_daily import InventoryDaily
 from app.modules.master_data.infrastructure.external_entity_mapping import (
     ExternalEntityMapping,
@@ -672,12 +675,7 @@ class IngestRepository:
 
     async def last_applied_started_at(self, company_id: uuid.UUID) -> datetime | None:
         """그 고객사에서 적재된(적용 순번 있는) 수집 중 가장 늦은 시작 초. 없으면 None (이슈 #39 규칙 5)"""
-        return await self.db.scalar(
-            select(func.max(func.date_trunc("second", DataSyncRun.started_at))).where(
-                DataSyncRun.company_id == company_id,
-                DataSyncRun.applied_seq.is_not(None),
-            )
-        )
+        return await last_applied_sync_started_at(self.db, company_id)
 
     async def move_started_at(
         self, company_id: uuid.UUID, data_sync_run_id: uuid.UUID, started_at: datetime
