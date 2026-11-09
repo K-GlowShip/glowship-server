@@ -21,7 +21,7 @@
 | 읽는 방법 | 엔진과 같은 `COPY (…) TO STDOUT CSV HEADER`를 서버 연결(asyncpg `copy_from_query`)로 실행합니다. 엔진 변환 함수 `iso_ts`·`bool_text`를 그대로 씁니다 |
 | 1초 미만 시각 | 서버 수집은 `datetime.now(UTC)`로 시각을 적어 마이크로초가 있고, 엔진 `iso_ts`는 1초 미만을 거부합니다. 그래서 **읽을 때 초 아래를 버립니다**(`floor_seconds`, 실행 시작 시각 `engine_timestamp`와 같은 규칙). 이슈 #39부터 서버 수집은 초 단위로 기록하지만, 그 전에 적재된 행이 있어 그대로 둡니다. 그 밖의 해석 오류는 `EngineInputError`(열·값 포함)로 알립니다 |
 | 행 순서 | `ORDER BY ctid`. 엔진은 조건 없이 전체를 읽어 물리 순서로 받습니다. 조건을 걸면 색인 순서로 올 수 있어 순서를 맞춥니다(5절) |
-| Store 만들기 | 엔진 `Store`를 상속합니다. `__init__`(색인 만들기)은 엔진과 같은 식으로 옮겨 적었습니다. `input_seq`는 적재된(순번 있는) 수집만 보도록 덮어썼습니다(엔진 원본은 `RUNNING`·`FAILED`의 빈 순번에서 `int('')`로 멈춤). 나머지 as-of 메서드는 엔진 것을 그대로 씁니다 |
+| Store 만들기 | 엔진 `Store`를 상속합니다. `__init__`(색인 만들기)은 엔진과 같은 식으로 옮겨 적었습니다. `input_seq`는 적재된(순번 있는) 수집만 보도록 덮어썼습니다(엔진 원본은 `RUNNING`·`FAILED`의 빈 순번에서 `int('')`로 멈춤). 나머지 as-of 메서드는 엔진 것을 그대로 씁니다. 색인을 다 만든 뒤 `defaultdict` 6개를 없는 열쇠를 넣지 않는 사전으로 바꿉니다(캐시로 여러 실행이 함께 읽어서, `engine-store-cache.md` 4절) |
 | 이벤트 루프 | CSV 해석과 색인 만들기는 무거우므로(한 고객사 수 초) `asyncio.to_thread`에서 합니다. 같은 서버의 다른 요청이 기다리지 않게 하려는 것입니다(GIL 때문에 완전한 분리는 아님, 4절) |
 | 빈 읽기 확인 | RLS로 보이지 않으면 오류 없이 0행이 됩니다(앱 역할 세션, ACTIVE가 아닌 고객사, 없는 고객사). `companies`가 정확히 1행이고 `data_sync_runs`가 비어 있지 않은지 확인해, 아니면 `EngineInputError`로 멈춥니다(빈 Store로 계산하지 않게, 리뷰 KatherineJH) |
 | 마지막 확인 | `check_input_seq`: 엔진의 시각 기준 순번이 실행의 `input_seq`와 같은지 봅니다. 순번으로 거른 뒤라 정상이면 같고, 다르면 `EngineInputError`입니다 |
@@ -84,6 +84,7 @@ GLOWSHIP_ENGINE_GOLDEN=1 uv run pytest tests/modules/delay_analysis/test_engine_
   - 대부분 Python의 CSV 해석과 시각 변환입니다.
   - 감지 후 30초 안 결과(NFR-001)를 생각하면 커서 실행기 연결(GLOW-128·129) 때 정합니다.
   - 후보: ① (고객사, 입력 순번, `max(applied_seq)`)가 같으면 워커 안에서 다시 쓰기(LRU로 고객사 수만큼 메모리 상한). 입력 순번이 같아도 그 사이 STALE 판정용 변경 기록이 늘 수 있어 마지막 적용 순번을 열쇠에 함께 넣습니다(리뷰 KatherineJH) ② 분석 워커를 API와 다른 프로세스로 두기(`to_thread`로도 GIL을 다 피하지 못함, 리뷰 [should]).
+  - **정함(11-09):** 자동 시작은 API 서버 안 asyncio 작업(이슈 #51), 캐시 열쇠는 **(고객사, 입력 순번)**(이슈 #60, `engine-store-cache.md` 2절). 서버 STALE 판정은 이 저장소를 읽지 않고 SQL로 판정해, 변경 기록이 늘어도 캐시와 상관없어 ①의 마지막 적용 순번은 넣지 않았습니다.
 - **실행 시작 시각:** `create_analysis_run`은 `clock_timestamp()`(마이크로초 포함)를 씁니다. 엔진 입력에는 초 아래를 버린 시각을 넘깁니다. 같은 초 안의 앞뒤가 사라질 수 있지만, 순번으로 거르기 때문에 입력 범위는 바뀌지 않습니다.
 - **같은 초에 시작한 수집(수집 쪽 조건):** 엔진은 고객사 안에서 수집을 **시작 시각 하나로 구분**합니다(`store.run_at` 열쇠 `(company_id, started_at)`, `stale.judge`가 변경 기록을 시작 시각으로 묶음). 이 저장소는 초 아래를 버리므로, 같은 초에 시작한 두 수집은 같은 시각이 되어 한쪽이 가려집니다. 수집 적재가 "초 단위, 고객사 안에서 시작 시각이 겹치지 않음"을 지키도록 수집 담당(B, GLOW-13)이 맞추기로 했습니다(PR #36 리뷰 KatherineJH). overlay는 원천마다 1분씩 띄워 겹치지 않습니다. 이슈 #39에서 맞췄습니다(`docs/data-sync/ingest.md` 1절 수집 시각 규칙 1·4).
 - **엔진 상수:** 엔진 `DCR_SQL`은 `started_at >= '2026-01-01'`로 고정돼 있습니다. 엔진 판의 결정이라 서버는 그대로 따릅니다.
