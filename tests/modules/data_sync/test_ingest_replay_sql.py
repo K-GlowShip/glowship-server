@@ -53,6 +53,17 @@ class ReplayRepository(IngestRepository):
         return None
 
 
+class NoAutoRuns:
+    """
+    AUTO 실행 생성(이슈 #34)을 끄는 대역. 지난 날짜(2026-01)로 재현하면 실행 시각이 고객사 마지막 적재 수집(07-01)보다
+    일러 create_analysis_run 이 RUN_TIME_BEFORE_INPUT 으로 막는다(이슈 #50). 이 시험은 판정이 낸 생성 사유(episode_outcomes)를
+    확정 DB 의 AUTO 실행과 대조하므로 실행 행은 만들지 않는다. 실행 생성은 test_auto_run_sql.py 가 본다.
+    """
+
+    async def create_after_sync(self, company_id, outcomes, **_):
+        return []
+
+
 async def _first_insert_day(db, company_id) -> dict[uuid.UUID, date]:
     rows = await db.execute(
         text(
@@ -172,7 +183,9 @@ async def test_time_ordered_tms_responses_reproduce_schedule_snapshots(
                         ),
                     )
                 )
-            service = DataIngestService(db, repo, NoStale(), now=lambda at=at: at)
+            service = DataIngestService(
+                db, repo, NoStale(), now=lambda at=at: at, auto_runs=NoAutoRuns()
+            )
             result = await service.ingest(
                 company_id, SourceDomain.SHIPMENT, ConnectionMethod.API, batch
             )
