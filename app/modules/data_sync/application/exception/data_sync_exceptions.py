@@ -6,11 +6,12 @@ from app.core.exceptions import BaseErrorCode, BusinessException
 class DataSyncErrorCode(BaseErrorCode):
     """data_sync 모듈 에러 코드: (status_code, code, message)"""
 
-    # API 명세 v6.2 4.3 POST /data-sync-runs: 같은 원천에 실행 중인 수집이 있으면 409
+    # API 명세 v6.2 4.3 POST /data-sync-runs: 실행 중인 수집이 있으면 409. 수동 동기화는 다섯 원천을 함께 수집하므로
+    # 그 고객사에 RUNNING 이 하나라도 있으면 409 (2026-11-09 결정)
     SYNC_IN_PROGRESS = (
         status.HTTP_409_CONFLICT,
         "SYNC_IN_PROGRESS",
-        "같은 원천의 수집이 이미 진행 중입니다. 끝난 뒤 다시 시도해 주십시오.",
+        "수집이 이미 진행 중입니다. 끝난 뒤 다시 시도해 주십시오.",
     )
 
     # 수동 수집(API 25)은 지금 SHIPMENT(가상 TMS)만 원천이 있다 (2026-11-05 결정). 나머지 원천은 요청 형식 오류와 같은 422.
@@ -18,6 +19,13 @@ class DataSyncErrorCode(BaseErrorCode):
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "VALIDATION_ERROR",
         "수동 수집은 아직 선적(SHIPMENT)만 지원합니다.",
+    )
+
+    # "다음 날로"(advance NEXT_DAY)는 데모(가상 시각)에서만 쓴다 (2026-11-09 결정)
+    NEXT_DAY_NEEDS_VIRTUAL_CLOCK = (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "VALIDATION_ERROR",
+        "다음 날로(advance=NEXT_DAY)는 가상 시각(데모)에서만 쓸 수 있습니다.",
     )
 
 
@@ -29,3 +37,8 @@ class SyncInProgressException(BusinessException):
 class SourceNotSupportedException(BusinessException):
     def __init__(self):
         super().__init__(DataSyncErrorCode.SOURCE_NOT_SUPPORTED)
+
+
+class NextDayNeedsVirtualClockException(BusinessException):
+    def __init__(self):
+        super().__init__(DataSyncErrorCode.NEXT_DAY_NEEDS_VIRTUAL_CLOCK)
