@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import UUID, bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,24 @@ _CREATE_CLIENT_USER = text(
     "SELECT app_admin_create_client_user("
     ":user_id, :email, :password_hash, :display_name, :role_code)"
 ).bindparams(bindparam("user_id", type_=UUID(as_uuid=True)))
+
+# 로그인 조회는 컨텍스트(app.user_id·app.company_id)가 없을 때 한다. 앱 DB 역할의 users 정책은 "같은 고객사이거나 본인"만
+# 보여 주므로 select(User) 로는 0행이다. 소유자 역할의 SECURITY DEFINER 함수(마이그레이션 0008)가 그 이메일 한 명만 돌려준다.
+_FIND_LOGIN_USER = text(
+    "SELECT user_id, company_id, role_code, password_hash, status"
+    " FROM app_auth_find_login_user(:email)"
+)
+
+
+@dataclass(frozen=True)
+class LoginUser:
+    """로그인 판정에 필요한 사용자 값 (app_auth_find_login_user 결과)"""
+
+    user_id: uuid.UUID
+    company_id: uuid.UUID | None
+    role_code: UserRoleCode
+    password_hash: str
+    status: UserStatus
 
 
 class UserRepository:
@@ -67,6 +86,19 @@ class UserRepository:
         """이메일로 유저 조회"""
         stmt = select(User).where(User.email == email)
         return await self.db.scalar(stmt)
+
+    async def find_login_user(self, email: str) -> LoginUser | None:
+        """로그인용 조회. 컨텍스트 없이도 앱 DB 역할에서 그 이메일 한 명이 보인다 (이슈 #41)"""
+        row = (await self.db.execute(_FIND_LOGIN_USER, {"email": email})).one_or_none()
+        if row is None:
+            return None
+        return LoginUser(
+            user_id=row.user_id,
+            company_id=row.company_id,
+            role_code=UserRoleCode(row.role_code),
+            password_hash=row.password_hash,
+            status=UserStatus(row.status),
+        )
 
     async def find_by_id(self, user_id: uuid.UUID) -> User | None:
         """식별자로 유저 조회"""
