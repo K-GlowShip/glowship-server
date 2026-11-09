@@ -46,7 +46,7 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 )
 
 """
-    설명 생성을 그래프 실행 묶음에 잇는 감싸기 (GLOW-127 후속, DV3-3 해소, docs/agent-flow/explanation.md 2절)
+    설명 생성을 그래프 실행 묶음에 잇는 감싸기 (GLOW-127 후속, docs/agent-flow/explanation.md 2절)
       1. make_explainer()(ctx, now) = generate_explanation 을 ctx.engine 값으로 직접 부른 결과
       2. 지연 선적 코드는 엔진 저장소 선적 표에서. 실행 ID 가 어긋나거나 코드가 없으면 모델을 부르기 전에 연결 오류
       3. 추적은 설명 시도 기록을 받는 추적기에만(도구 시도만 받는 추적기면 건너뜀)
