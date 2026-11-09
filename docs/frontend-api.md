@@ -58,10 +58,10 @@
 | `TOOL_TIMEOUT_EXHAUSTED` | `FAILED` | 도구가 시간 초과로 3번 모두 실패 | `failureMessage` |
 | `TOOL_TEMPORARY_ERROR_EXHAUSTED` | `FAILED` | 도구가 일시 오류로 3번 모두 실패 | `failureMessage` |
 | `PERMISSION_DENIED` | `FAILED` | 도구 권한 오류(재시도하지 않음) | `failureMessage` |
-| `UNEXPECTED_TOOL_ERROR` | `FAILED` | 도구가 예상하지 못한 오류로 멈춤(재시도하지 않음) | `failureMessage` |
+| `UNEXPECTED_TOOL_ERROR` | `FAILED` | 도구가 예상하지 못한 오류로 멈춤(재시도하지 않음) | 고정 문구 "분석 중 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요." |
 
-- 고정 문구는 명세 v6.2 2절 문구입니다. `ON_HOLD` 두 코드와 `EXPLANATION_GENERATION_FAILED`는 `failureMessage`를 화면에 그대로 쓰지 마세요. 보류 사유(예: "차단 검증 오류 <코드> <키>")와 설명 실패의 엔진 시도 기록(예: "(시도: 1:VALUE_MISMATCH@risk_summary#s1;…)")이 들어 있어 내부 코드가 보입니다.
-- 나머지 `FAILED` 코드는 `GET /analysis-runs/{runId}`의 `failureMessage`(사용자에게 보일 문장, 도구 이름 포함)를 그대로 보여 줍니다. 목록 화면처럼 `failureMessage`가 없는 곳은 상태 라벨만 씁니다.
+- 고정 문구는 명세 v6.2 2절 문구입니다. `ON_HOLD` 두 코드, `EXPLANATION_GENERATION_FAILED`, `UNEXPECTED_TOOL_ERROR`는 `failureMessage`를 화면에 그대로 쓰지 마세요. 보류 사유(예: "차단 검증 오류 <코드> <키>")와 설명 실패의 엔진 시도 기록(예: "(시도: 1:VALUE_MISMATCH@risk_summary#s1;…)")이 들어 있어 내부 코드가 보입니다. `UNEXPECTED_TOOL_ERROR`의 `failureMessage`에는 엔진 판정 차이·검증 오류 코드 같은 내부 진단이 붙을 수 있습니다(이슈 #57 2번). 이 코드의 고정 문구는 명세 2절에 없어, 서버가 도구 밖 예외에 쓰는 문구(PR #68 `UNEXPECTED_ERROR_MESSAGE`)와 같게 했습니다.
+- 나머지 `FAILED` 코드(`TOOL_TIMEOUT_EXHAUSTED`·`TOOL_TEMPORARY_ERROR_EXHAUSTED`·`PERMISSION_DENIED`)는 `GET /analysis-runs/{runId}`의 `failureMessage`(사용자에게 보일 문장, 도구 이름 포함)를 그대로 보여 줍니다. 목록 화면처럼 `failureMessage`가 없는 곳은 상태 라벨만 씁니다.
 - 코드별 표시 이름은 따로 두지 않습니다. 표에 없는 코드가 오면 `FAILED`는 `failureMessage`, `ON_HOLD`는 위 고정 문구로 보여 주세요.
 
 **표시용 실행 ID:** `currentRun.runCode`·`runs[].runCode`는 2026-11-05부터 `AN-YYMMDD-NNN` 값으로 옵니다(마이그레이션 0006, 명세 D14). 그 전에는 항상 `null`이었습니다. `episodeNo`, `currentRun.resultClass`, `runs[].triggerReason`·`completedStatus`·`resultClass`도 0005 병합 뒤로 값이 옵니다.
