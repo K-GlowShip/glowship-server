@@ -84,7 +84,8 @@ class AuthService:
         if len(raw_password.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
             raise InvalidCredentialsException()
 
-        user = await self.user_repo.find_by_email(email)
+        # 컨텍스트 없이 하는 조회라 DB 함수로 찾는다(앱 DB 역할에서 select(User) 는 0행, 이슈 #41).
+        user = await self.user_repo.find_login_user(email)
 
         # 계정이 없어도 더미 해시로 검증을 수행해 응답 시간으로 계정 유무를 추측할 수 없게 한다.
         password_hash = user.password_hash if user else DUMMY_PASSWORD_HASH

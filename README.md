@@ -61,7 +61,7 @@ app/
     ├── inventory/                 # inventory_daily (+ aux: 정기 발주 검토)
     ├── delay_analysis/            # delay_events, analysis_runs 외 분석 결과 5개 + 분석 에이전트(application/agent)
     └── decision/                  # member_drafts, final_decisions + 판단 이력(의사결정 이력) 목록 조회 API
-migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열, 0006: 표시용 실행 ID run_code, 0007: 워커의 delay_events 종료 열 UPDATE 권한)
+migrations/                        # Alembic 마이그레이션 (0001: v5 스키마 + RLS, 0002: users 표시 이름 길이, 0003·0005: v6.2 분석 열, 0004: DDL DB의 users 시각 열, 0006: 표시용 실행 ID run_code, 0007: 워커의 delay_events 종료 열 UPDATE 권한, 0008: 로그인 조회 함수)
 scripts/
 ├── seed_synthetic_data.py         # 합성데이터 적재 (manifest 검증 → COPY → 행 수 검증)
 └── seed_demo_runs.py              # 데모 시드: 7월 초 수동 수집 → 열린 지연 3건 → 엔진 계산 → 선택 대기 (docs/analysis/demo-seed.md)
@@ -203,6 +203,12 @@ uv run uvicorn app.main:app --reload
 - 테이블은 서버 기동 시 만들지 않고 **Alembic 마이그레이션으로만** 생성·변경합니다 (`migrations/versions/`).
 - ORM 모델은 각 모듈의 `infrastructure/`에 있고, `app/core/model_registry.py`에 등록해야 autogenerate 대상이 됩니다.
 - 고객사 RLS(역할 `glowship_v4_owner`·`glowship_v4_app`·`glowship_v4_worker`, 정책, Admin 함수)는 초기 마이그레이션에 포함됩니다. 워커 역할은 `delay_events`를 조회·추가만 하고, `0007`이 지연 에피소드 종료에 필요한 `closed_at`·`close_reason` 두 열의 UPDATE만 더 줍니다(GLOW-117, ERD 설명 4절 결정). v6.2 DDL로 만든 DB에도 `0007`로 이 권한이 생깁니다. 로컬은 superuser로 접속하므로 RLS가 적용되지 않습니다.
+- `0008`은 로그인 조회 함수 `app_auth_find_login_user(email)`(SECURITY DEFINER, 실행 권한 앱 역할만)를 더합니다. 로그인은 RLS 컨텍스트가 없을 때 사용자를 찾아야 해서, 앱 역할에서 `users`를 직접 읽으면 0행이기 때문입니다(이슈 #41, `docs/auth/login.md`). 데이터 팀 DDL(v6.2)에는 없는 함수입니다.
+- **운영 배포 DB 계정 (RLS 적용):**
+  1. 앱 로그인 계정을 만들어 앱 역할에 넣습니다: `CREATE ROLE <앱계정> LOGIN PASSWORD '…'` → `GRANT glowship_v4_app TO <앱계정>`. `.env`에 `POSTGRES_USER`·`POSTGRES_PASSWORD`로 넣고 `POSTGRES_ROLE=glowship_v4_app`.
+  2. 워커 로그인 계정을 만들어 워커 역할에 넣습니다: `GRANT glowship_v4_worker TO <워커계정>`. `.env`에 `WORKER_POSTGRES_USER`·`WORKER_POSTGRES_PASSWORD`. `POSTGRES_ROLE`을 넣으면 워커 계정이 없을 때 기동이 실패합니다.
+  3. 서버는 연결할 때 역할을 바꿉니다(`app/core/database.py` `create_app_engine`·`create_worker_engine`). RLS 정책이 역할 이름(`current_user`)을 비교하므로, 고정하지 않으면 고객사 데이터가 모두 숨겨집니다.
+  4. **사용자 없이 도는 백그라운드 작업(수집 적재·분석 자동 시작·결과 저장)은 워커 세션(`open_worker_session`)을 씁니다.** 앱 역할은 활성 사용자(`app.user_id`)를 요구해서, 앱 세션으로 돌리면 행이 보이지 않습니다(PR #48 리뷰).
 
 v6.2 DDL로 만든 DB(팀 공통 개발 DB)의 마이그레이션:
 

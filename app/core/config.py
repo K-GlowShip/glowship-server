@@ -8,6 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.security.jwt import JwtConfig
 
+# 앱 DB 역할 이름 (마이그레이션 0001·v6.2 DDL 과 같음). POSTGRES_ROLE 이 받을 수 있는 유일한 값
+APP_DB_ROLE = "glowship_v4_app"
+
 
 class Settings(BaseSettings):
     """env 파일에 작성되어진 정적 파일 관리"""
@@ -33,6 +36,12 @@ class Settings(BaseSettings):
     # 호스트·포트·DB 이름은 앱 연결과 같다.
     worker_postgres_user: str | None = None
     worker_postgres_password: str | None = None
+
+    # 앱 연결의 DB 역할 고정 (이슈 #41). 운영은 앱 역할(glowship_v4_app)에 속한 로그인 계정으로 붙고 이 값을
+    # glowship_v4_app 으로 넣는다. 연결할 때 역할을 바꾼다(app/core/database.py create_app_engine, RLS 가 역할 이름을 비교).
+    # 비우면 지금처럼 로그인 계정 그대로 붙는다(로컬 superuser 개발·데모 DB). 앱 역할 말고 다른 값은 기동이 실패한다.
+    # 넣으면 워커 계정(WORKER_POSTGRES_USER·PASSWORD)도 있어야 한다: 없으면 수집이 앱 역할로 돌아 행이 모두 숨겨진다.
+    postgres_role: str | None = None
 
     # JWT
     # HS256 은 RFC 7518 3.2 에 따라 32바이트 이상 키를 권장한다. 짧으면 기동 시점에 실패시킨다.
@@ -98,6 +107,23 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("postgres_role", mode="before")
+    @classmethod
+    def _blank_role_is_unset(cls, value: object) -> object:
+        # `POSTGRES_ROLE=` 처럼 비워 두면 역할을 고정하지 않는다.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("postgres_role")
+    @classmethod
+    def _only_app_role(cls, value: str | None) -> str | None:
+        if value is not None and value != APP_DB_ROLE:
+            raise ValueError(
+                f"POSTGRES_ROLE 는 비우거나 {APP_DB_ROLE} 이어야 합니다 (받은 값: {value})"
+            )
+        return value
+
     @field_validator("worker_postgres_user", "worker_postgres_password", mode="before")
     @classmethod
     def _blank_worker_credential_is_unset(cls, value: object) -> object:
@@ -114,6 +140,12 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "WORKER_POSTGRES_USER 와 WORKER_POSTGRES_PASSWORD 는 함께 넣거나 함께 비워야 합니다."
+            )
+        # 앱 연결을 앱 역할로 고정하면서 워커 계정이 없으면 수집 세션이 앱 연결을 그대로 써 앱 역할로 돈다.
+        # 앱 역할은 사용자 컨텍스트를 요구하므로 수집 조회가 비고 INSERT 가 실패한다(docs/data-sync/ingest.md).
+        if self.postgres_role is not None and self.worker_postgres_user is None:
+            raise ValueError(
+                "POSTGRES_ROLE 을 넣으면 WORKER_POSTGRES_USER·PASSWORD 도 넣어야 합니다 (수집은 워커 역할로 돈다)."
             )
         return self
 
