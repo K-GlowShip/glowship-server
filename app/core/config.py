@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
     glowship_engine_dir: Path | None = None
 
+    # Analysis auto start (GLOW-128, 이슈 #51, docs/analysis/auto-start.md)
+    # 켜면 지연 감지(AUTO)·재분석(API 20)으로 만든 실행을 서버 안에서 바로 분석하고 저장한다. 서버 시작 때 남은 실행을 정리한다.
+    # 기본은 꺼짐: 대응안 결과 도구 T10(GLOW-133)이 들어오기 전에는 실제 실행 묶음을 만들 수 없다(사용자 결정 11-09).
+    # 꺼져 있으면 지금처럼 실행이 DETECTED 로 남는다.
+    analysis_auto_start_enabled: bool = False
+    # 한 서버 프로세스가 동시에 돌리는 분석 실행 수. 넘치면 DETECTED 그대로 기다린다(docs/analysis/auto-start.md 2절).
+    analysis_max_concurrent_runs: int = Field(default=4, ge=1)
+    # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
+    analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
+
     @field_validator("glowship_engine_dir", mode="before")
     @classmethod
     def _blank_engine_dir_is_unset(cls, value: object) -> object:
