@@ -4,10 +4,12 @@ from datetime import datetime
 from pydantic import Field, field_validator
 
 from app.core.schemas import CamelModel
+from app.core.text_input import clean_free_text
 
 """
     최종 선택 요청·응답 (API 19 POST /analysis-runs/{runId}/final-decision, API 명세 v6.2 4.6절)
       - reasonText 는 필수이고 앞뒤 공백을 뺀 뒤 1~600자(글자 수)이며, 뺀 값을 저장합니다 (C25).
+        NUL 문자는 지우지 않고 거부합니다(이슈 #49): 지우면 같은 Idempotency-Key 본문 비교가 흔들립니다.
       - 형식 오류는 422 VALIDATION_ERROR 입니다(명세는 400, 현재 구현은 422. D3).
 """
 
@@ -26,12 +28,7 @@ class FinalDecisionCreateRequest(CamelModel):
     @field_validator("reason_text")
     @classmethod
     def strip_reason(cls, v: str) -> str:
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("선택 이유는 비우거나 공백만으로 쓸 수 없습니다.")
-        if len(stripped) > REASON_MAX_LENGTH:
-            raise ValueError(f"선택 이유는 {REASON_MAX_LENGTH}자 이하여야 합니다.")
-        return stripped
+        return clean_free_text(v, label="선택 이유", max_length=REASON_MAX_LENGTH)
 
 
 class FinalDecisionCreateResponse(CamelModel):

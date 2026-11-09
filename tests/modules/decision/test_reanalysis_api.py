@@ -139,7 +139,17 @@ async def test_request_reason_over_600_returns_422(fake_service):
     assert fake_service.calls == []
 
 
-@pytest.mark.parametrize("body", [{"requestReason": 1}, []])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"requestReason": 1},
+        [],
+        {"requestReason": "이유\x00"},  # NUL (이슈 #49)
+        {
+            "requestReason": "  \x00  "
+        },  # 공백뿐이어도 NUL 이 있으면 null 로 바꾸지 않고 거부
+    ],
+)
 async def test_invalid_body_returns_422(fake_service, body):
     response = await _post(body)
 
