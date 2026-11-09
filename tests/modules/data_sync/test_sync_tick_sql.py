@@ -157,3 +157,37 @@ async def test_tick_is_rejected_while_any_source_is_running(db_write_session):
         {"c": company_id},
     )
     assert running == 5  # 두 번째 요청은 아무것도 시작하지 않음
+
+
+async def test_start_error_midway_closes_started_sources_as_failed(
+    db_write_session, monkeypatch
+):
+    """세 번째 원천 시작에서 DB 오류 등이 나면, 이미 시작한 두 원천을 FAILED 로 닫고 원래 오류를 올린다.
+    RUNNING 이 남으면 그 고객사의 동기화가 모두 409 로 막힌다(PR #91 리뷰)."""
+    from app.modules.data_sync.application.ingest.ingest_service import (
+        DataIngestService,
+    )
+
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    service = _service(db, await _order_payload(db, company_id))
+    tenant = TenantContext(user_id=None, company_id=company_id)
+    real_start = DataIngestService.start
+    calls = {"n": 0}
+
+    async def start_failing_third(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("시험용 DB 오류")
+        return await real_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(DataIngestService, "start", start_failing_third)
+
+    with pytest.raises(RuntimeError, match="시험용 DB 오류"):
+        await service.request_tick(tenant)
+
+    rows = await _runs(db, company_id, START)
+    assert [(r.source_domain, r.status) for r in rows] == [
+        ("PRODUCT", "FAILED"),
+        ("WAREHOUSE", "FAILED"),
+    ]

@@ -187,8 +187,9 @@ class ManualSyncService:
                             company_id, domain, ConnectionMethod.API
                         )
                     )
-            except SyncInProgressException as error:
-                # 사이에 다른 요청이 끼어들면 이미 시작한 것을 FAILED 로 닫는다(RUNNING 으로 남으면 다음 수집이 막힘)
+            except Exception as error:
+                # 사이에 다른 요청이 끼어들거나(409) DB 오류 등으로 시작이 멈추면 이미 시작한 것을 FAILED 로 닫는다.
+                # RUNNING 으로 남으면 그 고객사의 동기화가 모두 409 로 막힌다(PR #91 리뷰). fail 이 먼저 되돌린다.
                 for run in started:
                     await self._ingest(db, plan.windows[run.source_domain].at).fail(
                         run, error
