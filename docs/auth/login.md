@@ -12,7 +12,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     W->>S: POST /api/v1/auth/login {email, password(Base64)}
-    S->>DB: users.email 조회
+    S->>DB: app_auth_find_login_user(email) (DB 함수, 0008)
     S->>S: bcrypt 검증 · 상태 확인
     S->>S: access / refresh JWT 발급
     S-->>W: 200 (본문 없음)<br/>Set-Cookie: access_token, refresh_token
@@ -66,8 +66,10 @@ Set-Cookie: refresh_token=...; HttpOnly; Max-Age=604800; Path=/api/v1/auth/refre
 ### 서비스 로직 (`AuthService.login`)
 
 ```
-Base64 해제 → 72바이트 초과면 401 → users.email 조회 → bcrypt 검증 → status 확인 → TokenPair 반환
+Base64 해제 → 72바이트 초과면 401 → 로그인 조회(find_login_user) → bcrypt 검증 → status 확인 → TokenPair 반환
 ```
+
+- **로그인 조회는 DB 함수로 합니다(이슈 #41).** 로그인 순간에는 아직 사용자를 모르므로 RLS 컨텍스트(`app.user_id`·`app.company_id`)가 없습니다. 운영의 앱 DB 역할(`glowship_v4_app`)은 `users`를 "같은 고객사이거나 본인"일 때만 보여 주므로(`users_select_tenant_or_self`, 0001) `select(User)`로 찾으면 0행이 되어 모든 로그인이 401 입니다. 그래서 `UserRepository.find_login_user`가 소유자 권한의 `SECURITY DEFINER` 함수 `app_auth_find_login_user(email)`(마이그레이션 0008, 실행 권한은 앱 역할만)를 부르고, 그 이메일 한 명의 식별자·고객사·역할·비밀번호 해시·상태만 받습니다. 로컬(superuser)에서도 같은 함수를 씁니다.
 
 - **더미 해시 검증**: 이메일이 없어도 고정된 더미 해시(`DUMMY_PASSWORD_HASH`)로 bcrypt 검증을 한 번 수행합니다. 응답 시간 차이로 계정 유무를 추측하지 못하게 하기 위해서입니다.
 - **72바이트 한도**: bcrypt는 72바이트를 넘는 입력에 `ValueError`를 던집니다(bcrypt 5.x). 정책상 비밀번호는 16자 이하이므로 이를 넘는 입력은 조회 없이 `INVALID_CREDENTIALS`로 거절해 500을 막습니다.
@@ -230,7 +232,7 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 
 | 기능 | 비워 둔 자리 |
 | --- | --- |
-| 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급 |
+| 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급. 운영 앱 DB 역할에서 읽으려면 조회 전에 `set_rls_context(user_id=토큰의 사용자)`를 넣는다(본인 행은 `users_select_tenant_or_self`의 `user_id` 조건으로 보임, `GET /me`와 같음) |
 | ~~로그아웃~~ | 구현됨. `POST /api/v1/auth/logout`이 `clear_auth_cookies`로 두 쿠키를 만료시킨다 (2-1절) |
 | ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
 | 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태(2-1절 한계)이고 refresh 쿠키가 로그아웃 요청에 실려 오지 않으므로, 폐기 목록을 넣을 때는 `REFRESH_TOKEN_COOKIE_PATH`를 `/api/v1/auth`로 넓히는 것(인증 엔드포인트에만 실림. `cookies.py` 상수 한 곳이면 발급·삭제가 함께 따라가고, 명세 D4·C31의 Path 문구도 같이 고침)을 함께 정한다. 재발급 API 전에 바꾸는 편이 안전하다. Path가 다르면 브라우저가 별개 쿠키로 취급해 이미 로그인한 사용자에게 옛 Path 쿠키가 7일간 남으므로, 전환 기간에는 로그아웃에서 옛·새 Path를 모두 삭제한다. 명세 4.1 `POST /auth/refresh`에도 메모(C35) |
