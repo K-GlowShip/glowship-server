@@ -40,7 +40,10 @@ from app.modules.delay_analysis.application.agent.tools.validation_schemas impor
     ValidateAgentOutputInput,
 )
 from app.modules.delay_analysis.infrastructure.engine import explanation_assets as XA
-from app.modules.delay_analysis.infrastructure.engine.engine_input import EngineInput
+from app.modules.delay_analysis.infrastructure.engine.engine_input import (
+    BaseDateResolution,
+    EngineInput,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
@@ -86,6 +89,13 @@ def engine_input(engine, monkeypatch):
         delay_event_id=uuid.UUID(int=7),
         shipment_id=SHIPMENT_ID,
         base_date=date(2026, 3, 10),
+        base_date_resolution=BaseDateResolution(
+            base_date=date(2026, 3, 10),
+            run_date=date(2026, 3, 10),
+            inventory_limit=None,
+            order_limit=None,
+            late_sources=(),
+        ),
         input_seq=1,
         confirm_t="2026-03-10T00:00:00Z",
         snap=snap,
