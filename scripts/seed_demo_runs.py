@@ -258,7 +258,10 @@ async def load_supplement(
       - 이미 그날 재고가 있으면 건너뛴다(여러 번 돌려도 같음). 거부가 하나라도 있으면 멈춘다.
     """
     day = date.fromisoformat(supplement["day"])
-    if await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id}) >= day:
+    latest = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id})
+    if (
+        latest is not None and latest >= day
+    ):  # 재고가 하나도 없는 고객사면 None (PR #80 리뷰)
         return False
     observed = datetime.combine(
         date.fromisoformat(supplement["observed_at"]), datetime.min.time(), UTC
@@ -518,9 +521,14 @@ async def seed_demo(
     await sync_scenario(
         db, open_session, company_id, company_code, scenario, virtual_start
     )
-    basis_day = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id}) + timedelta(
-        days=1
-    )
+    latest = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id})
+    if (
+        latest is None
+    ):  # 재고가 없으면 기준일을 정할 수 없음 (PR #80 리뷰: None + timedelta 오류 대신 알림)
+        raise DemoSeedError(
+            f"고객사 {company_code} 의 재고 행이 없습니다(확정 DB 적재 확인)"
+        )
+    basis_day = latest + timedelta(days=1)
     seeded = []
     for event in (await db.execute(_OPEN_EVENTS, {"c": company_id})).all():
         run = await ensure_run(db, company_id, event)
