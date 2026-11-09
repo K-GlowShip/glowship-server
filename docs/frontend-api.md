@@ -36,7 +36,7 @@
 | `shipment` | `{ shipmentId, shipmentCode }` |
 | `warehouse` | `{ warehouseId, warehouseCode, regionCode }` |
 | `representativeSku` | `{ skuId, skuCode, productName }` 또는 `null`(선적 상세 없음) |
-| `currentRun` · `run` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27) |
+| `currentRun` · `run` | `{ runId, runCode, status, resultClass, failureCode }` 또는 `null`(실행 없음). `failureCode`는 `ON_HOLD`·`FAILED`일 때만 값(명세 C27), 값은 아래 "실패 코드" 표 |
 | `decidedBy` | `{ userId, displayName, roleCode }` (사용자 요약. `author`처럼 역할 이름으로 담음) |
 | `responseOption` | `{ responseOptionId, optionType }` 또는 `null`(의견만 쓴 초안) |
 
@@ -45,6 +45,24 @@
 - `stage`·`planned3plInboundDate`·`expected3plInboundDate`·`delayDays`는 선적의 **현재 값**입니다. 회복되어 예상일 ≤ 계획일이면 `delayDays`는 0입니다. 상세의 `previousExpected3plInboundDate`는 감지 직전 관측(스냅샷)의 예상일입니다.
 - `atRiskOrderCount`는 서로 다른 주문 수입니다. 저장된 계산 결과가 없으면 `null`(실행 없음·분석 중·`ON_HOLD`·`NO_DELAY`·도구 실패 `FAILED`)이고, 설명 생성만 실패한 `FAILED`는 숫자입니다.
 - `closedAt`·`closeReason`(`RECOVERED`·`RECEIVED`)은 열린 지연이면 `null`입니다.
+
+**실패 코드 (`failureCode`)** (`app/modules/delay_analysis/application/agent/retry.py`, 2026-11-09, 이슈 #35)
+
+실행이 `ON_HOLD`·`FAILED`일 때만 값이 있고, 그 밖의 상태는 `null`입니다. 나오는 곳: `GET /delay-events`·`GET /delay-events/{delayEventId}`의 `currentRun.failureCode`·`runs[].failureCode`, `GET /analysis-runs/{runId}`의 실패 요약 `failureCode`·`failureMessage`, `GET /decisions`의 `items[].run.failureCode`, `GET /skus/{skuId}`의 `affectedDelayEvents[].currentRun.failureCode`.
+
+| `failureCode` | 실행 상태 | 뜻 | 화면 문구 |
+| --- | --- | --- | --- |
+| `MISSING_REQUIRED_DATA` | `ON_HOLD` | 필수 자료가 없음 | 고정 문구 "필수 자료 결손으로 분석을 보류했습니다." |
+| `REQUIRED_DATA_INVALID` | `ON_HOLD` | 필수 자료 검증 오류 | 고정 문구 "필수 자료 결손으로 분석을 보류했습니다." |
+| `EXPLANATION_GENERATION_FAILED` | `FAILED` | 계산은 끝났지만 설명 생성·검증이 3번 모두 실패. 결과는 볼 수 있으나 초안·최종 선택 대상이 아님 | 고정 문구 "설명을 만들지 못해 이 분석은 선택할 수 없습니다. 재분석이 필요합니다." |
+| `TOOL_TIMEOUT_EXHAUSTED` | `FAILED` | 도구가 시간 초과로 3번 모두 실패 | `failureMessage` |
+| `TOOL_TEMPORARY_ERROR_EXHAUSTED` | `FAILED` | 도구가 일시 오류로 3번 모두 실패 | `failureMessage` |
+| `PERMISSION_DENIED` | `FAILED` | 도구 권한 오류(재시도하지 않음) | `failureMessage` |
+| `UNEXPECTED_TOOL_ERROR` | `FAILED` | 도구가 예상하지 못한 오류로 멈춤(재시도하지 않음) | 고정 문구 "분석 중 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요." |
+
+- 고정 문구는 명세 v6.2 2절 문구입니다. `ON_HOLD` 두 코드, `EXPLANATION_GENERATION_FAILED`, `UNEXPECTED_TOOL_ERROR`는 `failureMessage`를 화면에 그대로 쓰지 마세요. 보류 사유(예: "차단 검증 오류 <코드> <키>")와 설명 실패의 엔진 시도 기록(예: "(시도: 1:VALUE_MISMATCH@risk_summary#s1;…)")이 들어 있어 내부 코드가 보입니다. `UNEXPECTED_TOOL_ERROR`의 `failureMessage`에는 엔진 판정 차이·검증 오류 코드 같은 내부 진단이 붙을 수 있습니다(이슈 #57 2번). 이 코드의 고정 문구는 명세 2절에 없어, 서버가 도구 밖 예외에 쓰는 문구(PR #68 `UNEXPECTED_ERROR_MESSAGE`)와 같게 했습니다.
+- 나머지 `FAILED` 코드(`TOOL_TIMEOUT_EXHAUSTED`·`TOOL_TEMPORARY_ERROR_EXHAUSTED`·`PERMISSION_DENIED`)는 `GET /analysis-runs/{runId}`의 `failureMessage`(사용자에게 보일 문장, 도구 이름 포함)를 그대로 보여 줍니다. 목록 화면처럼 `failureMessage`가 없는 곳은 상태 라벨만 씁니다.
+- 코드별 표시 이름은 따로 두지 않습니다. 표에 없는 코드가 오면 `FAILED`는 `failureMessage`, `ON_HOLD`는 위 고정 문구로 보여 주세요.
 
 **표시용 실행 ID:** `currentRun.runCode`·`runs[].runCode`는 2026-11-05부터 `AN-YYMMDD-NNN` 값으로 옵니다(마이그레이션 0006, 명세 D14). 그 전에는 항상 `null`이었습니다. `episodeNo`, `currentRun.resultClass`, `runs[].triggerReason`·`completedStatus`·`resultClass`도 0005 병합 뒤로 값이 옵니다.
 
