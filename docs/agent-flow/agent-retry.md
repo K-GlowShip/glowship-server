@@ -12,7 +12,7 @@
 | 멈출 때 | `ToolFailure(summary)` | 노드는 이것을 받아 실행을 끝냅니다. `summary`는 `FailureSummary` |
 | 실패 요약 | `FailureSummary` | 상태 + 5컬럼(`failed_step`·`failure_code`·`attempt_count`·`retry_exhausted`·`failure_message`). 만들 때 DDL 규칙을 먼저 확인합니다 |
 | 저장할 값 | `FailureSummary.columns()` | 실행을 실패·보류로 끝낼 때 `analysis_runs`에서 바꿔야 하는 열을 **모두** 돌려줍니다. 서비스가 그대로 넣습니다: 상태와 5컬럼, `completed_status = status`(ck23), `result_class = NULL`(ck21), `dependency_scope = NULL`(ck36). 설명 실패면 `explanation_validation_status = FAILED`, `final_explanation_json = NULL`, `explanation_generated_at = NULL`도 넣습니다(ck26·ck7). `decision_signature`는 바꾸지 않습니다(ck37·ck40이 막지 않음) |
-| 보류 | `hold_summary(code, message, attempt_count=1)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: `BlockingIssue.failure_message`). 시도 횟수는 마지막 도구의 실제 횟수입니다 |
+| 보류 | `hold_summary(code, message, attempt_count=1)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: 엔진 입력 보류 `EngineHold`의 메시지). 시도 횟수는 마지막 도구의 실제 횟수입니다 |
 | 설명 실패 | `explanation_failure(attempt_detail)` | 엔진 생성기가 3회 모두 실패했을 때. 엔진의 시도 기록 문자열을 문구 뒤에 붙입니다 |
 
 ## 2. 오류별 처리
