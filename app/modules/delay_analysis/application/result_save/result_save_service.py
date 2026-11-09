@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -53,6 +54,9 @@ from app.modules.delay_analysis.infrastructure.response_option import ResponseOp
       - save_analysis_failure: 실패·보류(FAILED·ON_HOLD). 값은 실패 요약(FailureSummary, agent/retry.py)이
         DDL 규칙(ck10~14·ck23·ck26·ck36)대로 만든다. 입력 검증 보류도 이 함수로 저장한다(판정은 입력 검증,
         사용자 결정 11-05). FAILED·ON_HOLD 는 STALE 대상이 아니라 재판정하지 않는다(stale_service STALE_TARGET_STATUSES).
+      - save_no_delay: 지연 해소(NO_DELAY, agentflow 5.5 "지연 해소" 행). 상태·완료 상태·판정 서명만 쓰고 결과 행은 없다.
+        NO_DELAY 는 STALE 대상이 아니라 재판정하지 않는다. 회복(DELAY_RECOVERED) 실행은 에피소드가 닫힌 뒤 분석되므로
+        에피소드 열림은 보지 않는다(확정 DB E8 v2, docs/analysis/auto-start.md 3절).
 """
 
 IN_PROGRESS = frozenset(
@@ -217,6 +221,54 @@ async def save_analysis_failure(
                 f"{summary.failure_code} 는 결과 행을 저장하지 않습니다 (agentflow 5.5)"
             )
         rows = ResultRows(run_values=columns)
+    run = await _lock_in_progress(db, company_id, analysis_run_id)
+    if isinstance(run, ResultSaveOutcome):
+        return run
+    await _write(db, run, rows, now)
+    return ResultSaveOutcome(saved=True, status=run.status)
+
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+async def save_no_delay(
+    db: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    analysis_run_id: uuid.UUID,
+    decision_signature: dict[str, Any],
+    decision_signature_sha256: str,
+    now: datetime | None = None,
+) -> ResultSaveOutcome:
+    """
+    지연 해소(NO_DELAY)를 저장한다. 값은 엔진 pipeline.no_delay 결과(judge_no_delay 의 NoDelay)다.
+      - 쓰는 열: status·completed_status = NO_DELAY(ck23), 판정 서명·SHA-256(ck39~41), 끝난 시각.
+        결과 분류·의존 범위·실패 요약·설명·STALE 열은 비운 채 둔다(ck10·ck20~22·ck27·ck37, 확정 DB E8 v2 와 같음).
+      - 결과 표 4개에는 쓰지 않는다(명세 4.5 "NO_DELAY 결과 행이 없다").
+      - 실행이 이미 진행 중이 아니면(STALE 등) 아무것도 쓰지 않고 saved=False.
+      - now: 끝난 시각. 다른 저장 함수와 같은 규칙(없으면 DB 시각, 있으면 max(now, 시작 + 1초)).
+    """
+    # 잠그기 전에 입력을 확인한다(ck39·ck41 을 DB 오류가 아니라 입력 오류로)
+    if (
+        decision_signature.get("schema_version") != "decision_signature.v1"
+        or decision_signature.get("status") != AnalysisRunStatus.NO_DELAY
+        or decision_signature.get("options") != []
+    ):
+        raise ResultSaveInputError(
+            "지연 해소의 판정 서명은 decision_signature.v1·status NO_DELAY·options [] 여야 합니다"
+        )
+    if not _SHA256_HEX.match(decision_signature_sha256):
+        raise ResultSaveInputError(
+            "판정 서명 SHA-256 은 소문자 16진수 64자리여야 합니다"
+        )
+    rows = ResultRows(
+        run_values={
+            "status": AnalysisRunStatus.NO_DELAY,
+            "completed_status": CompletedStatus.NO_DELAY,
+            "decision_signature": decision_signature,
+            "decision_signature_sha256": decision_signature_sha256,
+        }
+    )
     run = await _lock_in_progress(db, company_id, analysis_run_id)
     if isinstance(run, ResultSaveOutcome):
         return run
