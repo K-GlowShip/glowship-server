@@ -5,6 +5,7 @@
   - impact_schemas: 재고 영향 계산 도구 T7·T6 (C 구현)
   - option_schemas: 대응안 도구 T9·T10·T11 (A 구현)
   - option_feasibility: T9 check_option_feasibility 구현
+  - option_outcomes: T10 calculate_option_outcomes 구현 (공유 배정 모듈은 엔진 폴더에서 불러 씀)
   - option_comparison: T11 compare_options 구현
   - validation_schemas: 설명 검증 도구 T12 (C 구현, 계약 8절)
   - output_validation: T12 validate_agent_output 구현 (엔진 explain.validator 감싸기)
