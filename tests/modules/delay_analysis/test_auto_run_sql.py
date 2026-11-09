@@ -284,3 +284,88 @@ async def test_실행이_없는_지연이_회복으로_닫히면_실행을_만�
         )
         == "RECOVERED"
     )
+
+
+async def _hide_operating_rules(db, company_id):
+    """그날 적용되는 운영 기준이 없는 고객사(새 고객사)를 만든다: 기준의 적용 시작일을 먼 뒤로 민다(롤백됨)"""
+    await db.execute(
+        text(
+            "UPDATE operating_rule_sets SET effective_from = DATE '2099-01-01' WHERE company_id = :c"
+        ),
+        {"c": company_id},
+    )
+
+
+async def test_운영_기준이_없으면_실행만_건너뛰고_수집은_적재한다(db_write_session):
+    """#63 리뷰 [권장] 재현 2: 수정 전에는 OPERATING_RULE_MISSING 으로 수집 FAILED·새 선적 0건"""
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _hide_operating_rules(db, company_id)
+
+    result = await _ingest(db, DAY1, company_id, [shipment])
+
+    loaded = await db.scalar(
+        text(
+            "SELECT count(*) FROM shipments WHERE company_id = :c AND shipment_code = :s"
+        ),
+        {"c": company_id, "s": shipment.shipment_code},
+    )
+    assert loaded == 1  # 선적은 적재됨
+    assert [o.action for o in result.episode_outcomes] == ["START"]  # 에피소드는 열림
+    assert result.created_run_ids == ()
+    assert [(s.delay_event_id, s.code) for s in result.skipped_auto_runs] == [
+        (result.episode_outcomes[0].delay_event_id, "OPERATING_RULE_MISSING")
+    ]
+    assert await _runs(db, company_id, shipment.shipment_code) == []
+
+
+async def test_건너뛴_판정은_이전_실행_STALE_도_되돌리고_다음_후속에서_새_버전을_만든다(
+    db_write_session,
+):
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _ingest(db, DAY1, company_id, [shipment])
+    restore = (
+        await db.execute(
+            text(
+                "SELECT operating_rule_set_id, effective_from FROM operating_rule_sets WHERE company_id = :c"
+            ),
+            {"c": company_id},
+        )
+    ).all()
+    await _hide_operating_rules(db, company_id)
+    worse = replace(
+        shipment,
+        current_expected_3pl_inbound_date=shipment.current_expected_3pl_inbound_date
+        + timedelta(days=10),
+    )
+
+    skipped = await _ingest(db, DAY2, company_id, [worse])
+
+    [first] = await _runs(db, company_id, shipment.shipment_code)
+    assert [s.code for s in skipped.skipped_auto_runs] == ["OPERATING_RULE_MISSING"]
+    assert (first.status, first.is_latest) == ("DETECTED", True)  # STALE 도 함께 되돌림
+
+    for row in restore:  # 운영 기준을 다시 넣은 뒤 다음 후속 판정
+        await db.execute(
+            text(
+                "UPDATE operating_rule_sets SET effective_from = :f WHERE operating_rule_set_id = :i"
+            ),
+            {"f": row.effective_from, "i": row.operating_rule_set_id},
+        )
+    later = replace(worse, current_stage="AT_PORT")
+    result = await _ingest(db, DAY3, company_id, [later])
+
+    first, second = await _runs(db, company_id, shipment.shipment_code)
+    assert (first.status, first.stale_primary_reason) == (
+        "STALE",
+        "DELAY_STAGE_CHANGED",
+    )
+    assert (second.version_no, second.trigger_reason, second.is_latest) == (
+        2,
+        "STAGE_CHANGED",
+        True,
+    )
+    assert result.skipped_auto_runs == ()
