@@ -58,8 +58,7 @@ class DataSyncStatusService:
             stale_multiplier: 수집 멈춤 판정 배수. 마지막 실행 시작이 수집 주기 × 배수보다 오래되면 동기화 안 됨으로 본다.
                 0 이면 멈춤 판정을 하지 않는다 (Settings.sync_stale_multiplier).
             clock: 현재 시각(UTC). 테스트에서 시각을 고정하기 위한 주입점
-            virtual_clock: True 면(데모, Settings.virtual_clock_start 가 있을 때) 수집 멈춤 판정(조건 2)을 하지 않고
-                수집 주기(syncIntervalMinutes)를 0(자동 수집 없음, 수동 동기화만)으로 돌려준다(2026-11-09 결정).
+            virtual_clock: True 면(데모, Settings.virtual_clock_start 가 있을 때) 수집 멈춤 판정(조건 2)을 하지 않는다.
                 가상 시각에는 "지금"이 없다. 데이터가 7월 초에 멈춰 있어 서버 시각(11월)으로 보면 모든 원천이 멈춘 것으로 보이고,
                 가장 최근 수집 시각을 지금으로 보면 수동 수집이 있는 원천(SHIPMENT)만 하루씩 나아가서 나머지 원천이
                 모두 동기화 안 됨(카드 "수집 오류")이 되며 데모 중 되돌릴 방법이 없다(PR #40 리뷰). 조건 1(마지막 수집 결과)만 본다.
@@ -89,11 +88,7 @@ class DataSyncStatusService:
         return DataSourceSyncStatus(
             source_domain=spec.source_domain,
             source_system_name=spec.source_system_name,
-            # 가상 시각(데모)에는 자동 수집이 없다(2026-11-09 결정). 0 이면 화면은 "수동 동기화(누를 때마다 10분)" 문구와
-            # "다음 날로" 버튼을 쓴다. 수집 멈춤 판정은 가상 시각에 하지 않으므로 이 값과 상관없다.
-            sync_interval_minutes=0
-            if self.virtual_clock
-            else spec.sync_interval_minutes,
+            sync_interval_minutes=spec.sync_interval_minutes,
             data_sync_run_id=summary.data_sync_run_id if summary else None,
             connection_method=summary.connection_method if summary else None,
             status=summary.status if summary else None,

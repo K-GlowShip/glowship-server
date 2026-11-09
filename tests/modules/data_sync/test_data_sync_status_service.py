@@ -288,19 +288,3 @@ async def test_가상_시각이어도_수집_이력이_없으면_모두_동기�
     )
 
     assert not any(s.is_synced for s in await service.get_latest_statuses(TENANT))
-
-
-@pytest.mark.parametrize(("virtual_clock", "interval"), [(True, 0), (False, 10)])
-async def test_가상_시각이면_수집_주기를_0_으로_돌려준다(virtual_clock, interval):
-    """데모에는 자동 수집이 없다: 0 이면 화면이 '수동 동기화(누를 때마다 10분)'·'다음 날로'를 쓴다 (2026-11-09 결정)"""
-    summaries = {"SHIPMENT": _summary_started_at(datetime(2026, 7, 2, tzinfo=UTC))}
-    service = DataSyncStatusService(
-        repo=FakeDataSyncRunRepository(summaries=summaries),
-        stale_multiplier=2,
-        clock=lambda: NOW,
-        virtual_clock=virtual_clock,
-    )
-
-    statuses = await service.get_latest_statuses(TENANT)
-
-    assert [s.sync_interval_minutes for s in statuses] == [interval] * 5
