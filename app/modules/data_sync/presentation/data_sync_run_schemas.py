@@ -64,7 +64,11 @@ class DataSourceSyncStatusResponse(CamelModel):
         description="원천 시스템 이름 (운영 설정 값)", examples=["SAP ERP"]
     )
     sync_interval_minutes: int = Field(
-        description="자동 수집 주기(분, 운영 설정 값)", examples=[10]
+        description=(
+            "자동 수집 주기(분, 운영 설정 값). 0 이면 자동 수집이 없는 데모(가상 시각): 화면은 "
+            "'수동 동기화(누를 때마다 10분)' 문구와 '다음 날로' 버튼을 쓴다"
+        ),
+        examples=[10],
     )
     is_synced: bool = Field(
         description=(
