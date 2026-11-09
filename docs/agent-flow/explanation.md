@@ -42,9 +42,23 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
                                now: datetime, adapter=None, tracer=None) -> ExplanationPassed | ExplanationFailed
 ```
 
-- **`snap`·`analysis`:** 엔진 입력 스냅샷과 `pipeline.analyze` 결과입니다. GLOW-125 `EngineInput.snap`·`analysis`를 그대로 넘깁니다. 인터페이스 초안(`agent-tool-interface`)의 `generate_explanation(ctx, *, now)`는 `ctx.engine`에서 이 둘을 꺼내 이 함수를 부르는 몇 줄짜리 감싸기가 됩니다. `ToolContext`·`EngineInput`이 아직 develop에 없어서, 먼저 명시적인 인자로 만들었습니다.
-- **`shipment_code`:** 설명 첫 문장의 지연 선적 코드입니다. 엔진 하네스는 저장소의 선적 표에서 꺼냅니다. 서버에서는 GLOW-125 `EngineInput.store`의 선적 표(`store.ships[shipment_id]["shipment_code"]`, 엔진 하네스와 같음)에서 꺼낼 예정입니다(6절).
+- **`snap`·`analysis`:** 엔진 입력 스냅샷과 `pipeline.analyze` 결과입니다. GLOW-125 `EngineInput.snap`·`analysis`를 그대로 넘깁니다. 그래프는 이 함수를 직접 부르지 않고, 아래 감싸기 `make_explainer()`가 만든 `explain(ctx, now)`를 부릅니다(2.1절, 11-08 DV3-3 해소).
+- **`shipment_code`:** 설명 첫 문장의 지연 선적 코드입니다. 엔진 하네스는 저장소의 선적 표에서 꺼냅니다. 서버도 GLOW-125 `EngineInput.store`의 선적 표 `store.ships[str(shipment_id)]["shipment_code"]`에서 꺼냅니다(엔진 하네스와 같음, 열쇠는 문자열 ID, `delayed_shipment_code`).
 - **`adapter`:** 기본은 엔진 `MockAdapter`입니다(라벨은 해시를 대조한 자산에서 읽음). 실제 외부 모델 호출은 승인되지 않았고, 엔진 `ExternalModelAdapter`는 부르면 거부합니다. 모델을 바꿀 때는 이 자리에 같은 `complete(prompt, request)` 모양의 어댑터를 넣고, 자산 등록부에 모델 설정을 등록합니다.
+
+### 2.1 그래프 연결 (11-08, GLOW-129 `AnalysisRuntime`)
+
+```python
+make_explainer(*, adapter=None) -> explain(ctx: ToolContext, now: datetime)   # AnalysisRuntime.explain
+final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # AnalysisRuntime.final_check_input
+```
+
+- **`explain(ctx, now)`:** `ctx.engine`의 `snap`·`analysis`, `str(ctx.analysis_run_id)`, 저장소 선적 표의 지연 선적 코드로 `generate_explanation`을 부릅니다. 엔진 계산은 다시 하지 않습니다. `now`는 실행 묶음의 시계(`runtime.clock()`)입니다.
+- **연결 오류(`ExplanationInputError`, 모델을 부르기 전):** `ctx.engine.analysis_run_id`가 `ctx.analysis_run_id`와 다르거나, 선적 표에 지연 선적 코드가 없을 때입니다. 설명 실패(3회)가 아니라 코드·데이터 연결 문제라 시도로 세지 않습니다.
+- **추적:** `ctx.tracer`가 `explanation_attempts`를 가질 때만 넘깁니다(GLOW-124 `RunTracer`는 가짐). `ToolContext`가 정한 모양(`tool_attempt`만)이면 넘기지 않습니다.
+- **`final_check_input`:** 통과 설명의 JSON을 다시 문자열로 만든 출력 + `expected_metadata()` + `canary=None`(시도마다 엔진이 만들고 버려 알 수 없음, 계약 8절). 같은 설명이면 엔진 생성기 안 검증과 판정이 같습니다(시험으로 확인).
+- **실행 묶음에 끼우기:** 실제 서비스가 `AnalysisRuntime(explain=make_explainer(), final_check_input=final_check_input, …)`과 T12 등록(`ToolSpec(pure_tool(validate_agent_output), ValidateAgentOutputInput, AgentOutputValidation)`)을 하는 것은 "실제 도구 교체" 작업입니다(인터페이스 문서 5절). 여기서는 함수만 둡니다.
+- 시험: `tests/modules/delay_analysis/test_explanation_runtime.py` 16건(직접 호출과 같음, 선적 코드·실행 ID 연결 오류는 모델 0회, 추적, T12 입력, 실제 설명·결과 검증 노드로 READY·FAILED). 변이 6건(선적 코드 고정·실행 ID 확인 빼기·추적기 항상 넘김·canary 넣음·UUID 열쇠 허용·출력 원문 비움)을 모두 잡았습니다.
 
 결과는 저장 모양에 맞춰 둡니다.
 
@@ -97,8 +111,8 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
 ## 6. 남은 일
 
 1. **노드 연결:** 그래프 explain·validate 노드 연결은 GLOW-129(노드 연결)입니다. 노드 순서는 T11 → `decision_of` → explain → validate입니다. 등록표의 `(ctx, payload)` 감싸기도 그 작업에서 합니다.
-2. **입력 받는 곳:** `EngineInput`(GLOW-125 2부)이 머지되면 `ctx.engine.snap`·`analysis`에서 부르는 감싸기를 붙입니다. 지연 선적 코드는 `EngineInput.store`의 선적 표에서 꺼냅니다(2절).
-3. **overlay 회귀:** overlay READY 실행의 저장 설명과 다시 만든 설명이 같은지, 설명 실패 실행의 시도 기록이 같은지 대조합니다. 엔진 입력이 DB에서 만들어진 뒤(2번)에 할 수 있습니다. overlay는 엔진 시도 기록만 저장하고, #28 문구는 "안내 + (시도: 기록)"이라서 시도 기록 부분만 대조합니다.
+2. ~~입력 받는 곳~~ 11-08 완료(2.1절 `make_explainer`·`final_check_input`). 남은 것: 실제 실행 묶음에 끼우기("실제 도구 교체" 작업).
+3. ~~overlay 회귀~~ 11-08 완료: `tests/modules/delay_analysis/test_explanation_overlay.py`. 개발 DB overlay 실행을 `build_engine_input`(읽기만)으로 다시 만들고 `make_explainer`로 설명을 다시 만들었습니다. 설명이 저장된 14건(통과 13 — `SKU-005` 같은 코드 포함, 설명 실패 1 — RT-2 결함과 같은 시도 기록) 모두 `final_explanation_json`·생성 시각·모델·프롬프트 판(실패는 `failure_message`)이 저장값과 같았습니다. 기본은 2건, 전체는 `GLOWSHIP_ENGINE_GOLDEN=1`(약 2분).
 4. ~~시작 단계 확인 연결~~ 11-06 완료(3절).
 5. **"근거·가정·미확인 정보 구분"(Jira 인수 조건):** `explanation.v1`(명세 7절 U10)에는 이 구분 필드가 없습니다. 지금은 명세대로 다룹니다.
    - 경고 목록(`warnings`)

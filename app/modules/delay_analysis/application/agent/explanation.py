@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
-from collections.abc import Iterable, Mapping
+import uuid
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -9,8 +11,10 @@ from app.modules.delay_analysis.application.agent.retry import (
     FailureSummary,
     explanation_failure,
 )
+from app.modules.delay_analysis.application.agent.tools.context import ToolContext
 from app.modules.delay_analysis.application.agent.tools.validation_schemas import (
     ExplanationMetadata,
+    ValidateAgentOutputInput,
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import AnalysisRunStatus
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
@@ -31,6 +35,8 @@ from app.modules.delay_analysis.infrastructure.engine.explanation_assets import 
       - 설명은 READY_FOR_REVIEW 실행만 만든다(엔진 input_doc.build 규칙). 그 밖의 상태면 모델을 부르지 않고 ValueError.
       - 자산 오류(ExplanationAssetError)는 시도로 세지 않고 실행 상태를 바꾸지 않는다. 호출자에게 그대로 올린다.
       - 실패 원문·canary 는 결과·추적 어디에도 남기지 않는다. 시도 기록 = 사유 코드·위치·모델·프롬프트 판뿐(엔진과 같음).
+      - 그래프 연결(GLOW-129 AnalysisRuntime): make_explainer() 가 노드가 부르는 explain(ctx, now) 를,
+        final_check_input 이 결과 검증 노드의 T12 입력을 만든다. 실행 묶음에 끼우는 것은 "실제 도구 교체" 작업이다.
 """
 
 logger = logging.getLogger(__name__)
@@ -173,3 +179,80 @@ def _trace(
         tracer.explanation_attempts(attempts)
     except Exception:
         logger.warning("설명 시도 추적 기록 실패(분석은 계속)", exc_info=True)
+
+
+# --- 그래프 연결 (GLOW-129 AnalysisRuntime.explain·final_check_input, 인터페이스 문서 2절) ---------------------
+
+
+class ExplanationInputError(ValueError):
+    """도구 문맥으로 설명 입력을 만들 수 없음(연결 오류). 실행 ID 가 다르거나 지연 선적 코드가 저장소에 없음."""
+
+
+class ExplainEngineInput(Protocol):
+    """설명이 읽는 엔진 입력 칸(GLOW-125 EngineInput). ToolContext.engine 의 실제 값이 갖는다."""
+
+    analysis_run_id: uuid.UUID
+    shipment_id: uuid.UUID
+    snap: Mapping[str, Any]
+    analysis: Mapping[str, Any]
+    store: Any  # 엔진 Store. 선적 표 ships[shipment_id 문자열] 에 shipment_code 가 있다
+
+
+def delayed_shipment_code(engine: ExplainEngineInput) -> str:
+    """지연 선적 코드(설명 첫 문장). 엔진 하네스(run_s1_s5 explain_run)처럼 저장소 선적 표에서 꺼낸다."""
+    ships = getattr(engine.store, "ships", None)
+    row = ships.get(str(engine.shipment_id)) if isinstance(ships, Mapping) else None
+    code = row.get("shipment_code") if isinstance(row, Mapping) else None
+    if not isinstance(code, str) or not code:
+        raise ExplanationInputError(
+            f"엔진 저장소 선적 표에 지연 선적 {engine.shipment_id} 의 코드가 없습니다"
+        )
+    return code
+
+
+ExplanationResult = ExplanationPassed | ExplanationFailed
+
+
+def make_explainer(
+    *, adapter: Any | None = None
+) -> Callable[[ToolContext, datetime], Awaitable[ExplanationResult]]:
+    """
+    그래프 설명 노드가 부르는 explain(ctx, now) (AnalysisRuntime.explain). 엔진 계산은 다시 하지 않고
+    ctx.engine 의 snap·analysis 를 그대로 쓴다. 추적은 ctx.tracer 가 설명 시도 기록을 받을 때만(GLOW-124 RunTracer).
+    adapter 는 generate_explanation 과 같다(기본 엔진 MockAdapter).
+    """
+
+    async def explain(ctx: ToolContext, now: datetime) -> ExplanationResult:
+        engine = ctx.engine
+        if engine.analysis_run_id != ctx.analysis_run_id:
+            raise ExplanationInputError(
+                f"엔진 입력 실행 {engine.analysis_run_id} 이 도구 문맥 실행 {ctx.analysis_run_id} 과 다릅니다"
+            )
+        tracer = ctx.tracer
+        if not callable(getattr(tracer, "explanation_attempts", None)):
+            tracer = None
+        return await generate_explanation(
+            snap=engine.snap,
+            analysis=engine.analysis,
+            analysis_run_id=str(ctx.analysis_run_id),
+            shipment_code=delayed_shipment_code(engine),
+            now=now,
+            adapter=adapter,
+            tracer=tracer,
+        )
+
+    return explain
+
+
+def final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput:
+    """
+    결과 검증 노드의 T12 입력(AnalysisRuntime.final_check_input). 출력 원문은 통과한 설명 JSON 을 다시 문자열로
+    만든 것이다(엔진 생성기는 통과한 원문을 따로 돌려주지 않음, 같은 설명이면 판정이 같음). canary 는 시도마다
+    엔진이 만들고 버려 알 수 없으므로 null(유출 검사 하나를 건너뜀, 계약 8절).
+    """
+    return ValidateAgentOutputInput(
+        input_document=passed.input_document,
+        output=json.dumps(passed.final_explanation_json, ensure_ascii=False),
+        expected_metadata=passed.expected_metadata(),
+        canary=None,
+    )
