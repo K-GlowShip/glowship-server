@@ -40,7 +40,7 @@ class ToolAttemptTracer(Protocol):
 class ToolContext:
     company_id: uuid.UUID
     analysis_run_id: uuid.UUID
-    base_date: date  # 기준일 D (실행 started_at 의 UTC 날짜, 실행 생성과 같음)
+    base_date: date  # 기준일 D (엔진 입력 EngineInput.base_date. 그날 자료가 없으면 실행 날짜보다 이를 수 있음)
     input_seq: int  # 실행 입력 순번 (#21)
     engine: EngineInputLike
     tracer: ToolAttemptTracer | None = None  # 없으면 추적하지 않는다

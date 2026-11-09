@@ -394,7 +394,6 @@ def fake_runtime(
         final_check_input=lambda passed: FakeFinalCheckInput(
             explanation=passed.final_explanation_json
         ),
-        base_date=BASE_DATE,
         input_seq=1,
         tracer=tracer,
         clock=lambda: datetime(2026, 1, 2, 9, 0, tzinfo=UTC),

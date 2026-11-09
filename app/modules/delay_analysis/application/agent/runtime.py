@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.runnables import RunnableConfig
@@ -93,7 +93,6 @@ class AnalysisRuntime:
     decide: DecisionMaker
     explain: ExplanationGenerator
     final_check_input: FinalCheckInput
-    base_date: date  # 기준일 D (실행 생성이 정함)
     input_seq: int  # 실행 입력 순번 (#21)
     tracer: ToolAttemptTracer | None = None
     clock: Callable[[], datetime] = utc_now_seconds  # 설명 생성 시각(UTC, 초 단위)
@@ -118,10 +117,12 @@ class AnalysisRuntime:
             raise RuntimeWiringError(
                 "실행 도구 묶음은 실행 하나에만 씁니다(엔진 입력을 이미 담음)"
             )
+        # 기준일 D 는 엔진 입력이 정한 값을 쓴다(EngineInput.base_date, #67). 실행 날짜와 다를 수 있다:
+        # 그날 재고·주문 자료가 입력에 없으면 마지막 자료 날로 당겨진다. 실행 날짜를 넣으면 T1 입력 확인이 실패한다.
         self._ctx = ToolContext(
             company_id=company_id,
             analysis_run_id=analysis_run_id,
-            base_date=self.base_date,
+            base_date=engine.base_date,
             input_seq=self.input_seq,
             engine=engine,
             tracer=self.tracer,
