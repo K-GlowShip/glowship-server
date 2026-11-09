@@ -76,7 +76,6 @@ _LATEST_RUN_CODE_OF_DAY = text(
 ).bindparams(bindparam("company_id", type_=_UUID), bindparam("day_prefix", type_=Text))
 
 
-# 고객사의 마지막 적재 수집 시작(초 단위, 엔진이 읽는 모양). 넘겨받은 실행 시각 확인에 쓴다(이슈 #50)
 @dataclass(frozen=True)
 class DelayEventRef:
     delay_event_id: uuid.UUID
