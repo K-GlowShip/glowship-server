@@ -20,7 +20,8 @@ from app.modules.data_sync.dependencies import get_manual_sync_service
 
 """
     수동 동기화 API 25 라우터 테스트 (POST /data-sync-runs, 2026-11-09 결정). 서비스는 SQL 시험이 검증하므로
-    여기서는 역할, 요청 형식(sourceSystem·sourceDomain 하나만, advance), 202 응답 배열, 백그라운드 실행 등록, 오류 코드 전달을 본다.
+    여기서는 역할, 요청 형식(본문 선택, sourceSystem·sourceDomain 선택·함께 금지, advance), 202 응답 배열,
+    백그라운드 실행 등록, 오류 코드 전달을 본다.
 """
 
 COMPANY_ID = uuid.uuid7()
@@ -107,13 +108,16 @@ EXPECTED = [
 @pytest.mark.parametrize(
     "body",
     [
-        {"sourceSystem": "ERP"},
+        None,  # 본문 없음 (동기화 버튼 하나, 2026-11-09)
+        {},
+        {"advance": "TICK"},
+        {"sourceDomain": None},
+        {"sourceSystem": "ERP"},  # 이전 카드별 버튼 모양(하위 호환)
         {"sourceSystem": "WMS", "advance": "TICK"},
-        {"sourceSystem": "TMS"},
-        {"sourceDomain": "SHIPMENT"},  # 이전 요청 모양(하위 호환)
+        {"sourceDomain": "SHIPMENT"},
     ],
 )
-async def test_any_card_syncs_all_five_sources_and_gets_202_array(
+async def test_sync_button_syncs_all_five_sources_and_gets_202_array(
     fake_service, role, body
 ):
     response = await _post(body, role=role)
@@ -129,7 +133,7 @@ async def test_any_card_syncs_all_five_sources_and_gets_202_array(
 
 
 async def test_next_day_runs_until_midnight_in_background(fake_service):
-    response = await _post({"sourceSystem": "ERP", "advance": "NEXT_DAY"})
+    response = await _post({"advance": "NEXT_DAY"})
 
     assert response.status_code == 202
     assert response.json() == EXPECTED  # 첫 tick 의 다섯 수집
@@ -141,7 +145,7 @@ async def test_next_day_runs_until_midnight_in_background(fake_service):
 async def test_next_day_without_virtual_clock_returns_422(fake_service):
     fake_service.virtual_start = None
 
-    response = await _post({"sourceSystem": "ERP", "advance": "NEXT_DAY"})
+    response = await _post({"advance": "NEXT_DAY"})
 
     assert response.status_code == 422
     assert response.json()["code"] == "VALIDATION_ERROR"
@@ -166,13 +170,11 @@ async def test_non_client_returns_403(fake_service, role):
 @pytest.mark.parametrize(
     "body",
     [
-        {},
         {"sourceDomain": "RAIL"},
-        {"sourceDomain": None},
         {"sourceSystem": "SAP"},
-        {"sourceSystem": "ERP", "sourceDomain": "ORDER"},  # 둘 다
-        {"advance": "TICK"},  # 둘 다 없음
-        {"sourceSystem": "ERP", "advance": "NEXT_WEEK"},
+        {"sourceSystem": "ERP", "sourceDomain": "ORDER"},  # 함께 보냄
+        {"advance": "NEXT_WEEK"},
+        {"advance": None},
     ],
 )
 async def test_invalid_body_returns_422(fake_service, body):

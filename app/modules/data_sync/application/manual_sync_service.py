@@ -159,7 +159,7 @@ class ManualSyncService:
                 logger.exception("수동 수집 %s: 적용 실패", run_id)
                 return None
 
-    # --- 고객사 tick: 어느 카드든 다섯 원천을 함께 (2026-11-09 결정) ---------------------------------------
+    # --- 고객사 tick: 동기화 버튼 한 번에 다섯 원천을 함께 (2026-11-09 결정) ---------------------------------------
 
     async def request_tick(self, tenant: TenantContext) -> TickTicket:
         """

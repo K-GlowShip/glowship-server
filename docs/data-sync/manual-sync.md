@@ -1,18 +1,18 @@
 # 수동 동기화 (API 25 `POST /data-sync-runs`)
 
-연동 데이터 화면의 카드 버튼(ERP·WMS·TMS, "지금 동기화")이 부르는 API 입니다(API 명세 v6.2 4.3·D16, GLOW-13·49). **어느 카드를 눌러도 다섯 원천을 한 번에 수집합니다**(2026-11-09 결정). 원천 응답은 가상 원천 파일(가상 TMS + 가상 ERP·WMS)에서 읽습니다.
+연동 데이터 화면의 동기화 버튼이 부르는 API 입니다(API 명세 v6.2 4.3·D16, GLOW-13·49). 화면은 카드 하나에 원천 시스템별 칸(ERP 주문·상품, WMS 재고·창고, TMS 선적)과 버튼 하나입니다. **버튼 한 번에 다섯 원천을 함께 수집합니다**(2026-11-09 결정). 원천 응답은 가상 원천 파일(가상 TMS + 가상 ERP·WMS)에서 읽습니다.
 
 ## 1. 요청·응답
 
 | 항목 | 내용 |
 | --- | --- |
 | 권한 | Client 팀원·팀장(`CLIENT_MEMBER`·`CLIENT_LEAD`, 명세 6절). `access_token` 쿠키의 `company_id`가 고객사 범위 |
-| 요청 | `{ "sourceSystem": "ERP" \| "WMS" \| "TMS", "advance": "TICK" \| "NEXT_DAY" }` |
-| `sourceSystem` | 누른 카드. 기록용이며 어느 값이든 같은 전체 수집입니다. 이전 요청 모양 `{ "sourceDomain": "…" }`도 받습니다(하위 호환, 동작 같음). **둘 중 하나만** 보냅니다 |
+| 요청 | 본문 선택. `{}` 또는 본문 없음 = 10분 한 번. `{ "advance": "NEXT_DAY" }` = 다음 날로 |
+| `sourceSystem`·`sourceDomain` | 선택. 이전 카드별 버튼의 요청 모양(`{ "sourceSystem": "ERP" }`, `{ "sourceDomain": "SHIPMENT" }`)도 받고 동작은 같은 전체 수집입니다. 둘을 함께 보내면 422 |
 | `advance` | 생략하면 `TICK`(가상 10분 한 번). `NEXT_DAY`는 다음 자정 tick 까지 이어서 수집합니다(데모의 "다음 날로", 가상 시각일 때만) |
 | 응답 202 | 원천별 배열 5건, 상품 → 창고 → 주문 → 선적 → 재고 순서: `[{ "sourceDomain": "PRODUCT", "dataSyncRunId": "…", "status": "RUNNING" }, …]`. 적용은 응답 뒤 백그라운드에서 하고, 결과는 `GET /data-sync-runs/latest`를 다시 조회해 봅니다 |
 | 409 `SYNC_IN_PROGRESS` | 그 고객사에 실행 중(`RUNNING`)인 수집이 하나라도 있음. 아무것도 시작하지 않습니다 |
-| 422 `VALIDATION_ERROR` | 형식 오류(`sourceSystem`·`sourceDomain`이 둘 다 있거나 둘 다 없음, 값이 목록에 없음), 또는 가상 시각이 아닌데 `advance: "NEXT_DAY"` |
+| 422 `VALIDATION_ERROR` | 형식 오류(값이 목록에 없음, `sourceSystem`·`sourceDomain`을 함께 보냄), 또는 가상 시각이 아닌데 `advance: "NEXT_DAY"` |
 
 - 화면은 주기적으로 다시 조회하지 않습니다. 누른 뒤에만 `GET /data-sync-runs/latest`를 다시 부릅니다(서버 스케줄러도 없음, 2026-11-09 결정).
 - 수집 현황의 `syncIntervalMinutes`는 항상 10 입니다(화면 문구 "10분마다 자동 수집"). 서버에 10분마다 도는 수집기는 없고, 데모에서는 동기화 버튼 한 번이 그 10분 한 번을 대신합니다.
@@ -26,7 +26,7 @@ sequenceDiagram
     participant M as ManualSyncService
     participant V as 가상 원천 파일 (TMS + ERP·WMS)
     participant I as DataIngestService
-    W->>A: POST /data-sync-runs {sourceSystem, advance}
+    W->>A: POST /data-sync-runs {} 또는 {advance}
     A->>M: request_tick (워커 세션, L1)
     M->>M: RUNNING 이 하나라도 있으면 409
     M->>M: plan_tick: 고객사 tick 시각 T, 원천별 구간
@@ -52,7 +52,7 @@ sequenceDiagram
   - 다음 tick `T` = (고객사 마지막 적재 수집 시작이 속한 10분 칸) + 10분. 수집이 없거나 그보다 `VIRTUAL_CLOCK_START`(기본 `2026-07-02T00:00:00Z`)가 늦으면 시작값의 칸입니다.
   - 원천 수집 시각 = `T` + 원천 자리(PRODUCT 0분·WAREHOUSE 1분·ORDER 2분·SHIPMENT 3분·INVENTORY 4분, overlay 와 같음). 완료 시각은 시작 + 30초입니다.
   - 원천 구간 = (그 원천이 지난번 적재된 칸 + 자리, 이번 수집 시각]. 구간 시작을 기록된 시작이 아니라 격자로 잡아 재시도·확정으로 시작 초가 밀려도 틈·겹침이 없습니다(PR #52 리뷰와 같은 원리). 지난 tick 에서 그 원천만 실패했으면 구간이 그만큼 넓어집니다.
-  - 어느 카드를 어떤 순서로 눌러도 시계가 하나라서 결과가 같습니다. 시작 순서 = 적용 순번이고 시작 시각이 겹치지 않습니다(이슈 #39 규칙).
+  - 고객사 시계가 하나라서 누가 언제 눌러도 같은 순서로 나아갑니다. 시작 순서 = 적용 순번이고 시작 시각이 겹치지 않습니다(이슈 #39 규칙).
 - tick 은 고객사 잠금(L1) 안에서 정하고 같은 트랜잭션에서 `RUNNING`을 커밋합니다. 버튼을 빠르게 두 번 누르면 두 번째는 409 이거나(첫 tick 이 진행 중) 다음 tick 입니다. 같은 tick 을 두 번 받지 않습니다.
 - **다음 날로(`NEXT_DAY`):** 첫 tick 을 요청 안에서 시작하고, 백그라운드에서 다음 자정 tick(예: 07-03 00:10 → 07-04 00:00)까지 tick 을 이어서 적용합니다. 하루 약 144 tick, 로컬에서 30~45초 걸렸습니다.
 - `VIRTUAL_CLOCK_START`를 비우면 서버 시각입니다(실제 원천을 붙일 때만). tick = 지금, 원천마다 1초씩 띄우고 구간 시작은 그 원천의 지난 적재 수집 시작입니다. `NEXT_DAY`는 422 입니다.
@@ -115,7 +115,7 @@ sequenceDiagram
 
 | 파일 | 확인하는 것 |
 | --- | --- |
-| `test_manual_sync_api.py` | 카드 세 개·이전 요청 모양 모두 202·원천별 배열 5건·tick 백그라운드 등록, `NEXT_DAY`는 다음 자정까지 백그라운드, 가상 시각이 아니면 `NEXT_DAY` 422, 401, ADMIN·OWNER 403, 형식 오류 422(둘 다·둘 다 없음 포함), 409 면 백그라운드 없음 |
+| `test_manual_sync_api.py` | 본문 없음·`{}`·`advance`만·이전 요청 모양 모두 202·원천별 배열 5건·tick 백그라운드 등록, `NEXT_DAY`는 다음 자정까지 백그라운드, 가상 시각이 아니면 `NEXT_DAY` 422, 401, ADMIN·OWNER 403, 형식 오류 422(둘을 함께 보냄 포함), 409 면 백그라운드 없음 |
 | `test_sync_tick.py` | 10분 칸 내림, 다음 tick(시작값·확정 DB·보완 하루 다음·자정 넘김), 원천 구간(격자 + 자리, 실패 뒤 넓어짐, 처음은 처음부터), 원천 순서, 다음 자정, 다음 날로가 자정 tick 까지 |
 | `test_sync_tick_sql.py` | 확정 DB 에서 tick 두 번 = 07-02 00:00·00:10, 원천 5개가 0~4분에 시작·모두 `SUCCEEDED`·시작 순서 = 적용 순번, 00:05 주문은 둘째 tick 에 들어옴, `RUNNING`이 있으면 409·아무것도 시작 안 함 |
 | `test_virtual_sources.py` | 고객사·원천·구간 거르기, 같은 키는 마지막 관측, `source_domain` 없으면 SHIPMENT, 파일 합쳐 읽기, 잘못된 파일은 설정 오류, ERP·WMS 파서와 거부 키 |

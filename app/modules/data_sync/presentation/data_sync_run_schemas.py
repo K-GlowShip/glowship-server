@@ -95,18 +95,19 @@ class LatestDataSyncRunsResponse(CamelModel):
 class DataSyncRunCreateRequest(CamelModel):
     """
     수동 동기화 요청 (API 25 POST /data-sync-runs, 2026-11-09 결정)
-      - 어느 카드(sourceSystem)를 눌러도 다섯 원천을 상품 → 창고 → 주문 → 선적 → 재고 순서로 함께 수집한다.
-      - sourceSystem 과 sourceDomain 중 하나만 보낸다. sourceDomain 은 이전 요청 모양(하위 호환)이며 동작은 같다.
+      - 연동 데이터 화면의 동기화 버튼 한 번에 다섯 원천을 상품 → 창고 → 주문 → 선적 → 재고 순서로 함께 수집한다.
+      - 원천을 보내지 않아도 된다(본문 {} 또는 생략). sourceSystem·sourceDomain 은 선택이며 보내도 동작은 같다
+        (이전 요청 모양 하위 호환). 둘을 함께 보내면 422.
     """
 
     source_system: SourceSystem | None = Field(
         default=None,
-        description="누른 카드의 원천 시스템(ERP·WMS·TMS). 기록용이며 어느 값이든 같은 전체 수집",
+        description="선택. 원천 시스템(ERP·WMS·TMS). 보내도 같은 전체 수집(이전 카드별 버튼 하위 호환)",
         examples=["ERP"],
     )
     source_domain: SourceDomain | None = Field(
         default=None,
-        description="이전 요청 모양(하위 호환). sourceSystem 대신 보낼 수 있고 동작은 같다",
+        description="선택. 이전 요청 모양(하위 호환). 보내도 같은 전체 수집",
         examples=[None],
     )
     advance: SyncAdvance = Field(
@@ -119,9 +120,9 @@ class DataSyncRunCreateRequest(CamelModel):
     )
 
     @model_validator(mode="after")
-    def _exactly_one_source(self) -> DataSyncRunCreateRequest:
-        if (self.source_system is None) == (self.source_domain is None):
-            raise ValueError("sourceSystem 과 sourceDomain 중 하나만 보내야 합니다")
+    def _at_most_one_source(self) -> DataSyncRunCreateRequest:
+        if self.source_system is not None and self.source_domain is not None:
+            raise ValueError("sourceSystem 과 sourceDomain 은 함께 보낼 수 없습니다")
         return self
 
 

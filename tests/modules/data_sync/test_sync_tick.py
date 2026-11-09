@@ -17,7 +17,7 @@ from app.modules.data_sync.application.virtual_clock import (
 from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
 
 """
-    고객사 tick 가상 시계 (2026-11-09 결정: 어느 카드든 다섯 원천을 함께, 버튼 한 번 = 가상 10분) — DB 없음
+    고객사 tick 가상 시계 (2026-11-09 결정: 동기화 버튼 한 번에 다섯 원천을 함께, 버튼 한 번 = 가상 10분) — DB 없음
 """
 
 START = datetime(2026, 7, 2, tzinfo=UTC)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Body, Depends
 from starlette import status
 
 from app.core.exceptions import ErrorResponse
@@ -74,13 +74,13 @@ require_client = require_roles(UserRoleCode.CLIENT_MEMBER, UserRoleCode.CLIENT_L
     status_code=status.HTTP_202_ACCEPTED,
     summary="수동 동기화 실행 (API 25)",
     description=(
-        "어느 카드(sourceSystem: ERP·WMS·TMS)를 눌러도 다섯 원천을 상품 → 창고 → 주문 → 선적 → 재고 순서로 함께 수집합니다"
+        "연동 데이터 화면의 동기화 버튼 한 번에 다섯 원천을 상품 → 창고 → 주문 → 선적 → 재고 순서로 함께 수집합니다"
         "(원천마다 검증 → 변경 반영 → 적용 순번 → 지연 감지 → STALE 판정, 자동 수집과 같은 절차). "
         "요청 안에서 다섯 수집을 RUNNING 으로 기록하고 202 와 원천별 실행 ID 배열을 돌려준 뒤, 원천 응답 받기와 적용은 백그라운드에서 합니다. "
         "결과는 GET /data-sync-runs/latest 를 다시 조회해 봅니다. "
         "가상 시각(데모)이면 한 번에 고객사 시계가 10분 나아가고(advance=TICK), advance=NEXT_DAY 는 다음 자정 tick 까지 이어서 수집합니다. "
         "가상 시각이 아니면 서버의 지금 시각으로 수집하고 NEXT_DAY 는 422 입니다. "
-        "sourceDomain 은 이전 요청 모양(하위 호환)으로 sourceSystem 과 같은 동작이며 둘 중 하나만 보냅니다. "
+        "본문은 선택입니다({} 또는 생략 = TICK). sourceSystem·sourceDomain 은 이전 요청 모양(하위 호환)으로 보내도 동작이 같고, 둘을 함께 보내면 422 입니다. "
         "고객사 범위는 access_token 쿠키의 company_id 입니다."
     ),
     response_model=list[DataSyncRunStartedResponse],
@@ -100,23 +100,24 @@ require_client = require_roles(UserRoleCode.CLIENT_MEMBER, UserRoleCode.CLIENT_L
         422: {
             "model": ErrorResponse,
             "description": (
-                "VALIDATION_ERROR: 요청 형식 오류(sourceSystem·sourceDomain 이 둘 다 있거나 둘 다 없음 포함), "
+                "VALIDATION_ERROR: 요청 형식 오류(값이 목록에 없음, sourceSystem·sourceDomain 을 함께 보냄), "
                 "또는 가상 시각이 아닌데 advance=NEXT_DAY"
             ),
         },
     },
 )
 async def create_data_sync_run(
-    request: DataSyncRunCreateRequest,
     background_tasks: BackgroundTasks,
+    request: DataSyncRunCreateRequest | None = Body(default=None),
     _client=Depends(require_client),
     tenant: TenantContext = Depends(get_tenant_context),
     service: ManualSyncService = Depends(get_manual_sync_service),
 ) -> list[DataSyncRunStartedResponse]:
-    if request.advance == SyncAdvance.NEXT_DAY and service.virtual_start is None:
+    advance = request.advance if request is not None else SyncAdvance.TICK
+    if advance == SyncAdvance.NEXT_DAY and service.virtual_start is None:
         raise NextDayNeedsVirtualClockException()
     ticket = await service.request_tick(tenant)
-    if request.advance == SyncAdvance.NEXT_DAY:
+    if advance == SyncAdvance.NEXT_DAY:
         background_tasks.add_task(service.run_until_midnight, tenant, ticket)
     else:
         background_tasks.add_task(service.run_tick, ticket)
