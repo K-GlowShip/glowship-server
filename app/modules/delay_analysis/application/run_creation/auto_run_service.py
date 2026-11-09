@@ -72,6 +72,7 @@ class AutoRunService:
         for outcome in outcomes:
             if outcome.trigger_reason is None:  # 입고 종료
                 continue
+            trigger_reason = outcome.trigger_reason
             if outcome.action != EpisodeAction.START:
                 previous = await self.db.scalar(
                     select(AnalysisRun.analysis_run_id).where(
@@ -86,11 +87,17 @@ class AutoRunService:
                         detected_seq=applied_seq,
                         detected_at=finished_at,
                     )
+                elif outcome.action == EpisodeAction.CLOSE_RECOVERED:
+                    continue  # 분석한 적 없는 지연이 회복으로 닫힘 → 분석할 지연이 없다
+                else:
+                    # 실행이 없는 열린 지연(시작 때 실행을 만들지 못함)의 후속 판정 → 이 판정으로 첫 실행(v1)을 만든다.
+                    # 첫 실행은 EPISODE_STARTED 로만 만들 수 있다(ck18, #63 리뷰 EPISODE_START_MISMATCH)
+                    trigger_reason = TriggerReason.EPISODE_STARTED
             creation = await create_analysis_run(
                 self.db,
                 company_id=company_id,
                 delay_event_id=outcome.delay_event_id,
-                trigger_reason=outcome.trigger_reason,
+                trigger_reason=trigger_reason,
                 trigger_shipment_schedule_snapshot_id=outcome.trigger_snapshot_id,
                 started_at=started_at,
             )
