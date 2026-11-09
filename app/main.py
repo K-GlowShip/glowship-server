@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import include_exception_handlers
 from app.core.middleware import include_middlewares
 from app.modules.dashboard.presentation.dashboard_api_router import (
@@ -51,6 +51,7 @@ from app.modules.user.presentation.client_account_api_router import (
     router as client_account_router,
 )
 from app.modules.user.presentation.me_api_router import router as me_router
+from app.modules.user.presentation.signup_api_router import router as signup_router
 
 
 @asynccontextmanager
@@ -58,6 +59,13 @@ async def lifespan(_: FastAPI):
     # 엔진 경로가 설정돼 있으면 시작할 때 해시 대조를 한 번 한다(원본이 없거나 다르면 서버가 뜨지 않음)
     verify_engine_on_startup()
     yield
+
+
+def include_dev_routers(app: FastAPI, settings: Settings) -> None:
+    """개발 확인용 라우터 (운영 환경 제외). 운영자 회원가입은 인증 없이 열려 있어 운영에 두지 않는다(이슈 #78)"""
+    if settings.app_env != "prod":
+        app.include_router(signup_router)
+        app.include_router(agent_dev_router)
 
 
 # 테이블 생성·변경은 Alembic 마이그레이션(make db-migrate)으로만 수행합니다.
@@ -88,5 +96,4 @@ app.include_router(shipment_router)
 app.include_router(sku_router)
 
 # 개발 확인용 (운영 환경 제외)
-if get_settings().app_env != "prod":
-    app.include_router(agent_dev_router)
+include_dev_routers(app, get_settings())
