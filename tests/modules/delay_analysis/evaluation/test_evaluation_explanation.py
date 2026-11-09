@@ -105,8 +105,9 @@ def test_ready_scenario_gets_passed_explanation(scenario, fixed_canary, key):
     assert check.errors == []
 
 
-def test_engine_tokenizer_counts_digits_inside_sku_codes():
-    """원인 고정. 이 시험이 실패하면 엔진이 고쳐진 것이니 위 xfail 과 아래 실패 고정 시험을 지운다."""
+def test_engine_tokenizer_counts_digits_inside_sku_codes(glow50):
+    """원인 고정. 이 시험이 실패하면 엔진이 고쳐진 것이니 위 xfail 과 아래 실패 고정 시험을 지운다.
+    glow50 을 받아 엔진 경로(GLOWSHIP_ENGINE_DIR)가 없으면 이 폴더의 다른 시험처럼 건너뛴다(#66 리뷰)."""
     tokens = load_engine_module("explain.textcheck").tokens
     assert tokens("SKU별 지연 증분은 CREAM20 100개입니다")["numbers"] == [20, 100]
     assert tokens("SKU별 지연 증분은 X 120개, Y 0개입니다")["numbers"] == [120, 0]
