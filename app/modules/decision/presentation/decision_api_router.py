@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
@@ -6,6 +7,7 @@ from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.query_types import IsoAwareDatetime
 from app.core.security.tenant import TenantContext, get_tenant_context
+from app.core.text_input import SearchText
 from app.modules.decision.application.decision_list_service import (
     DecisionListService,
 )
@@ -64,11 +66,13 @@ async def list_decisions(
         alias="to",
         description="판단 시각 끝, 미포함 (예: 2026-10-21T15:00:00Z = KST 10/21 까지 포함)",
     ),
-    q: str | None = Query(
-        default=None,
-        max_length=MAX_QUERY_LENGTH,
-        description="선적 코드, 또는 그 선적에 실린 SKU 코드·상품명 일부 (대소문자 무시)",
-    ),
+    q: Annotated[
+        SearchText,
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="선적 코드, 또는 그 선적에 실린 SKU 코드·상품명 일부 (대소문자 무시)",
+        ),
+    ] = None,
     decision_type: DecisionType | None = Query(
         default=None,
         alias="decisionType",

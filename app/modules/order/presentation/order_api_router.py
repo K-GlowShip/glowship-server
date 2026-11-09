@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
@@ -6,6 +7,7 @@ from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.query_types import IsoAwareDatetime
 from app.core.security.tenant import TenantContext, get_tenant_context
+from app.core.text_input import SearchText
 from app.modules.order.application.order_list_service import OrderListService
 from app.modules.order.dependencies import get_order_list_service
 from app.modules.order.infrastructure.order_enums import OrderStatus, SalesChannel
@@ -78,11 +80,13 @@ async def list_orders(
             "시간대가 없는 값·날짜만·Unix 초 같은 숫자는 422"
         ),
     ),
-    q: str | None = Query(
-        default=None,
-        max_length=MAX_QUERY_LENGTH,
-        description="주문 번호 또는 주문 상품의 SKU 코드·상품명 일부 (대소문자 무시)",
-    ),
+    q: Annotated[
+        SearchText,
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="주문 번호 또는 주문 상품의 SKU 코드·상품명 일부 (대소문자 무시)",
+        ),
+    ] = None,
     page: PageParams = Depends(),
     tenant: TenantContext = Depends(get_tenant_context),
     service: OrderListService = Depends(get_order_list_service),
