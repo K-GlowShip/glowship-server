@@ -15,7 +15,7 @@
 | `ToolContext`, 등록표, `call_tool`(등록·형식 확인·재시도·추적), 노드·그래프, 결과 → 저장 넘김 | 개발 2 | `agent/tools/context.py`·`registry.py`, `agent/graph.py`·`state.py`·`nodes/*`, `application/result_save/*` |
 | 엔진 입력 `build_engine_input`·`EngineInput`·`EngineHold`, `judge_no_delay`, `decision_of` | 개발 1 | `infrastructure/engine/engine_input.py` |
 | T1~T5·T8 조회, T7·T6 계산 | 개발 1 | `agent/tools/` 새 파일 |
-| T9 대응안 후보·사전 판정, T10 대응안 결과, T11 추천 순위 | A | `agent/tools/option_feasibility.py`(T9, #43), `option_comparison.py`(T11, #44), T10은 T6·T7 머지 뒤 |
+| T9 대응안 후보·사전 판정, T10 대응안 결과, T11 추천 순위 | A | `agent/tools/option_feasibility.py`(T9, #43), `option_outcomes.py`(T10, GLOW-133), `option_comparison.py`(T11, #44) |
 | T12 결과 검증, 설명 생성 `generate_explanation(ctx, *, now)`, 설명 자산 확인 `verify_explanation_assets()` | 개발 3 | 설명 모듈 |
 
 - 도구 함수는 **노드·상태·등록표를 import하지 않습니다.** 등록과 노드 호출은 개발 2가 합니다.
