@@ -18,9 +18,33 @@ from app.core.config import get_settings
     DB 커넥션 연결, 세션 설정 및 관리
 """
 
+
+def _pin_role(kwargs: dict[str, Any], role: str) -> dict[str, Any]:
+    """연결할 때 DB 역할을 role 로 바꾸는 connect_args (asyncpg server_settings role = SET ROLE). 다른 connect_args 는 그대로"""
+    connect_args = kwargs.pop("connect_args", {})
+    return {
+        **connect_args,
+        "server_settings": {**connect_args.get("server_settings", {}), "role": role},
+    }
+
+
+def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
+    """
+    요청 처리용 앱 엔진 (이슈 #41). role(설정 POSTGRES_ROLE)이 있으면 연결할 때 그 역할로 바꾼다.
+      - 운영은 앱 역할(glowship_v4_app)에 속한 로그인 계정으로 붙는다. RLS 정책은 역할 이름(current_user)을 비교하므로
+        로그인 계정 이름 그대로면 고객사 행이 모두 숨겨진다. 워커 엔진(create_worker_engine)과 같은 방식으로 고정한다.
+      - 로그인 조회는 컨텍스트 없이 하므로 DB 함수(app_auth_find_login_user, 0008)를 쓴다.
+      - role 이 없으면(로컬 superuser 개발·데모 DB) 지금처럼 로그인 계정 그대로 붙는다.
+    """
+    if role is not None:
+        kwargs["connect_args"] = _pin_role(kwargs, role)
+    return create_async_engine(url, **kwargs)
+
+
 # Database Connection
-engine = create_async_engine(
+engine = create_app_engine(
     get_settings().database_url,
+    get_settings().postgres_role,
     echo=True,  # SQLAlchemy가 실행하는 모든 SQL 쿼리를 콘솔(로그)에 출력
     future=True,  # SQLAlchemy 2.0 스타일의 API(새로운 방식)를 강제로 사용
 )
@@ -46,10 +70,7 @@ def create_worker_engine(url: str, **kwargs: Any) -> AsyncEngine:
         INSERT 는 RLS 위반이 된다(PR #40 리뷰). 연결 단계에서 고정하면 트랜잭션마다 SET ROLE 을 빠뜨릴 일이 없다.
       - 로그인 계정이 워커 역할에 속하지 않으면 연결이 실패한다(잘못 설정한 계정이 조용히 붙지 않음).
     """
-    connect_args = {
-        **kwargs.pop("connect_args", {}),
-        "server_settings": {"role": WORKER_DB_ROLE},
-    }
+    connect_args = _pin_role(kwargs, WORKER_DB_ROLE)
     return create_async_engine(url, connect_args=connect_args, **kwargs)
 
 
