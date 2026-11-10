@@ -159,18 +159,18 @@ sequenceDiagram
 
 | 노드 | 파일 | 하는 일 | 실패 단계 |
 | --- | --- | --- | --- |
-| 분석 준비 | `nodes/prepare.py` | ① 지연 해소 판정(개발 1 `judge_no_delay`) → 해소면 `NO_DELAY`(엔진 저장소를 읽기 전) ② 엔진 입력 만들기(개발 1 `build_engine_input`) → 보류면 `ON_HOLD`·실패 요약 `hold_summary` ③ 엔진 입력을 실행 도구 묶음에 한 번 담음 | `VALIDATING`(보류만) |
+| 분석 준비 | `nodes/prepare.py` | ① 지연 해소 판정(`judge_no_delay`) → 해소면 `NO_DELAY`(엔진 저장소를 읽기 전) ② 엔진 입력 만들기(`build_engine_input`) → 보류면 `ON_HOLD`·실패 요약 `hold_summary` ③ 엔진 입력을 실행 도구 묶음에 한 번 담음 | `VALIDATING`(보류만) |
 | 조정 에이전트 | `nodes/coordinator.py` | 처음: T1 지연 문맥. 재고 영향 뒤: T6이 `NO_RISK`면 판정 서명 → `NO_RISK`. 그 밖: 다음 단계(`step`) 기록 | `ANALYZING_IMPACT`(T1) |
 | 재고 영향 분석 | `nodes/inventory_impact.py` | T2 가용 재고 → T3 입고 예정 → T4 28일 수요 → T5 미출고 주문 → T8 운영 기준 → T7 위험 주문 → T6 재고 영향(T7이 먼저, 계약 Q3) | `ANALYZING_IMPACT` |
 | 대응안 분석 | `nodes/response_options.py` | T2·T8 다시 조회(설계 agentflow 5.3) → T9 후보·사전 판정 → T10 대응안 결과. T9 입력은 계약 5절, T10 입력은 계약 6절 | `ANALYZING_OPTIONS` |
-| 대응안 비교 | `nodes/compare.py` | T11 추천 순위 → **T10·T11 출력을 엔진 판정 서명과 대조**(다르면 `FAILED`) → 판정 서명·의존 범위(개발 1 `decision_of`) | `VALIDATING_OUTPUT` |
-| 추천 근거 설명 | `nodes/explain.py` | 설명 생성(개발 3, 3회 재시도는 함수 안). 3회 실패면 `FAILED`(`EXPLANATION_GENERATION_FAILED`), 계산 결과는 상태에 남음 | `VALIDATING_OUTPUT` |
+| 대응안 비교 | `nodes/compare.py` | T11 추천 순위 → **T10·T11 출력을 엔진 판정 서명과 대조**(다르면 `FAILED`) → 판정 서명·의존 범위(`decision_of`) | `VALIDATING_OUTPUT` |
+| 추천 근거 설명 | `nodes/explain.py` | 설명 생성(#45, 3회 재시도는 함수 안). 3회 실패면 `FAILED`(`EXPLANATION_GENERATION_FAILED`), 계산 결과는 상태에 남음 | `VALIDATING_OUTPUT` |
 | 결과 검증 | `nodes/validate.py` | 통과한 설명을 T12로 한 번 더 확인 → `READY_FOR_REVIEW`. 떨어지면 연결 오류 `FAILED`(`UNEXPECTED_TOOL_ERROR`) | `VALIDATING_OUTPUT` |
 
 - **실패 처리:** 도구는 노드가 직접 부르지 않고 등록표(`call_tool`)로 부릅니다. 등록 확인·입출력 형식 확인·재시도(최초 1 + 재시도 2)·추적 훅이 그 안에 있습니다(인터페이스 문서 5절). 도구가 멈추면 `call_tool`이 `ToolFailure`(실패 요약)를 올리고, `graph.with_failure_stop`이 `outcome = FAILED`·`failure`·`step`을 남기고 `<노드>:failed`를 `visited_nodes`에 적습니다. 그 전까지 채운 결과는 상태에 그대로 있습니다.
   - 이 래퍼는 **7개 노드 모두**에 있고, STALE 확인(`with_stale_check`)은 래퍼 안쪽입니다(이슈 #57 1번). 그래서 도구 밖 함수(분석 준비·`decide`·`explain`·`final_check_input`)나 실행 상태 조회가 예외를 내도 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1로 끝납니다. 문구는 고정이고 예외 내용은 서버 로그로만 갑니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`)·LangGraph 제어 신호(`GraphBubbleUp`)·작업 취소는 바꾸지 않고 올립니다([인터페이스 문서](agent-tool-interface.md) 5.1절·6절 결정 6).
 - **엔진 대조(비교 노드):** 대응안 T9~T11은 A의 함수가 계약 입력으로 계산하지만, 판정 서명은 엔진 결과로 만들어집니다. 두 값이 다르면 화면에 보일 대응안과 STALE 판정 서명이 어긋나므로 멈춥니다. 대조하는 값은 판정 서명에 들어가는 것과 같습니다: 대응안마다 `feasibility_status`·`reason_code`·`delay_induced_recovered_orders`·`reduction_committed_total`, 그리고 추천 대응안(엔진 `pipeline.signature`, 공유 묶음 `glowship_engine/pipeline.py` 49~52행).
-- **최종 확인(T12)에서 떨어질 때:** 설명 함수가 이미 같은 검증으로 통과시킨 설명이 떨어지면 두 검증이 어긋난 연결 오류로 봅니다. 실제 시도가 3번이 아니라 "3회 실패"(`EXPLANATION_GENERATION_FAILED`, DDL ck26은 3회·소진만 허용)로 적지 않습니다. 이 처리는 개발 3과 실제 T12를 연결할 때 다시 확인합니다.
+- **최종 확인(T12)에서 떨어질 때:** 설명 함수가 이미 같은 검증으로 통과시킨 설명이 떨어지면 두 검증이 어긋난 연결 오류로 봅니다. 실제 시도가 3번이 아니라 "3회 실패"(`EXPLANATION_GENERATION_FAILED`, DDL ck26은 3회·소진만 허용)로 적지 않습니다. 이 처리는 실제 설명 함수·T12를 연결할 때 다시 확인합니다.
 
 ### 실행 도구 묶음 (`runtime.py`)
 
@@ -178,11 +178,11 @@ sequenceDiagram
 
 | 칸 | 내용 | 만드는 쪽 |
 | --- | --- | --- |
-| `registry` | 도구 12개 등록표(`ToolName` → `ToolSpec`). 하나라도 빠지면 묶음을 만들 때 `ValueError` | 개발 2(등록), 도구는 개발 1·3·A |
-| `preparer` | `judge_no_delay()`·`build_engine_input()` | 개발 1 |
-| `decide` | 판정 서명·의존 범위(`decision_of(엔진 입력)`) | 개발 1 |
-| `explain` | 설명 생성 `(도구 문맥, 생성 시각)` → 통과 또는 3회 실패 | 개발 3 |
-| `final_check_input` | 통과한 설명 → T12 입력 | 개발 3 |
+| `registry` | 도구 12개 등록표(`ToolName` → `ToolSpec`). 하나라도 빠지면 묶음을 만들 때 `ValueError` | C(등록), 도구는 C·A |
+| `preparer` | `judge_no_delay()`·`build_engine_input()` | C |
+| `decide` | 판정 서명·의존 범위(`decision_of(엔진 입력)`) | C |
+| `explain` | 설명 생성 `(도구 문맥, 생성 시각)` → 통과 또는 3회 실패 | C |
+| `final_check_input` | 통과한 설명 → T12 입력 | C |
 | `base_date`·`input_seq` | 기준일 D·실행 입력 순번 | 서비스(실행 생성) |
 | `tracer`·`clock`·`sleep` | 추적 훅(GLOW-124)·설명 생성 시각·재시도 대기 | 서비스 |
 
@@ -196,13 +196,13 @@ sequenceDiagram
 | 설계(`agentflow_glowship.md`) | 현재 코드 |
 | --- | --- |
 | 조정 에이전트가 비교 노드를 호출하고 결과를 돌려받은 뒤 설명을 생성 | 비교 → 설명 → 검증이 고정 연결 |
-| 결과 검증 실패 시 설명만 재생성 | 재생성 3회는 설명 함수(개발 3) 안에서 함. 검증 노드는 최종 확인 한 번 |
+| 결과 검증 실패 시 설명만 재생성 | 재생성 3회는 설명 함수 안에서 함. 검증 노드는 최종 확인 한 번 |
 | 분석 준비: 권한·중복 확인 | 실행 생성(#21, 고객사 잠금 L1)이 맡음. 분석 준비 노드는 지연 해소·엔진 입력(보류)만 |
 | 서비스가 실행 ID를 넘겨 분석 시작, 결과를 서비스가 저장 | 그래프는 결과를 상태로 돌려주기만 함. 자동 시작·저장 연결은 다음 작업(GLOW-128 자동 시작) |
 | 실제 도구 T1~T12, 분석 준비·판정 서명·설명 함수 | 가짜 묶음으로만 시험. 실제 함수는 머지되는 대로 바꿔 끼움 |
 
-- **설계와 다르게 하면 더 나을 수 있는 것:** 공용 개선안 문서 `Github/tools/might_better_way/might_better_way.md`의 개발 2 절에 있습니다. D2-1: 대응안 단계의 T2·T8 재조회 대신 재고 영향 단계 출력을 재사용(결과 같음, 호출 2번·실패 지점 2개 줄어듦). 사용자 결정(11-06)으로 지금은 설계대로 다시 부릅니다.
-  D2-2: 재고 영향 결과(T6)의 실행 상태·결과 분류·영향 SKU도 엔진 판정 서명과 대조(지금은 대응안만 대조. 문서에 없는 추가라 제안만).
+- **설계와 다르게 하면 더 나을 수 있는 것:** 개선안으로 검토 중입니다. ① 대응안 단계의 T2·T8 재조회 대신 재고 영향 단계 출력을 재사용(결과 같음, 호출 2번·실패 지점 2개 줄어듦). 사용자 결정(11-06)으로 지금은 설계대로 다시 부릅니다.
+  ② 재고 영향 결과(T6)의 실행 상태·결과 분류·영향 SKU도 엔진 판정 서명과 대조(지금은 대응안만 대조. 문서에 없는 추가라 제안만).
 
 ## 7. 상태 필드
 

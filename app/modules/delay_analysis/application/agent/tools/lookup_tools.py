@@ -32,7 +32,7 @@ _BASIS_DAYS = 28  # 계산 계약 T14-v1 고정(9절 Q6)
 
 
 class EngineToolContext(Protocol):
-    """조회 도구가 읽는 실행 문맥. 개발 2 ToolContext(engine = EngineInput)가 그대로 맞는다."""
+    """조회 도구가 읽는 실행 문맥. 그래프 ToolContext(engine = EngineInput)가 그대로 맞는다."""
 
     @property
     def engine(self) -> EngineInput: ...

@@ -31,7 +31,7 @@ _Q4 = Decimal("0.0001")
 
 
 class EngineToolContext(Protocol):
-    """도구가 읽는 실행 문맥. 개발 2 ToolContext(engine = EngineInput)가 그대로 맞는다."""
+    """도구가 읽는 실행 문맥. 그래프 ToolContext(engine = EngineInput)가 그대로 맞는다."""
 
     @property
     def engine(self) -> EngineInput: ...

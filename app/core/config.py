@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # 데이터 팀 분석 엔진 폴더(glowship_engine·synth2025_v5 의 부모). 엔진 코드는 저장소에 넣지 않고 이 경로에서
     # 해시를 대조해 불러온다(docs/analysis/engine-local-path.md). 비어 있으면 엔진이 필요한 기능·시험이 동작하지 않는다.
     glowship_engine_dir: Path | None = None
+    # 엔진 저장소 캐시 항목 수 상한 (이슈 #60, docs/analysis/engine-store-cache.md). 열쇠 = (고객사, 입력 순번).
+    # 저장소 하나가 0.3~0.5GB(2026 H1 고객사 2곳 실측)라 기본값은 고객사 수(2)로 둔다. 고객사가 늘면 고객사 수만큼 올린다.
+    # 0 이면 캐시를 끄고 실행마다 저장소를 새로 읽는다.
+    engine_store_cache_max_entries: int = Field(default=2, ge=0)
 
     @field_validator("glowship_engine_dir", mode="before")
     @classmethod

@@ -187,7 +187,7 @@ make dev
 | `make docker-compose-reset` | 컨테이너와 데이터 볼륨을 삭제하고 재기동 |
 | `make db-migrate` | 마이그레이션 적용 (`alembic upgrade head`) |
 | `make db-seed SEED_DATA_DIR=<폴더>` | 합성데이터 적재 (테이블이 비어 있을 때만) |
-| `make db-reseed SEED_DATA_DIR=<폴더>` | 테이블을 비우고 합성데이터 다시 적재 |
+| `make db-reseed SEED_DATA_DIR=<폴더>` | 테이블을 비우고 합성데이터 다시 적재. 서버를 띄운 채면 다시 시작(엔진 저장소 캐시, `docs/analysis/engine-store-cache.md`) |
 
 Makefile 없이 직접 실행하려면 다음과 같이 합니다.
 
