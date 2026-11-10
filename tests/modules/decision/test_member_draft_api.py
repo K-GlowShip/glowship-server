@@ -143,6 +143,8 @@ async def test_option_or_opinion_alone_is_enough(fake_service, body, option, opi
         {"responseOptionId": str(OPTION_ID), "opinionText": " \t\n"},
         {"opinionText": "가" * 601},
         {"responseOptionId": "not-a-uuid"},
+        {"opinionText": "의견\x00끝"},  # NUL: DB text 에 못 넣어 500 이던 것 (이슈 #49)
+        {"responseOptionId": str(OPTION_ID), "opinionText": "\x00"},
     ],
 )
 async def test_invalid_body_returns_422_validation_error(fake_service, body):

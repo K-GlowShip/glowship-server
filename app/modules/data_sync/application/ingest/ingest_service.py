@@ -57,6 +57,7 @@ from app.modules.delay_analysis.application.detection.episode_service import (
 )
 from app.modules.delay_analysis.application.run_creation.auto_run_service import (
     AutoRunService,
+    SkippedAutoRun,
 )
 from app.modules.delay_analysis.application.stale.stale_service import (
     StaleJudgmentService,
@@ -135,6 +136,8 @@ class IngestResult:
     episode_outcomes: tuple[EpisodeOutcome, ...] = ()
     # 이 수집이 만든 AUTO 분석 실행 (DETECTED, 분석 시작은 GLOW-128). 다른 원천은 ()
     created_run_ids: tuple[uuid.UUID, ...] = ()
+    # 실행 생성 오류(운영 기준 없음 등)로 건너뛴 판정. 수집은 그대로 적재된다(#63 리뷰 [권장])
+    skipped_auto_runs: tuple[SkippedAutoRun, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -278,7 +281,7 @@ class DataIngestService:
             # AUTO 실행 생성·이전 실행 STALE(GLOW-18, 이슈 #34): 에피소드를 닫기 전에 한다.
             # 닫힌 에피소드의 실행은 동결이라 mark_runs_stale 이 건너뛰기 때문이다 (episode_service 설명).
             # 실행 시각 = 이 수집의 확정 시작 시각(= 고객사 마지막 적재 수집 시작, 이슈 #50)
-            created_runs = await self.auto_runs.create_after_sync(
+            auto_runs = await self.auto_runs.create_after_sync(
                 company_id,
                 episodes,
                 applied_seq=applied_seq,
@@ -304,7 +307,8 @@ class DataIngestService:
             rejections=rejections,
             staled_run_ids=tuple(run.analysis_run_id for run in staled),
             episode_outcomes=tuple(episodes),
-            created_run_ids=tuple(created_runs),
+            created_run_ids=auto_runs.created,
+            skipped_auto_runs=auto_runs.skipped,
         )
 
     async def _confirm_started_at(self, started: StartedRun) -> datetime:

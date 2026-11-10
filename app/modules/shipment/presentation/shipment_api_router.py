@@ -1,10 +1,12 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.security.tenant import TenantContext, get_tenant_context
+from app.core.text_input import SearchText
 from app.modules.shipment.application.shipment_list_service import (
     ShipmentListService,
 )
@@ -67,11 +69,13 @@ async def list_shipments(
     warehouse_id: uuid.UUID | None = Query(
         default=None, alias="warehouseId", description="도착 창고 ID"
     ),
-    q: str | None = Query(
-        default=None,
-        max_length=MAX_QUERY_LENGTH,
-        description="선적 코드 일부 (대소문자 무시)",
-    ),
+    q: Annotated[
+        SearchText,
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="선적 코드 일부 (대소문자 무시)",
+        ),
+    ] = None,
     page: PageParams = Depends(),
     tenant: TenantContext = Depends(get_tenant_context),
     service: ShipmentListService = Depends(get_shipment_list_service),

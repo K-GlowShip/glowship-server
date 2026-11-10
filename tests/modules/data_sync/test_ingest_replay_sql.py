@@ -18,6 +18,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
+from app.modules.delay_analysis.application.run_creation.auto_run_service import (
+    AutoRunResult,
+)
 
 """
     시간순 수집 재현 테스트 (실제 DB, 끝나면 롤백)
@@ -61,7 +64,7 @@ class NoAutoRuns:
     """
 
     async def create_after_sync(self, company_id, outcomes, **_):
-        return []
+        return AutoRunResult()
 
 
 async def _first_insert_day(db, company_id) -> dict[uuid.UUID, date]:

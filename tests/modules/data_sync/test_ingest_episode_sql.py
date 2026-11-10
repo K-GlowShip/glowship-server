@@ -16,6 +16,9 @@ from app.modules.data_sync.infrastructure.repository.ingest_repository import (
 from app.modules.delay_analysis.application.detection.episode_rules import (
     EpisodeAction,
 )
+from app.modules.delay_analysis.application.run_creation.auto_run_service import (
+    AutoRunResult,
+)
 from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerReason
 from tests.modules.data_sync.test_ingest_service_sql import (
     RecordingStale,
@@ -182,7 +185,7 @@ async def test_수집은_판정_종료_STALE_판정_순서로_부른다(db_write
     class OrderAutoRuns:
         async def create_after_sync(self, company_id, outcomes, **_):
             calls.append("auto_runs")
-            return []
+            return AutoRunResult()
 
     service = DataIngestService(
         db,

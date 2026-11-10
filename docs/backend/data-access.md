@@ -11,7 +11,7 @@
 | 상황 | 방식 | 예 |
 | --- | --- | --- |
 | 한 행을 읽고 바꾸는 처리 | ORM 엔터티(`select(Model)`, 속성 변경, `db.add` + `flush`) | `user_repository.py`, `company_repository.py`, `stale_service.py`의 실행 상태 변경 |
-| 여러 행을 한 번에 넣거나 바꾸는 처리 | ORM 모델을 쓴 SQLAlchemy 식(`insert(Model)`, `update(Model)`, `select(Model.col)`) | `ingest_repository.py`(수집 적재), `validation_issue_repository.py` |
+| 여러 행을 한 번에 넣거나 바꾸는 처리 | ORM 모델을 쓴 SQLAlchemy 식(`insert(Model)`, `update(Model)`, `select(Model.col)`) | `ingest_repository.py`(수집 적재) |
 | 화면용 목록·집계 조회 | 직접 SQL(`text()` + `bindparam`) | `delay_event_read_repository.py`, `sku_repository.py`, `order_repository.py`, `inventory_repository.py`, `data_sync_run_repository.py` |
 | PostgreSQL 기능 호출 | 직접 SQL | RLS 컨텍스트 `set_config`(`core/rls_context.py`), 잠금 `pg_advisory_xact_lock`(`core/locks.py`), `SECURITY DEFINER` 함수 `app_admin_create_client_user()`(`user_repository.py`) |
 | 표 사이 연관 | `relationship()`을 쓰지 않음. 필요한 쿼리에서 명시적으로 JOIN | develop 전체 0건 |

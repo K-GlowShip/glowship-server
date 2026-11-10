@@ -146,12 +146,7 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
   - 창고 자리는 매핑 여부와 관계없이 원천 외부 창고 코드입니다. 기준선의 매핑 없는 `WMS-ATL01|SKU-201|2025-12-31`, 매핑된 `WMS-EWR01|SKU-215|2026-01-01` 모두 외부 코드이고, 검증 엔진(`04_적재검증도구\glowship_engine\snapshot.py`)도 이 자리를 외부 코드로 조회합니다.
   - SKU 자리는 매핑되면 내부 `sku_code`, 매핑이 없으면 원천 외부 SKU 코드입니다. 상품 탭 `GET /skus`가 `split_part(source_record_key, '|', 2)`를 내부 `sku_code`로 읽습니다.
   - 형식은 `code_resolver.inventory_record_key` 한 곳에서 만들고, 같은 수집 안 중복 거부도 이 함수를 씁니다.
-- **분석 보류 판정** (`application/validation/blocking_issues.py`, 조회는 `ValidationIssueRepository`): 분석 입력을 확정할 때 `BlockingIssueService.find`를 부르면, 분석을 막는 이슈가 있을 때 그 이슈를 돌려줍니다. 그 실행은 `ON_HOLD`(`failed_step = VALIDATING`, `failure_code = REQUIRED_DATA_INVALID`)입니다. 조건은 검증 엔진 `snapshot.py`의 차단 검증 오류와 같습니다.
-  1. 확정 시각까지 감지됐고(`detected_at` ≤ 확정) 그때 아직 해소되지 않은 분석 차단 이슈
-  2. 재고(`INVENTORY`) 이슈이고, 키 `창고|SKU|일자`의 일자 = 기준일 D − 1
-  3. SKU 자리가 지연 선적 SKU의 내부 `sku_code` 중 하나
-  4. 창고 자리(외부 코드)가 확정 시각까지 `MAPPED`된 재고 창고 매핑으로 분석 창고(도착·공여) 중 하나. 매핑 안 된 창고 코드(`UNKNOWN_WAREHOUSE`)는 막지 않습니다.
-  - 주문·선적 이슈는 막지 않습니다(엔진과 같음). 기준선 E9: v1(01-02 00:05 확정)은 보류, v2(01-03 02:00 재분석)는 해소 뒤라 통과.
+- **분석 보류 판정은 이 모듈에 없습니다.** 분석을 막는 검증 오류(재고 이슈, 기준일 D − 1, 지연 선적 SKU, 분석 창고)는 분석을 시작할 때 엔진 입력(#53 `EngineHold`, 검증 엔진 `snapshot.py`의 차단 검증 오류)이 판정하고 실행을 `ON_HOLD`(`failed_step = VALIDATING`, `failure_code = REQUIRED_DATA_INVALID`)로 남깁니다(사용자 결정 11-06, PR #63 리뷰). 같은 판정을 두 곳에 두지 않으려고, 부르는 곳이 없던 `BlockingIssueService`·`ValidationIssueRepository`는 지웠습니다(2026-11-09).
 - 받은 건수 = 적재 건수 + 거부 건수이고, 셋 다 **최상위 레코드**(상품·창고·주문·선적·재고 행) 기준입니다. 거부가 없으면 `SUCCEEDED`, 있으면 `PARTIAL_SUCCESS`입니다.
 - 파서가 거부한 레코드(`MISSING_REQUIRED`·`INVALID_DATE`, 2절 파서 계약)는 `ingest(..., parse_rejections=...)`로 넘깁니다. 받은 건수와 거부 건수에 들어가고 `rejections` 앞쪽에 담깁니다. 기준선 B사 주문 수집(2025-12-31)처럼 형식 오류가 섞여도 나머지는 적재되고 `PARTIAL_SUCCESS`가 됩니다.
 - 거부 사유는 `IngestResult.rejections`로 돌려주고, **같은 트랜잭션에서 검증 이슈(`data_validation_issues`)로 남깁니다**(GLOW-15).
@@ -194,8 +189,6 @@ TMS 는 이 값들을 보내지 않으므로 서버가 정합니다. **새 선�
 | `test_change_detection.py` | 변경 판정·요약 문장·스냅샷 조건 (DB 없음) |
 | `test_code_resolver.py` | 코드 변환·경로표·기준 찾기 순서(HS10 포함)·새 선적 HS10 규칙·거부 사유 (DB 없음) |
 | `test_issue_entity_type.py` | 검증 이슈 엔터티 유형: 원천 유형 5개 모두 대응, DDL 엔터티 이름과 같음 (DB 없음) |
-| `test_blocking_issues.py` | 분석 보류 판정: 범위 안 재고 이슈 보류, 날짜·SKU·매핑 없는 창고·분석 창고 밖·재고 키 아님은 통과 (DB 없음) |
-| `test_validation_issue_repository_sql.py` | 기준선 E9: v1 확정 시각 보류, 감지 전·해소 뒤 통과, 매핑 없는 `WMS-ATL01` 통과 |
 | `test_record_validation.py` | 값 검증: CHECK 제약별 거부 코드·위치, 허용 값 목록 = ORM CHECK (DB 없음) |
 | `test_ingest_repository_sql.py` | 조회·적용 SQL, 확정 선적 166건의 기준·계획 입고일·항구 분포(2704 83·1003 82·2720 1), 키 4만 개·재고 키 1.2만 개 나눠 조회 |
 | `delay_analysis/test_stale_relevance.py` | 창고가 바뀐 주문·선적의 보수적 STALE 판정 (완료·진행 중) |

@@ -128,6 +128,21 @@ class LatestRunSummary:
     open_issue_count: int
 
 
+async def last_applied_sync_started_at(
+    db: AsyncSession, company_id: uuid.UUID
+) -> datetime | None:
+    """
+    고객사의 마지막 적재 수집(적용 순번 있음, 원천 무관) 시작 시각(초 단위). 없으면 None.
+    세 곳이 같은 값을 쓰므로 조회를 여기 하나로 둔다:
+      - 수집 시작 시각 확정(IngestRepository.last_applied_started_at, 이슈 #39 규칙 5: 이 값 + 1초보다 늦게)
+      - 분석 실행 시각 확인(RunCreationRepository.find_last_applied_sync_started_at, 이슈 #50·PR #36 check_input_seq)
+      - 판단 시각(DataSyncRunRepository.find_last_applied_started_at_of_company, DecisionClock)
+    """
+    return await db.scalar(
+        _LAST_APPLIED_STARTED_AT_OF_COMPANY, {"company_id": company_id}
+    )
+
+
 class DataSyncRunRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -149,10 +164,8 @@ class DataSyncRunRepository:
     async def find_last_applied_started_at_of_company(
         self, company_id: uuid.UUID
     ) -> datetime | None:
-        """고객사의 마지막 적재 수집(적용 순번 있음, 원천 무관) 시작 시각(초 단위). 없으면 None. 분석 실행 시각(이슈 #50)에 씀"""
-        return await self.db.scalar(
-            _LAST_APPLIED_STARTED_AT_OF_COMPANY, {"company_id": company_id}
-        )
+        """고객사의 마지막 적재 수집 시작 시각(초 단위). 판단 시각(DecisionClock)에 씀 — last_applied_sync_started_at 참고"""
+        return await last_applied_sync_started_at(self.db, company_id)
 
     async def find_company_code(self, company_id: uuid.UUID) -> str | None:
         """고객사 코드 (가상 TMS 시나리오의 _demo_company 와 맞춤)"""

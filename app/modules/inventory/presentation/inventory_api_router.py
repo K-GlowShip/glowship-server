@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
@@ -6,6 +7,7 @@ from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.schemas import IsoDate
 from app.core.security.tenant import TenantContext, get_tenant_context
+from app.core.text_input import SearchText
 from app.modules.inventory.application.inventory_list_service import (
     InventoryListService,
 )
@@ -60,11 +62,13 @@ async def list_inventory(
     sku_id: uuid.UUID | None = Query(
         default=None, alias="skuId", description="상품 ID"
     ),
-    q: str | None = Query(
-        default=None,
-        max_length=MAX_QUERY_LENGTH,
-        description="SKU 코드 또는 상품명 일부 (대소문자 무시)",
-    ),
+    q: Annotated[
+        SearchText,
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="SKU 코드 또는 상품명 일부 (대소문자 무시)",
+        ),
+    ] = None,
     page: PageParams = Depends(),
     tenant: TenantContext = Depends(get_tenant_context),
     service: InventoryListService = Depends(get_inventory_list_service),

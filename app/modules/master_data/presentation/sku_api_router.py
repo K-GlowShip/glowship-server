@@ -1,10 +1,12 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
 from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.security.tenant import TenantContext, get_tenant_context
+from app.core.text_input import SearchText
 from app.modules.master_data.application.sku_list_service import SkuListService
 from app.modules.master_data.dependencies import get_sku_list_service
 from app.modules.master_data.presentation.sku_schemas import (
@@ -42,11 +44,13 @@ router = APIRouter(prefix="/api/v1/skus", tags=["상품 마스터 (Client)"])
     },
 )
 async def list_skus(
-    q: str | None = Query(
-        default=None,
-        max_length=MAX_QUERY_LENGTH,
-        description="상품명 또는 ERP 코드 일부 (대소문자 무시)",
-    ),
+    q: Annotated[
+        SearchText,
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="상품명 또는 ERP 코드 일부 (대소문자 무시)",
+        ),
+    ] = None,
     only_errors: bool = Query(
         default=False,
         alias="onlyErrors",
