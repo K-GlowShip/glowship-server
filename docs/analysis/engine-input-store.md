@@ -68,7 +68,7 @@ snap = load_engine_module("snapshot").build(
 GLOWSHIP_ENGINE_GOLDEN=1 uv run pytest tests/modules/delay_analysis/test_engine_input_store.py -rs
 ```
 - 정답 대조는 컨테이너 이름이 `glowship-db`라고 봅니다. 다르면 `GLOWSHIP_DB_CONTAINER`로 바꿉니다. 접속 계정·DB는 `.env` 값을 씁니다.
-- **11-05 결과(개발 1 DB `glowship-db`, overlay 21건, 리뷰 반영 뒤):**
+- **11-05 결과(개발 DB `glowship-db`, overlay 21건, 리뷰 반영 뒤):**
   - 두 고객사 모두 속성 22개가 같습니다.
   - 실행별 스냅샷 21건이 같습니다(19건 스냅샷, 2건 `REQUIRED_DATA_INVALID` 보류).
   - 입력 순번 21건이 모두 실행 기록과 같습니다.

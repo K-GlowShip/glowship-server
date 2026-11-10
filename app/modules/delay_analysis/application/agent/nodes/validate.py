@@ -9,7 +9,7 @@ from app.modules.delay_analysis.application.agent.state import (
 from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.application.agent.tools.registry import code_error
 
-PASSED = "PASSED"  # T12 판정 통과(개발 3 AgentOutputStatus.PASSED)
+PASSED = "PASSED"  # T12 판정 통과(T12 AgentOutputStatus.PASSED)
 
 
 async def validate_node(state: AnalysisState, config: RunnableConfig) -> dict:
