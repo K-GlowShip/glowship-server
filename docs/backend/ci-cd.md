@@ -129,6 +129,8 @@ sequenceDiagram
     participant RDS as RDS PostgreSQL
 
     Dev->>GH: develop 에 push (PR 머지)
+    GH->>GH: Test 워크플로 실행 (pytest)
+    Note over GH: Test 가 success 로 끝나면<br/>Deploy Dev 시작 (workflow_run)
     GH->>IAM: OIDC 토큰으로 역할 가정
     IAM-->>GH: 임시 자격 증명
     GH->>ECR: Dockerfile 빌드 (linux/arm64) → push<br/>태그: 커밋 SHA, dev-latest
@@ -152,10 +154,12 @@ sequenceDiagram
 | job | 하는 일 | 참고 |
 | --- | --- | --- |
 | **build-and-push** | OIDC 역할 가정 → ECR 로그인 → buildx로 빌드 → push | 플랫폼은 Variables `IMAGE_PLATFORM`(dev EC2는 Graviton이라 `linux/arm64`). 빌드 캐시는 Actions 캐시 |
-| **deploy** (Environment `dev`) | `scripts/deploy/deploy-dev.sh` 내용을 jq로 SSM 파라미터에 담아 전송 → 완료 대기 → 스크립트 stdout·stderr를 로그에 펼침 → SSM 상태가 Success가 아니면 실패 | 스크립트를 EC2에 미리 복사해 둘 필요가 없음. 저장소가 유일한 원본 |
+| **deploy** (Environment `dev`) | `scripts/deploy/deploy-dev.sh` 내용을 jq로 SSM 파라미터에 담아 전송 → 끝날 때까지 10초 간격으로 상태 폴링(최대 660초) → 스크립트 stdout·stderr를 로그에 펼침 → SSM 상태가 Success가 아니면 실패 | 스크립트를 EC2에 미리 복사해 둘 필요가 없음. 저장소가 유일한 원본 |
 
-- develop push와 수동 실행(Run workflow)에서 돕니다. 배포끼리 겹치지 않게 직렬로 실행하고, 진행 중인 배포는 취소하지 않습니다.
-- 테스트 통과와 무관하게 develop push 시 바로 배포합니다. develop은 PR 승인이 있어야 머지되고 PR 단계에서 Test가 돌기 때문입니다.
+- **시작 조건**: develop에서 Test 워크플로가 끝나면(`workflow_run`) 그 결론이 success일 때만 진행합니다. 테스트가 실패한 커밋은 배포하지 않습니다. 배포 대상 커밋은 Test가 검사한 커밋(`workflow_run.head_sha`)입니다. 수동 실행(Run workflow)은 현재 develop 커밋을 배포합니다.
+- 배포끼리 겹치지 않게 직렬로 실행하고, 진행 중인 배포는 취소하지 않습니다.
+- SSM은 전달받은 줄들을 `sh`로 실행합니다. 스크립트는 bash 전용 문법(배열, pipefail)을 쓰므로, 워크플로가 스크립트를 EC2의 임시 파일로 쓴 뒤 `bash`로 실행하고 끝나면 지웁니다. EC2의 `/bin/sh`가 bash가 아니어도 동작합니다.
+- `aws ssm wait command-executed`는 최대 100초만 기다려서 쓰지 않습니다. 되돌리기 경로는 헬스 대기 두 번으로 120초를 넘길 수 있습니다.
 
 ### 4.3 deploy-dev.sh (EC2 안에서 실행)
 
@@ -166,14 +170,16 @@ flowchart TD
     C --> D[같은 이미지로<br/>alembic upgrade head]
     D --> E[기존 컨테이너 내리고<br/>새 이미지로 기동]
     E --> F{GET /health<br/>200?}
-    F -- 예 --> G[옛 이미지 정리<br/>배포 완료]
-    F -- 아니오 --> H[컨테이너 로그 출력]
+    F -- 예 --> G[이 프로젝트 라벨의<br/>옛 이미지만 정리 · 배포 완료]
+    F -- 아니오 --> H[컨테이너 로그를<br/>서버 파일로만 저장]
     H --> I[직전 이미지로 되돌림]
     I --> J[종료 코드 1]
 ```
 
 - 설정은 EC2의 `/etc/glowship/server.env`(root 전용 600)에서 읽습니다. 키는 `.env.example`과 같고, 이 파일은 서버에만 있습니다.
-- 되돌리기는 컨테이너만 바꿉니다. 이미 적용된 마이그레이션은 되돌리지 않습니다(downgrade는 수동 판단).
+- **헬스 실패 때 컨테이너 로그는 Actions로 보내지 않습니다.** 이 저장소는 공개라 Actions 로그도 공개인데, 앱 로그에는 SQL 바인딩 값(로그인 이메일 등)이 섞일 수 있기 때문입니다. 로그는 EC2의 `/var/log/glowship/deploy-failed-<시각>.log`(root 전용)에 남고 Actions에는 경로만 찍힙니다. 보려면 SSM 세션이나 콘솔에서 그 파일을 엽니다.
+- 되돌리기는 컨테이너만 바꿉니다. 이미 적용된 마이그레이션은 되돌리지 않습니다(downgrade는 수동 판단). 그래서 **새 마이그레이션은 직전 이미지와도 맞아야(뒤로 호환) 합니다.** 열 삭제·이름 변경처럼 옛 코드가 깨지는 변경은 두 번에 나눠(먼저 추가, 다음 배포에서 제거) 적용합니다.
+- 옛 이미지 정리는 이 프로젝트 이미지(`LABEL app=glowship-server`)만, 24시간 넘게 안 쓴 것만 지웁니다. 로컬 시험(`ECR_LOGIN=0`)에서는 정리를 건너뛰어 다른 프로젝트 이미지를 건드리지 않습니다.
 - 엔진 폴더가 EC2에 있으면 Variables `DEV_ENGINE_DIR`로 경로를 줍니다. 읽기 전용으로 마운트되고 `GLOWSHIP_ENGINE_DIR`이 설정됩니다. 비우면 엔진 없이 뜨고 분석 기능은 비활성입니다.
 - 로컬에서도 돌려볼 수 있습니다. `ECR_LOGIN=0`이면 ECR 로그인을 건너뛰고 로컬 이미지를 그대로 씁니다.
   ```bash
@@ -197,7 +203,9 @@ flowchart LR
 ```
 
 - 2단계 빌드라 최종 이미지에는 uv와 빌드 캐시가 없습니다. 의존성 레이어는 `uv.lock`이 바뀔 때만 다시 만들어집니다.
-- 비root 사용자 `app`으로 실행합니다.
+- 비root 사용자 `app`으로 실행합니다. 코드·마이그레이션·`.venv`는 root 소유(읽기·실행만)라 실행 사용자가 코드를 고칠 수 없습니다.
+- `LABEL app=glowship-server`는 배포 스크립트의 옛 이미지 정리가 이 프로젝트 이미지만 고르는 표식입니다.
+- uv 판은 Dockerfile·`test.yml`·로컬이 같은 판(0.12.17)으로 고정돼 `uv.lock`을 같은 방식으로 읽습니다.
 - `.env`·`tests`·`docs`·`resource`·`scripts`는 `.dockerignore`로 빌드 컨텍스트에서 뺍니다. 설정은 환경변수로만 받습니다.
 - 마이그레이션을 이미지에 포함해 배포 스크립트가 같은 이미지로 `alembic upgrade head`를 실행합니다.
 - 엔진 코드는 이미지에 넣지 않습니다(공개 저장소·데이터 팀 결과물).
@@ -254,7 +262,14 @@ flowchart LR
 | Variable | `DEV_EC2_INSTANCE_ID` | dev 서버 EC2 인스턴스 ID |
 | Variable | `IMAGE_PLATFORM` | `linux/arm64` |
 | Variable | `DEV_ENGINE_DIR` | 선택. EC2의 엔진 폴더 경로 |
-| Environment | `dev` | 배포 job이 사용. 승인자를 두려면 여기서 설정 |
+| Environment | `dev` | 배포 job이 사용. **Deployment branches를 `develop`만으로 제한**(아래). 승인자를 두려면 여기서 설정 |
+
+**저장소 설정 두 가지 (관리자 권한)**
+
+| 설정 | 왜 필요한가 |
+| --- | --- |
+| Environment `dev` → Deployment branches → Selected branches: `develop` | IAM 신뢰 정책이 `environment:dev` 토큰을 허용하므로, 제한이 없으면 아무 브랜치의 워크플로나 이 환경을 써서 역할을 가정하고 EC2에 명령을 보낼 수 있음 |
+| develop 규칙 세트 → Required status checks: `pytest` (+ `Ruff`) | 테스트가 실패한 PR이 머지되지 않게. `deploy-dev.yml`의 `workflow_run` 조건은 이 설정이 빠졌을 때의 2차 방어 |
 
 ### 8.2 AWS 자원
 
@@ -290,9 +305,9 @@ flowchart LR
 
 | 상황 | 하는 일 |
 | --- | --- |
-| **배포** | PR을 develop에 머지하면 자동. 수동은 Actions → Deploy Dev → Run workflow |
+| **배포** | PR을 develop에 머지하면 Test → (성공 시) Deploy Dev 순으로 자동. 수동은 Actions → Deploy Dev → Run workflow |
 | **확인** | Actions 로그의 deploy job에 `deploy-dev.sh` 출력이 펼쳐져 있음. `배포 완료`가 찍히면 `https://<CloudFront 도메인>/health`가 200 |
-| **헬스 실패** | 스크립트가 직전 이미지로 되돌림. 로그의 컨테이너 마지막 50줄을 먼저 봄 |
+| **헬스 실패** | 스크립트가 직전 이미지로 되돌림. 컨테이너 로그는 EC2의 `/var/log/glowship/deploy-failed-<시각>.log`에만 있음(Actions에는 경로만). 되돌린 서버가 동작하려면 그 사이 마이그레이션이 뒤로 호환이어야 함(4.3절) |
 | **권한 오류** | ECR·SSM 거절은 IAM 역할 `glowship-github-deploy`의 정책, pull 거절은 `glowship-ec2-role` |
 | **빌드 실패** | `Dockerfile`, `uv.lock`. 로컬 `docker build`로 재현 |
 | **롤백** | 커밋 SHA 태그가 ECR에 남아 있음. EC2에서 `IMAGE=<ECR 주소>:<이전 SHA> AWS_REGION=<리전> scripts/deploy/deploy-dev.sh`를 SSM으로 실행 |
@@ -305,4 +320,7 @@ flowchart LR
 - dev DB에 합성데이터 적재(seed)와 관리자 계정 생성. 배포 뒤 로그인까지 확인하려면 필요합니다.
 - 엔진 폴더를 EC2에 두고 `DEV_ENGINE_DIR` 설정(분석 기능 활성). 데이터 팀과 전달 방식 합의가 필요합니다.
 - 운영 배포(main → 운영 서버) 워크플로. dev와 같은 모양에 Environment 승인자를 더하는 것을 권장합니다.
+- 운영에서는 `/docs`·`/openapi.json`을 CloudFront 동작에서 빼거나 앱에서 끕니다. dev는 합성데이터라 열어 두었습니다.
+- 앱 DB 엔진의 `echo=True`(`app/core/database.py`)를 local에서만 켜거나 `hide_parameters=True`로 바꾸기. 지금은 모든 환경에서 SQL과 바인딩 값이 INFO 로그에 남습니다. 배포 스크립트는 그 로그를 Actions로 보내지 않지만 서버 로그 자체의 노출 범위를 줄이는 후속 과제입니다.
+- 베이스 이미지(`python:3.14-slim`, uv)를 digest로 고정하기.
 - Docker 이미지 크기(약 460MB) 축소, CloudFront 접근 로그.
