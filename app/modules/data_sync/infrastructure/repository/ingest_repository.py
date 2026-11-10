@@ -628,12 +628,29 @@ class IngestRepository:
 
     # --- 수집 실행 기록 ---------------------------------------------------------------
 
+    async def find_running_runs(
+        self, company_id: uuid.UUID
+    ) -> list[tuple[uuid.UUID, str, datetime]]:
+        """그 고객사의 RUNNING 수집 (실행 ID, 원천, 시작 시각). 수동 동기화가 오래 남은 것을 정리할 때 쓴다(L1 안, 이슈 #94)."""
+        rows = await self.db.execute(
+            select(
+                DataSyncRun.data_sync_run_id,
+                DataSyncRun.source_domain,
+                DataSyncRun.started_at,
+            ).where(
+                DataSyncRun.company_id == company_id,
+                DataSyncRun.status == DataSyncRunStatus.RUNNING.value,
+            )
+        )
+        return [(r[0], r[1], r[2]) for r in rows.all()]
+
     async def has_running_run(
         self, company_id: uuid.UUID, source_domain: SourceDomain
     ) -> bool:
         """
         같은 고객사·원천에 RUNNING 수집이 있는가. 시작 시각과 관계없이 봅니다 (L1 안에서 호출).
-        작업이 죽어 남은 RUNNING 은 자동으로 풀지 않습니다. 수동 복구 SQL 은 docs/data-sync/ingest.md 7절입니다.
+        작업이 죽어 남은 RUNNING 은 여기서 풀지 않습니다. 수동 동기화(API 25)가 실제로 10분 넘게 남은 것을 FAILED 로
+        정리하고(manual_sync_service, 이슈 #94), 그 밖의 수동 복구 SQL 은 docs/data-sync/ingest.md 7절입니다.
         """
         return bool(
             await self.db.scalar(
