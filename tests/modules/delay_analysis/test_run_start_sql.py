@@ -304,7 +304,7 @@ async def test_runner_end_to_end_hold_saves_without_data_versions(db_write_sessi
 
     runner = AnalysisRunner(
         open_session=same_session,
-        runtime_factory=lambda s, r: fake_runtime(
+        runtime_factory=lambda s, r, t: fake_runtime(
             FakeScenario(hold_code="REQUIRED_DATA_INVALID")
         ),
         save_time=lambda run: run.started_at,
@@ -333,7 +333,7 @@ async def test_runner_end_to_end_failed_records_data_versions(db_write_session):
         {"id": rid},
     )
 
-    def broken_runtime(_session, _run):
+    def broken_runtime(_session, _run, _tracer):
         runtime = fake_runtime()
 
         async def broken():

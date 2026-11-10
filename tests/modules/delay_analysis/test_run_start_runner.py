@@ -17,6 +17,7 @@ from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
     AnalysisStep,
 )
+from app.modules.delay_analysis.application.agent.tracing import RunTracer
 from app.modules.delay_analysis.application.run_start import runner as R
 from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
 from app.modules.delay_analysis.application.run_start.transitions import (
@@ -135,7 +136,7 @@ def db(monkeypatch):
 
 
 def _runner(db, scenario=None, **kw) -> AnalysisRunner:
-    def factory(_session, _run):
+    def factory(_session, _run, _tracer):
         return fake_runtime(scenario)
 
     kw.setdefault("runtime_factory", factory)
@@ -224,7 +225,7 @@ async def test_same_run_is_started_once(db):
     (run_id,) = db.detected()
     calls = []
 
-    def factory(_session, _run):
+    def factory(_session, _run, _tracer):
         calls.append(_run.analysis_run_id)
         return fake_runtime()
 
@@ -243,7 +244,7 @@ async def test_concurrency_is_limited(db):
     live, peak = 0, 0
     gate = asyncio.Event()
 
-    def factory(_session, _run):
+    def factory(_session, _run, _tracer):
         nonlocal live, peak
         runtime = fake_runtime()
         original = runtime.preparer.judge_no_delay
@@ -288,7 +289,7 @@ async def test_not_detected_run_is_not_analyzed(db):
 async def test_exception_outside_graph_is_saved_as_failed(db):
     (run_id,) = db.detected()
 
-    def broken(_session, _run):
+    def broken(_session, _run, _tracer):
         raise RuntimeError("묶음을 만들다 실패(시험)")
 
     runner = _runner(db, runtime_factory=broken)
@@ -307,7 +308,7 @@ async def test_save_exception_is_caught_last(db):
 
     runner = AnalysisRunner(
         open_session=db.open_session,
-        runtime_factory=lambda s, r: fake_runtime(),
+        runtime_factory=lambda s, r, t: fake_runtime(),
         save_outcome=broken_save,
     )
     runner.start(COMPANY, run_id)
@@ -320,7 +321,7 @@ async def test_failed_last_save_only_logs_critical(db, caplog):
     (run_id,) = db.detected()
     db.fail_raises = True
 
-    def broken(_session, _run):
+    def broken(_session, _run, _tracer):
         raise RuntimeError("시험")
 
     runner = _runner(db, runtime_factory=broken)
@@ -336,7 +337,7 @@ async def test_shutdown_cancels_after_grace_without_saving(db):
     (run_id,) = db.detected()
     never = asyncio.Event()
 
-    def factory(_session, _run):
+    def factory(_session, _run, _tracer):
         runtime = fake_runtime()
 
         async def hang():
@@ -395,3 +396,125 @@ async def test_sweep_continues_when_one_run_cannot_be_failed(db):
     assert broken not in db.failed
     assert db.failed[ok] == RESTART_FAILURE_MESSAGE
     assert result.restarted == [detected]
+
+
+# --- 추적(tracer_factory) -----------------------------------------------------------------
+
+
+class _CountingTracer(RunTracer):
+    """진짜 추적기(sink 없음, 사건은 events 에 쌓임). aclose 횟수를 센다. close_raises 면 닫기에서 예외."""
+
+    def __init__(self, run, close_raises=False):
+        super().__init__(run.analysis_run_id, run.company_id, [])
+        self.closed = 0
+        self.close_raises = close_raises
+
+    async def aclose(self, timeout: float = 2.0) -> bool:
+        self.closed += 1
+        await super().aclose(timeout)
+        if self.close_raises:
+            raise RuntimeError("추적 닫기 실패(시험)")
+        return True
+
+
+def _traced_runner(db, made, *, close_raises=False, **kw):
+    """실행마다 _CountingTracer 를 만들고, 실행 도구 묶음이 받은 추적기를 made 에 남긴다."""
+    tracers = []
+
+    def tracer_factory(run):
+        tracer = _CountingTracer(run, close_raises=close_raises)
+        tracers.append(tracer)
+        return tracer
+
+    def factory(_session, _run, tracer):
+        made.append(tracer)
+        return fake_runtime(tracer=tracer)
+
+    kw.setdefault("runtime_factory", factory)
+    return _runner(db, tracer_factory=tracer_factory, **kw), tracers
+
+
+async def test_tracer_follows_one_run_through_tools_and_graph(db):
+    """같은 추적기가 실행 도구 묶음(도구 시도)과 그래프 콜백(실행·노드 사건)에 함께 가고, 끝나면 aclose 로 닫힌다."""
+    (run_id,) = db.detected()
+    made = []
+    runner, tracers = _traced_runner(db, made)
+
+    runner.start(COMPANY, run_id)
+    await runner.wait_idle()
+
+    (tracer,) = tracers
+    kinds = {e.kind for e in tracer.events}
+    assert made == [tracer]
+    assert {"RUN_START", "NODE_START", "TOOL_ATTEMPT", "RUN_END"} <= kinds
+    assert {e.analysis_run_id for e in tracer.events} == {run_id}
+    assert tracer.closed == 1
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+
+
+async def test_no_tracer_factory_means_no_tracing(db):
+    (run_id,) = db.detected()
+    made = []
+
+    def factory(_session, _run, tracer):
+        made.append(tracer)
+        return fake_runtime()
+
+    runner = _runner(db, runtime_factory=factory)
+    runner.start(COMPANY, run_id)
+    await runner.wait_idle()
+
+    assert made == [None]
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+
+
+async def test_tracer_is_closed_when_graph_fails(db):
+    """그래프 밖 예외로 끝나도 추적기는 닫히고, 실행은 마지막 잡기로 FAILED."""
+    (run_id,) = db.detected()
+
+    def broken(_session, _run, _tracer):
+        raise RuntimeError("묶음 연결 실수(시험)")
+
+    runner, tracers = _traced_runner(db, [], runtime_factory=broken)
+    runner.start(COMPANY, run_id)
+    await runner.wait_idle()
+
+    assert tracers[0].closed == 1
+    assert db.failed[run_id] == UNEXPECTED_ERROR_MESSAGE
+
+
+async def test_tracer_factory_error_runs_without_tracing(db, caplog):
+    """추적기를 만들다 예외가 나도 분석·저장은 그대로(agentflow 8.1 장애 영향)."""
+    (run_id,) = db.detected()
+    made = []
+
+    def factory(_session, _run, tracer):
+        made.append(tracer)
+        return fake_runtime(tracer=tracer)
+
+    def tracer_factory(_run):
+        raise OSError("추적 폴더 없음(시험)")
+
+    runner = _runner(db, runtime_factory=factory, tracer_factory=tracer_factory)
+    with caplog.at_level(logging.WARNING):
+        runner.start(COMPANY, run_id)
+        await runner.wait_idle()
+
+    assert made == [None]
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    assert run_id not in db.failed
+    assert "추적기를 만들지 못해" in caplog.text
+
+
+async def test_tracer_close_error_keeps_saved_result(db, caplog):
+    (run_id,) = db.detected()
+    runner, tracers = _traced_runner(db, [], close_raises=True)
+
+    with caplog.at_level(logging.WARNING):
+        runner.start(COMPANY, run_id)
+        await runner.wait_idle()
+
+    assert tracers[0].closed == 1
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    assert run_id not in db.failed
+    assert "추적기를 닫지 못했습니다" in caplog.text

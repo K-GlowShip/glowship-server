@@ -66,5 +66,5 @@
 - **시나리오에도 없는 경로가 남았습니다**(리드타임 없음, S ≥ E) → 시나리오 세계를 조금 바꿔 엔진을 다시 돌리는 변형 2건을 더했습니다.
 
 ## 6. 남은 일
-- 실제 도구 교체(등록표에 가짜 T10 대신 이 함수를 `pure_tool`로) — 다른 실제 도구와 함께
+- ~~실제 도구 교체(등록표에 가짜 T10 대신 이 함수를 `pure_tool`로)~~ — 실제 실행 묶음 `run_start/engine_runtime.py` `ENGINE_TOOLS`에 `pure_tool(calculate_option_outcomes)`로 등록함(GLOW-128 묶음 채우기)
 - T5 `allocation_state` 모델을 형식이 있는 모델로 바꿀지(이슈 #62 세 번째 항목, 9절 Q12)
