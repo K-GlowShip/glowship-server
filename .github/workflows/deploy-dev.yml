@@ -3,8 +3,11 @@ name: Deploy Dev
 # develop 의 Test 워크플로가 성공하면 FastAPI 이미지를 빌드해 Amazon ECR 에 올리고(build-and-push), SSM 으로 EC2 에 배포한다(deploy).
 #
 # 흐름
-#   트리거:         develop 에서 Test 워크플로가 끝나면(workflow_run) 그 결론이 success 일 때만 진행한다.
-#                   테스트가 실패한 커밋은 배포하지 않는다. 수동 실행(workflow_dispatch)은 현재 develop 커밋을 배포한다.
+#   트리거:         develop 에서 Test 워크플로가 끝나면(workflow_run) 그 결론이 success 이고, 그 Test 가 "이 저장소의 develop 에
+#                   직접 push 된 커밋"에서 돈 것일 때만 진행한다. 테스트가 실패한 커밋은 배포하지 않는다.
+#                   `branches: [develop]` 은 Test 를 일으킨 브랜치 이름만 보므로, fork 의 develop 브랜치에서 연 PR 의 Test(pull_request)도
+#                   통과한다. 그래서 job 조건에서 event == push 와 head_repository == 이 저장소를 함께 확인한다(fork 코드 배포 차단).
+#                   수동 실행(workflow_dispatch)은 현재 develop 커밋을 배포한다.
 #   build-and-push: checkout(Test 가 검사한 커밋) → OIDC 로 AWS 역할 가정(비밀키 없음) → ECR 로그인 → docker build(Dockerfile) → push
 #   deploy:         scripts/deploy/deploy-dev.sh 를 SSM RunShellScript 로 EC2 에 보내 bash 로 실행 → 끝날 때까지 폴링 → 결과 로그 출력
 #                   (EC2 에 SSH 로 들어가지 않고, 스크립트를 미리 복사해 둘 필요도 없다)
@@ -69,7 +72,13 @@ jobs:
   build-and-push:
     name: Build and push image to ECR
     # Test 가 실패·취소된 커밋은 배포하지 않는다. 수동 실행은 그대로 진행한다.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # workflow_run 은 이 저장소 권한(비밀값·OIDC)으로 돌므로, Test 를 일으킨 것이 "이 저장소 develop 으로의 push" 일 때만 받는다.
+    # fork 에서 연 PR 의 Test(event == pull_request, head_repository 가 fork)가 성공해도 fork 코드를 배포하지 않게 하기 위해서다.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -163,7 +172,7 @@ jobs:
             --rawfile script scripts/deploy/deploy-dev.sh \
             '{commands: [
               "set -eu",
-              "script=/tmp/glowship-deploy-dev.sh",
+              "script=\"$(mktemp /tmp/glowship-deploy-dev.XXXXXX)\"",
               "cat > \"$script\" <<'"'"'__GLOWSHIP_DEPLOY_EOF__'"'"'",
               $script,
               "__GLOWSHIP_DEPLOY_EOF__",

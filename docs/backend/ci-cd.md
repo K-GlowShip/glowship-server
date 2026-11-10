@@ -156,9 +156,10 @@ sequenceDiagram
 | **build-and-push** | OIDC 역할 가정 → ECR 로그인 → buildx로 빌드 → push | 플랫폼은 Variables `IMAGE_PLATFORM`(dev EC2는 Graviton이라 `linux/arm64`). 빌드 캐시는 Actions 캐시 |
 | **deploy** (Environment `dev`) | `scripts/deploy/deploy-dev.sh` 내용을 jq로 SSM 파라미터에 담아 전송 → 끝날 때까지 10초 간격으로 상태 폴링(최대 660초) → 스크립트 stdout·stderr를 로그에 펼침 → SSM 상태가 Success가 아니면 실패 | 스크립트를 EC2에 미리 복사해 둘 필요가 없음. 저장소가 유일한 원본 |
 
-- **시작 조건**: develop에서 Test 워크플로가 끝나면(`workflow_run`) 그 결론이 success일 때만 진행합니다. 테스트가 실패한 커밋은 배포하지 않습니다. 배포 대상 커밋은 Test가 검사한 커밋(`workflow_run.head_sha`)입니다. 수동 실행(Run workflow)은 현재 develop 커밋을 배포합니다.
+- **시작 조건**: develop에서 Test 워크플로가 끝나면(`workflow_run`) 그 결론이 success이고, 그 Test가 **이 저장소의 develop에 직접 push된 커밋**에서 돈 것일 때만 진행합니다. 테스트가 실패한 커밋은 배포하지 않습니다. 배포 대상 커밋은 Test가 검사한 커밋(`workflow_run.head_sha`)입니다. 수동 실행(Run workflow)은 현재 develop 커밋을 배포합니다.
+- **fork 차단**: `workflow_run`의 `branches: [develop]`은 Test를 일으킨 브랜치 이름만 봅니다. 공개 저장소라 누구든 fork의 develop 브랜치에서 PR을 열 수 있고, 그 PR의 Test도 이름이 develop이라 조건을 통과합니다. `workflow_run`은 이 저장소 권한(비밀값·OIDC)으로 돌기 때문에, job 조건에서 `workflow_run.event == 'push'`와 `head_repository == 이 저장소`를 함께 확인해 fork 코드가 배포되지 않게 합니다.
 - 배포끼리 겹치지 않게 직렬로 실행하고, 진행 중인 배포는 취소하지 않습니다.
-- SSM은 전달받은 줄들을 `sh`로 실행합니다. 스크립트는 bash 전용 문법(배열, pipefail)을 쓰므로, 워크플로가 스크립트를 EC2의 임시 파일로 쓴 뒤 `bash`로 실행하고 끝나면 지웁니다. EC2의 `/bin/sh`가 bash가 아니어도 동작합니다.
+- SSM은 전달받은 줄들을 `sh`로 실행합니다. 스크립트는 bash 전용 문법(배열, pipefail)을 쓰므로, 워크플로가 스크립트를 EC2의 임시 파일(`mktemp`로 매번 다른 이름)로 쓴 뒤 `bash`로 실행하고 끝나면 지웁니다. EC2의 `/bin/sh`가 bash가 아니어도 동작하고, 고정 이름의 파일을 미리 만들어 두는 식의 간섭도 받지 않습니다.
 - `aws ssm wait command-executed`는 최대 100초만 기다려서 쓰지 않습니다. 되돌리기 경로는 헬스 대기 두 번으로 120초를 넘길 수 있습니다.
 
 ### 4.3 deploy-dev.sh (EC2 안에서 실행)
