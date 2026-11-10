@@ -66,6 +66,6 @@
 - 계약 3.1절 "입력:" 줄에 D 규칙을 `resolve_base_date`와 함께 적었다가 계약 시험(`test_input_fields_match_model`)이 실패했습니다. 그 줄의 백틱 값은 T1 입력 모델 필드와 하나씩 대조됩니다 → "입력:" 줄에는 필드만 두고 규칙은 다음 문단으로 옮겼습니다.
 
 ## 7. 남은 일
-- 엔진 입력 캐시(저장소 읽기 고객사당 약 9.5초, 열쇠 `(고객사, input_seq, max(applied_seq))`) — 다음 작업
+- ~~엔진 입력 캐시~~ → 이슈 #60에서 함: `build_engine_input`이 저장소를 `(고객사, input_seq)` 열쇠 캐시로 읽습니다(`engine-store-cache.md`)
 - 입력 검증(GLOW-100): 운영 기준 `sales_basis_days ≠ 28`, `BUSINESS_DAY` 리드타임 처리, ON_HOLD 저장 연결
 - T6·T7(GLOW-126)은 `analysis`의 `fc`·`ol`·`k_imp`·`k_watch`에서 옮깁니다

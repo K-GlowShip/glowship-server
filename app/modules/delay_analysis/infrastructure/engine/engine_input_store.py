@@ -3,9 +3,11 @@ import csv
 import io
 import re
 import uuid
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import lru_cache
 from types import ModuleType
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +37,9 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
         그래서 저장소 한 개 = (고객사, 입력 순번) 하나입니다. check_input_seq 는 그 위에서 마지막 확인을 합니다.
       - 시각: 이슈 #39 전의 서버 수집은 마이크로초가 있고 엔진 iso_ts 는 1초 미만을 거부하므로, 읽을 때 초 아래를 버립니다(engine_timestamp 와 같은 규칙).
       - CSV 해석과 색인 만들기는 무거우므로(한 고객사 수 초) 이벤트 루프를 막지 않게 스레드에서 합니다.
+      - 만든 저장소는 캐시(engine_store_cache.py, 이슈 #60)로 여러 실행이 함께 읽습니다. 엔진 snapshot.build 는 색인
+        defaultdict(demand·demand_ch·lines 등)를 [] 로 읽어 없는 열쇠를 넣으므로, 색인을 다 만든 뒤 그 6개를
+        "없으면 기본값을 돌려주고 넣지 않는" 사전(NoInsertDefaultDict)으로 바꿉니다. 내용은 그대로라 엔진 Store 와 같게 비교됩니다.
       - 읽기 전용입니다. 커밋하지 않습니다.
 """
 
@@ -115,6 +120,46 @@ async def _copy_csv(session: AsyncSession, query: str, *args: object) -> bytes:
         query, *args, output=sink, format="csv", header=True
     )
     return b"".join(chunks)
+
+
+class NoInsertDefaultDict(dict):
+    """없는 열쇠를 읽으면 default_factory() 를 돌려주기만 하고 넣지 않는 사전 (이슈 #60).
+
+    defaultdict 는 없는 열쇠를 읽기만 해도 열쇠를 넣는다. 캐시한 저장소를 여러 실행이 스레드에서 함께 읽으면
+    읽기가 쓰기가 되어, 한 스레드가 항목을 도는 동안 다른 스레드가 넣으면 RuntimeError(dictionary changed size
+    during iteration)가 나고 저장소가 실행마다 조금씩 바뀐다. 이 사전은 만든 뒤 바뀌지 않으므로 동시에 읽어도 안전하다.
+    dict 를 상속해 내용이 같으면 defaultdict 와 == 로 같다(엔진 Store 대조 시험이 그대로 성립).
+    """
+
+    __slots__ = ("default_factory",)
+
+    def __init__(self, default_factory: Callable[[], Any], items: Mapping) -> None:
+        super().__init__(items)
+        self.default_factory = default_factory
+
+    def __missing__(self, key: object) -> Any:
+        return self.default_factory()
+
+    def __reduce__(self):
+        return (type(self), (self.default_factory, dict(self)))
+
+
+# 엔진 Store.__init__ 이 defaultdict 로 만드는 색인. snapshot.build·store 조회 메서드가 [] 로 읽는다
+DEFAULT_DICT_INDEXES = (
+    "lines",
+    "ship_lines",
+    "snaps",
+    "dcr_by_day",
+    "demand",
+    "demand_ch",
+)
+
+
+def freeze_default_dicts(store: object) -> None:
+    """저장소의 defaultdict 색인을 NoInsertDefaultDict 로 바꾼다(속성 이름·순서·내용은 그대로)."""
+    for name in DEFAULT_DICT_INDEXES:
+        index = getattr(store, name)
+        setattr(store, name, NoInsertDefaultDict(index.default_factory, index))
 
 
 @lru_cache
@@ -207,6 +252,8 @@ def company_store_class() -> type:
                         self.demand_ch[
                             (o["warehouse_id"], line["sku_id"], od, o["sales_channel"])
                         ] += q
+            # 여러 실행이 스레드에서 함께 읽어도 바뀌지 않게(이슈 #60). 엔진 원본에는 없는 줄
+            freeze_default_dicts(self)
 
         def input_seq(self, company_id, t):
             """엔진 Store.input_seq 와 같되 적재된(순번 있는) 수집만 본다. RUNNING·FAILED 는 applied_seq 가 비어 있다."""
