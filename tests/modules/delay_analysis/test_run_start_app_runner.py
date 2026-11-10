@@ -18,7 +18,7 @@ from app.modules.delay_analysis.application.run_start.transitions import Started
 
 """
     서버의 분석 실행기 설정과 실제 등록표 (GLOW-128) — DB 없음
-      - 자동 시작은 기본 꺼짐. 켰는데 실제 등록표에 빠진 도구(지금은 T10)가 있으면 서버 시작을 멈춘다.
+      - 자동 시작은 기본 꺼짐. 켰는데 실제 등록표에 빠진 도구(지금은 T10, 끝까지 시험과 함께 등록)가 있으면 서버 시작을 멈춘다.
       - 실제 등록표는 develop 의 실제 도구 함수를 그대로 등록한다(가짜가 섞이지 않음).
       - 가상 시각이면 저장·설명 시각 = 실행 시작 시각, 아니면 None·서버 시각.
 """
@@ -48,7 +48,7 @@ def test_auto_start_is_off_by_default():
     )
 
 
-def test_only_t10_is_missing_until_glow_133():
+def test_only_t10_is_missing_until_registered():
     assert missing_engine_tools() == [ToolName.CALCULATE_OPTION_OUTCOMES]
 
 
@@ -82,7 +82,7 @@ def test_enabling_without_all_tools_stops_startup():
 
 
 def test_enabling_without_engine_dir_stops_startup(monkeypatch, tmp_path):
-    """T10 이 들어온 뒤를 흉내 내려고 빠진 도구를 비운다. 그때도 엔진 경로가 비어 있으면 멈춘다."""
+    """T10 을 등록한 뒤를 흉내 내려고 빠진 도구를 비운다. 그때도 엔진 경로가 비어 있으면 멈춘다."""
     monkeypatch.setattr(A, "missing_engine_tools", list)
 
     with pytest.raises(A.AutoStartNotReadyError, match="GLOWSHIP_ENGINE_DIR"):
@@ -97,7 +97,7 @@ def test_enabling_without_engine_dir_stops_startup(monkeypatch, tmp_path):
     )
 
 
-def test_engine_runtime_cannot_be_built_until_t10(monkeypatch):
+def test_engine_runtime_cannot_be_built_until_t10_registered(monkeypatch):
     with pytest.raises(ValueError, match="calculate_option_outcomes"):
         A.build_app_runner(_settings()).runtime_factory(object(), _run())
 

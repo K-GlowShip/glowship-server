@@ -70,9 +70,11 @@ from app.modules.delay_analysis.infrastructure.engine.engine_input import (
     실제 실행 도구 묶음 조립 (GLOW-128, docs/agent-flow/agent-tool-interface.md 5.1절 "실제 도구 교체")
       - 실행 하나에 묶음 하나. 분석 준비는 실행기의 워커 세션으로 엔진 입력을 만든다(judge_no_delay → build_engine_input).
       - 도구는 develop 에 있는 실제 함수를 등록한다. 조회 T1~T5·T8, 재고 영향 T6·T7, 대응안 T9·T11, 최종 확인 T12.
-      - **대응안 결과 T10(GLOW-133)은 아직 없다.** 등록표에 T10 이 없으면 AnalysisRuntime 이 만들 때 멈추므로,
-        자동 시작 설정은 기본 꺼짐이고(ANALYSIS_AUTO_START_ENABLED), 켜려 하면 서버 시작 때 missing_engine_tools()
-        로 막는다(사용자 결정 11-09). T10 이 들어오면 ENGINE_TOOLS 에 한 줄을 더한다.
+      - **대응안 결과 T10(GLOW-133)은 아직 등록하지 않는다.** T10 함수는 #90 으로 develop 에 들어왔지만, 실제 묶음으로
+        끝까지 도는 시험 전에 등록하면 켜기 확인이 통과해 검증 안 된 경로를 켤 수 있게 된다(사용자 결정 11-10).
+        등록표에 T10 이 없으면 AnalysisRuntime 이 만들 때 멈추므로 자동 시작 설정은 기본 꺼짐이고
+        (ANALYSIS_AUTO_START_ENABLED), 켜려 하면 서버 시작 때 missing_engine_tools() 로 막는다(사용자 결정 11-09).
+        끝까지 시험과 함께 ENGINE_TOOLS 에 한 줄을 더한다(docs/analysis/auto-start.md 7절).
       - 시간 제한은 아직 넣지 않는다(계약 문서에 도구별 값이 없음). 엔진 계산은 엔진 입력을 만들 때 끝나 도구는 옮기기만 한다.
       - clock: 설명 생성 시각. 가상 시각이면 실행 시작 시각(저장 끝난 시각 = 시작 + 1초보다 앞), 아니면 서버 시각.
 """
@@ -107,7 +109,7 @@ ENGINE_TOOLS: dict[ToolName, ToolSpec] = {
         CheckOptionFeasibilityInput,
         OptionFeasibility,
     ),
-    # ToolName.CALCULATE_OPTION_OUTCOMES (T10): GLOW-133 이 들어오면 여기에 등록한다
+    # ToolName.CALCULATE_OPTION_OUTCOMES (T10, option_outcomes.calculate_option_outcomes): 끝까지 시험과 함께 등록한다
     ToolName.COMPARE_OPTIONS: ToolSpec(
         pure_tool(compare_options), CompareOptionsInput, OptionRanking
     ),
@@ -144,7 +146,7 @@ def build_engine_runtime(
     *,
     clock: Callable[[], datetime] = utc_now_seconds,
 ) -> AnalysisRuntime:
-    """실제 실행 도구 묶음. 등록표에 빠진 도구가 있으면 AnalysisRuntime 이 ValueError 로 멈춘다(T10 전에는 항상)."""
+    """실제 실행 도구 묶음. 등록표에 빠진 도구가 있으면 AnalysisRuntime 이 ValueError 로 멈춘다(T10 등록 전에는 항상)."""
     return AnalysisRuntime(
         registry=ToolRegistry(ENGINE_TOOLS),
         preparer=EnginePreparer(db, run),
