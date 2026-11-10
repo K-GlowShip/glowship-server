@@ -1,6 +1,6 @@
 {
   "schema_version": "glowship_engine_manifest.v1",
-  "note": "데이터 팀 엔진 원본의 파일 목록과 SHA-256. 코드는 저장소에 넣지 않고 GLOWSHIP_ENGINE_DIR 의 원본을 이 목록으로 대조해 불러온다(docs/analysis/engine-local-path.md). 목록에 없는 파일은 보지 않는다. options.py 와 tests/test_q9_donor_reason.py 는 glowship-plan tools/glowship_engine 의 Q9 수정판이다(공유 묶음 SHA256SUMS.tsv 의 options.py 974577bc… 는 수정 전).",
+  "note": "데이터 팀 엔진 원본 가운데 서버가 실행할 때 쓰는 파일(런타임)의 목록과 SHA-256. 코드는 저장소에 넣지 않고 GLOWSHIP_ENGINE_DIR 의 원본을 이 목록으로 대조해 불러온다(docs/analysis/engine-local-path.md). 목록에 없는 파일은 보지 않는다. 엔진 시험 파일(glowship_engine/tests, synth2025_v5/tests)은 이 목록에 없고 tests/modules/delay_analysis/engine_test_manifest.json 에 따로 둔다(운영 엔진 묶음에서 시험 폴더를 빼도 서버가 뜸). glowship_engine/testdb.py 는 이름과 달리 storage.py 가 불러오므로 이 목록에 남긴다. options.py 는 glowship-plan tools/glowship_engine 의 Q9 수정판이다(공유 묶음 SHA256SUMS.tsv 의 options.py 974577bc… 는 수정 전).",
   "engine_dir_layout": "GLOWSHIP_ENGINE_DIR/glowship_engine/…, GLOWSHIP_ENGINE_DIR/synth2025_v5/… (공유 묶음 04_적재검증도구 에 glowship-plan tools/synth2025_v5 를 복사한 모양)",
   "sources": {
     "glowship_engine": "공유 묶음 00_필수_최신DB_전체재적재/04_적재검증도구/glowship_engine (overlay v1_run1 manifest 에 해시 기록)",
@@ -164,69 +164,9 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
-      "path": "glowship_engine/tests/__init__.py",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/fixture_glow50.py",
-      "sha256": "c0af3ddeaffe2f2a51bd584a4083fd912782c286e31a3f095f1760fdf1b34fe4",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/fixture_gs05.py",
-      "sha256": "d934fd247a319bc883221d35d0a14fc9d3d9e4352b502201769975e5eab7eefe",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/fixture_u6_donor.py",
-      "sha256": "ec3fbdeb52cf50485fa8fa19161794ef70b86a6624b8070d0d0a6394383ae40f",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/fixtures/forbidden_ko_v1_cases.json",
-      "sha256": "c73c0955292fe5754fd1e68899077d408f1c979b6cf596d6548c60ed1c83db25",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/fixtures/forbidden_ko_v2_boundary_cases.json",
-      "sha256": "89106a7e33815e5bba61b0534b0877c4a243f20933187d8aaa97d1667877c92b",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/test_engine.py",
-      "sha256": "f0d4a16f1b62f25136c4a290947191bc8ee8b5c8a28c52c59bc3de337b6eb49a",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/test_explain.py",
-      "sha256": "3298ce18910ca2eb132470d852623cb7230fe5957caa441b2f4f91ddcfbd503e",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/test_forbidden_boundary.py",
-      "sha256": "1f4f9ef3e0be6a92442b5c53db4ada8aa2c8d42a087b8c29c56bd90bdfd6d0fd",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
-    },
-    {
-      "path": "glowship_engine/tests/test_q9_donor_reason.py",
-      "sha256": "0a616a2f16a725e1ebce856c15da02582c1a567f706d3501eea05a54a0e839ee",
-      "recorded_in": "glowship-plan 11b902e tools/glowship_engine/tests/test_q9_donor_reason.py (Q9 시험)"
-    },
-    {
       "path": "synth2025_v5/allocation_core.py",
       "sha256": "fcb08cf8dd2e370500207241b41b7be77e8d7ebe6cf194481f708c7d6449fce0",
       "recorded_in": "glowship-plan README.md (838092b) + overlay manifest"
-    },
-    {
-      "path": "synth2025_v5/tests/golden_cases.py",
-      "sha256": "5910456da0e85a15a241747d551b1a689d76dda4c8763d68e199c70be85ede98",
-      "recorded_in": "glowship-plan README.md (838092b)"
-    },
-    {
-      "path": "synth2025_v5/tests/run_g2.py",
-      "sha256": "ceb50e9f1527d312eb1fb6c55c1ee4d01843fba29b6db2bac6d8fde9f1f7f249",
-      "recorded_in": "glowship-plan README.md (838092b)"
     }
   ]
 }

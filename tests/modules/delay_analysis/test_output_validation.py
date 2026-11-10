@@ -15,6 +15,9 @@ from app.modules.delay_analysis.infrastructure.engine import explanation_assets 
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
+from tests.modules.delay_analysis.engine_test_modules import (
+    load_engine_test_module,
+)
 from tests.modules.delay_analysis.test_tool_schemas import (
     _doc,
     _doc_paths,
@@ -59,7 +62,7 @@ OUTPUT_FAULTS = [
 def engine():
     if get_settings().glowship_engine_dir is None:
         pytest.skip("GLOWSHIP_ENGINE_DIR 이 없어 T12 시험을 건너뜀")
-    snap, _ = load_engine_module("tests.fixture_gs05").build_snap()
+    snap, _ = load_engine_test_module("fixture_gs05").build_snap()
     analysis = load_engine_module("pipeline").analyze(snap)
     doc = load_engine_module("explain.input_doc").build(
         snap, analysis, RUN_ID, "SHIP-DELAYED"
@@ -70,7 +73,7 @@ def engine():
         "assets": assets,
         "mock": load_engine_module("explain.mock"),
         "validator": load_engine_module("explain.validator"),
-        "test_explain": load_engine_module("tests.test_explain"),
+        "test_explain": load_engine_test_module("test_explain"),
     }
 
 

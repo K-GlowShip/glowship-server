@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from app.modules.delay_analysis.infrastructure.engine import (
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     ENGINE_PACKAGE,
     EngineIntegrityError,
+    EngineManifestEntry,
     EngineNotConfiguredError,
 )
 
@@ -82,6 +84,36 @@ def test_startup_fails_when_engine_files_differ_from_manifest(
 
     with pytest.raises(EngineIntegrityError):
         engine_startup.verify_engine_on_startup()
+
+
+def test_startup_passes_when_engine_test_folders_are_absent(
+    engine_dir_setting, tmp_path, monkeypatch
+):
+    """운영 엔진 묶음에는 엔진 시험 폴더가 없다. 시작 확인은 런타임 목록만 대조한다(이슈 #98)."""
+    files = {
+        f"{ENGINE_PACKAGE}/__init__.py": b"",
+        f"{ENGINE_PACKAGE}/core.py": b"VALUE = 1\n",
+        "synth2025_v5/allocation_core.py": b"X = 2\n",
+    }
+    for rel, data in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    runtime = [
+        EngineManifestEntry(rel, hashlib.sha256(data).hexdigest())
+        for rel, data in files.items()
+    ]
+    checked = []
+    monkeypatch.setattr(engine_loader, "read_manifest", lambda: runtime)
+    # 설명 자산 확인은 실제 엔진이 있어야 해서 기록만 한다(test_explanation 이 실제로 본다)
+    monkeypatch.setattr(
+        engine_startup, "verify_explanation_assets", lambda: checked.append("assets")
+    )
+    engine_dir_setting(tmp_path)
+
+    assert engine_startup.verify_engine_on_startup() is True
+    assert checked == ["assets"]
+    assert list(tmp_path.rglob("tests")) == []
 
 
 async def test_app_lifespan_runs_engine_check(
