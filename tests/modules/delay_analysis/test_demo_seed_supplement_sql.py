@@ -95,12 +95,18 @@ def test_supplement_records_by_source():
     assert records[SourceDomain.INVENTORY][0].inventory_date == date(2026, 7, 1)
 
 
-async def test_supplement_loads_five_syncs_at_observed_day_slots(db_write_session):
+async def test_supplement_loads_five_syncs_at_observed_day_slots(
+    db_write_session, capsys
+):
     db = db_write_session
     company_id = await _confirmed_company(db)
 
     loaded = await load_supplement(db, company_id, SMALL)
+    assert "건너뜀" not in capsys.readouterr().out
     again = await load_supplement(db, company_id, SMALL)
+    assert (
+        "보완 하루 건너뜀: 최신 재고일 2026-07-01" in capsys.readouterr().out
+    )  # 이슈 #103
 
     runs = (
         await db.execute(
