@@ -134,6 +134,10 @@ async def test_missing_idempotency_key_is_400(fake_service, key):
         {"responseOptionId": str(OPTION_ID)},
         {"responseOptionId": str(OPTION_ID), "reasonText": "   "},
         {"responseOptionId": str(OPTION_ID), "reasonText": "가" * 601},
+        {
+            "responseOptionId": str(OPTION_ID),
+            "reasonText": "이유\x00",
+        },  # NUL (이슈 #49)
         {"reasonText": "이유"},
         {"responseOptionId": "not-a-uuid", "reasonText": "이유"},
     ],

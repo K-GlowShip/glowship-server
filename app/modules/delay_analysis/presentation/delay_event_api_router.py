@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
@@ -6,6 +7,7 @@ from app.core.exceptions import ErrorResponse
 from app.core.pagination import PageParams
 from app.core.query_types import IsoAwareDatetime
 from app.core.security.auth import CurrentUser, require_roles
+from app.core.text_input import SearchText
 from app.modules.delay_analysis.application.delay_event_query_service import (
     DelayEventQueryService,
     DelayEventTab,
@@ -69,9 +71,9 @@ async def list_delay_events(
         alias="to",
         description="감지 시각 끝, 미포함 (예: 2026-10-21T15:00:00Z)",
     ),
-    q: str | None = Query(
-        None, max_length=50, description="선적 코드·SKU 코드·상품명 일부"
-    ),
+    q: Annotated[
+        SearchText, Query(max_length=50, description="선적 코드·SKU 코드·상품명 일부")
+    ] = None,
     has_final_decision: bool | None = Query(
         None,
         alias="hasFinalDecision",
