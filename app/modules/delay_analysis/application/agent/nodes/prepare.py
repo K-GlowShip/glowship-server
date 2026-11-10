@@ -15,8 +15,8 @@ from app.modules.delay_analysis.application.agent.state import (
 async def prepare_node(state: AnalysisState, config: RunnableConfig) -> dict:
     """
     분석 준비 노드 (agentflow 3절·5.2·5.4, docs/agent-flow/agent-tool-interface.md 2절)
-      1) 지연 해소 판정(개발 1 judge_no_delay): 해소면 NO_DELAY 로 끝냄. 엔진 저장소를 읽기 전에 한다(엔진 하네스 순서).
-      2) 엔진 입력 만들기(개발 1 build_engine_input): 보류면 ON_HOLD(VALIDATING)로 끝냄.
+      1) 지연 해소 판정(엔진 입력 judge_no_delay): 해소면 NO_DELAY 로 끝냄. 엔진 저장소를 읽기 전에 한다(엔진 하네스 순서).
+      2) 엔진 입력 만들기(build_engine_input): 보류면 ON_HOLD(VALIDATING)로 끝냄.
          보류는 이 단계에서만 낸다(결정 1). 실패 요약은 #28 hold_summary(보류 코드·판정한 쪽 문구).
       3) 엔진 입력을 실행 도구 묶음에 한 번 담는다(뒤 노드의 도구 문맥 ctx.engine).
     권한·중복은 실행 생성(#21, 고객사 잠금 L1)이, STALE 은 조정 에이전트 진입 확인이 맡는다.

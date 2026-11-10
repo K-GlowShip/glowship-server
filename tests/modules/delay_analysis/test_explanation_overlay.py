@@ -16,13 +16,13 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 
 """
     overlay 설명 회귀 (GLOW-127 후속, docs/agent-flow/explanation.md 6절 3번)
-      - 개발 DB 의 overlay 실행으로 엔진 입력을 다시 만들고(개발 1 build_engine_input, 읽기만) 그래프 연결 감싸기
+      - 개발 DB 의 overlay 실행으로 엔진 입력을 다시 만들고(build_engine_input, 읽기만) 그래프 연결 감싸기
         make_explainer 로 설명을 다시 만들어, 저장된 설명·모델·프롬프트 판과 같은지 본다.
       - 설명 생성 시각은 저장된 explanation_generated_at 을 그대로 쓴다(설명 metadata.generated_at 까지 같아야 함).
       - 설명 실패 실행(AN-260107-001)은 엔진 하네스가 RT-2 결함(시도 1·2·3)을 넣어 만든 것이다. 같은 결함으로
         다시 만들어 시도 기록이 저장된 failure_message 와 같은지 본다(overlay 는 엔진 시도 기록만 저장).
       - 기본은 READY 1건·실패 1건. 설명이 있는 실행 전체(14건, 엔진 입력 만들기가 실행마다 몇 초)는
-        GLOWSHIP_ENGINE_GOLDEN=1 일 때만(개발 1 test_engine_input.py 의 정답 대조와 같은 방식).
+        GLOWSHIP_ENGINE_GOLDEN=1 일 때만(test_engine_input.py 의 정답 대조와 같은 방식).
 """
 
 RT2_FAULTS = {
@@ -30,7 +30,7 @@ RT2_FAULTS = {
     2: "forbidden_phrase",
     3: "timeout",
 }  # 엔진 run_s1_s5.RT2_FAULTS
-EXPLAINED_RUNS = {  # overlay 에서 설명이 저장된 실행(PASSED 13 + 설명 실패 1), 11-08 개발 3 DB 확인
+EXPLAINED_RUNS = {  # overlay 에서 설명이 저장된 실행(PASSED 13 + 설명 실패 1), 11-08 개발 DB 확인
     "A_BEAUTY": [
         "AN-260101-001", "AN-260101-002", "AN-260101-003", "AN-260101-004",
         "AN-260102-001", "AN-260103-001", "AN-260107-001", "AN-260115-001",
