@@ -215,7 +215,9 @@ class OpenOrders(ToolModel):
 
 
 class LeadTimes(ToolModel):
-    """리드타임(일). null = 운영 기준에 그 행이 없음 또는 day_basis = BUSINESS_DAY (9절 Q5)"""
+    """리드타임(일). null = 운영 기준에 그 행이 없음 또는 day_basis = BUSINESS_DAY (9절 Q5).
+
+    달력일이 아닌 행은 입력 검증이 엔진 계산 전에 보류로 막으므로(이슈 #61) 실제 실행에서는 행이 없는 경우뿐이다."""
 
     dest_outbound_handling_days: StrictInt | None
     dest_customer_delivery_days: StrictInt | None

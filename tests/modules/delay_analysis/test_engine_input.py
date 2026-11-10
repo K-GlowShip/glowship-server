@@ -7,15 +7,29 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.config import get_settings
+from app.modules.delay_analysis.application.agent.retry import (
+    HOLD_CODES,
+    hold_summary,
+)
+from app.modules.delay_analysis.application.agent.state import (
+    AnalysisOutcome,
+    AnalysisStep,
+)
 from app.modules.delay_analysis.application.agent.tools import lookup_tools as LT
 from app.modules.delay_analysis.application.agent.tools.lookup_schemas import (
     GetDelayContextInput,
 )
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.engine import engine_input as EI
+from app.modules.delay_analysis.infrastructure.engine import (
+    engine_operating_rules as OR,
+)
+from app.modules.delay_analysis.infrastructure.engine.engine_store_cache import (
+    engine_store_cache,
+)
 
 """
     엔진 입력과 조회 도구 T1~T5·T8 (docs/analysis/engine-input.md)
@@ -431,6 +445,10 @@ def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     }
     monkeypatch.setattr(EI, "load_engine_module", modules.__getitem__)
     monkeypatch.setattr(EI, "_calendar", lambda: "CAL")
+    checked = []  # 운영 기준 검사는 엔진이 만든 스냅샷으로 부른다(검사 내용은 아래 운영 기준 시험)
+    monkeypatch.setattr(
+        EI, "unsupported_operating_rules", lambda store, snap: checked.append((store, snap))
+    )  # fmt: skip
 
     assert EI._build_and_analyze("STORE", COMPANY, _run_input("AT_SEA", date(2026, 1, 20))) == (
         {"snap": 1}, {"analysis": {"snap": 1}}, basis)  # fmt: skip
@@ -451,6 +469,228 @@ def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     assert resolved[0] == ("STORE", COMPANY, "2026-01-10T00:10:00Z")
     assert calls[1][3:] == (None, None)
     assert hold == EI.EngineHold(code="REQUIRED_DATA_INVALID", message="재고 행 없음")
+    assert (
+        checked == [("STORE", {"snap": 1})] * 2
+    )  # 엔진이 보류한 세 번째는 검사하지 않음
+
+
+# --- 운영 기준 검사: 계산이 지원하지 않는 값은 분석 준비에서 보류 (이슈 #61, 계약 9절 Q5·Q6) ------
+
+_BASIS = EI.BaseDateResolution(
+    base_date=date(2026, 1, 10), run_date=date(2026, 1, 10),
+    inventory_limit=date(2026, 1, 10), order_limit=date(2026, 1, 10), late_sources=(),
+)  # fmt: skip
+
+
+def _patch_engine(monkeypatch, snap, *, hold=None):
+    """엔진 모듈을 가짜로 바꾼다. build 는 snap 을 돌려주거나 hold 를 던지고, 부른 순서를 돌려준다."""
+
+    class Hold(Exception):
+        def __init__(self, code, message):
+            super().__init__(message)
+            self.code, self.message = code, message
+
+    calls = []
+
+    def build(*args, **kwargs):
+        calls.append("build")
+        if hold is not None:
+            raise Hold(*hold)
+        return snap
+
+    def analyze(built):
+        calls.append("analyze")
+        return {"analysis": 1}
+
+    modules = {
+        "snapshot": SimpleNamespace(build=build, Hold=Hold),
+        "pipeline": SimpleNamespace(analyze=analyze),
+    }
+    monkeypatch.setattr(EI, "load_engine_module", modules.__getitem__)
+    monkeypatch.setattr(EI, "_calendar", lambda: "CAL")
+    monkeypatch.setattr(EI, "resolve_base_date", lambda store, cid, t: _BASIS)
+    return calls
+
+
+def _build(engine):
+    return EI._build_and_analyze(
+        engine.store, COMPANY, _run_input("AT_SEA", date(2026, 1, 20))
+    )
+
+
+def test_business_day_lead_time_holds_before_engine_calculation(monkeypatch):
+    # 엔진은 day_basis 를 보지 않고 3영업일을 달력일 3일로 계산한다. 계산하기 전에 보류로 멈춘다
+    engine = _fake_engine(
+        air_kr=_lead("AIR_TRANSIT", W_KR, 3, "WEST", basis="BUSINESS_DAY")
+    ).engine
+    calls = _patch_engine(monkeypatch, engine.snap)
+
+    built = _build(engine)
+
+    assert isinstance(built, EI.EngineHold), built
+    assert built.code == "REQUIRED_DATA_INVALID"
+    assert calls == ["build"]  # 엔진 계산(pipeline.analyze)은 하지 않는다
+
+
+def _unsupported(engine):
+    return OR.unsupported_operating_rules(engine.store, engine.snap)
+
+
+def _add_lead_rows(engine, *rows, first=False):
+    """운영 기준 리드타임 표에 행을 더한다. first 면 맨 앞에(엔진이 먼저 만나는 행)."""
+    table = engine.store.t["operating_lead_times"]
+    table[:] = [*rows, *table] if first else [*table, *rows]
+
+
+def test_supported_operating_rules_pass_and_engine_calculates(monkeypatch):
+    engine = _fake_engine().engine
+    calls = _patch_engine(monkeypatch, engine.snap)
+
+    assert _unsupported(engine) is None
+    assert _build(engine) == (engine.snap, {"analysis": 1}, _BASIS)
+    assert calls == ["build", "analyze"]
+
+
+@pytest.mark.parametrize("days", [14, 27, 29, 35])
+def test_sales_basis_days_other_than_28_holds(days):
+    # 계약 9절 Q6: 엔진은 무조건 28일로 센다. 28보다 크든 작든 막는다
+    engine = _fake_engine().engine
+    engine.snap["basis_days"] = days
+
+    assert _unsupported(engine) == (
+        f"운영 기준 버전 3: 판매 기준 일수 {days}(계산은 28일만 지원)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "row", "label"),
+    [
+        ("oh_dest", ("OUTBOUND_HANDLING", W_DEST, 1), "OUTBOUND_HANDLING WH-WEST"),
+        ("cd_same", ("CUSTOMER_DELIVERY", W_DEST, 2, "WEST"), "CUSTOMER_DELIVERY WH-WEST→WEST"),
+        ("oh_donor", ("OUTBOUND_HANDLING", W_DONOR, 1), "OUTBOUND_HANDLING WH-EAST"),
+        ("cd_cross", ("CUSTOMER_DELIVERY", W_DONOR, 4, "WEST"), "CUSTOMER_DELIVERY WH-EAST→WEST"),
+        ("oh_kr", ("OUTBOUND_HANDLING", W_KR, 1), "OUTBOUND_HANDLING KR-ORIGIN"),
+        ("air_kr", ("AIR_TRANSIT", W_KR, 3, "WEST"), "AIR_TRANSIT KR-ORIGIN→WEST"),
+        ("inbound_dest", ("INBOUND_HANDLING", W_DEST, 1), "INBOUND_HANDLING WH-WEST"),
+    ],
+)  # fmt: skip
+def test_each_lead_time_the_engine_reads_holds_when_business_day(key, row, label):
+    engine = _fake_engine(**{key: _lead(*row, basis="BUSINESS_DAY")}).engine
+
+    assert _unsupported(engine) == (
+        f"운영 기준 버전 3: 리드타임 {label} BUSINESS_DAY(계산은 CALENDAR_DAY만 지원)"
+    )
+
+
+def test_rows_the_engine_does_not_read_do_not_hold():
+    # 이 실행의 계산에 쓰이지 않는 행: 다른 창고, 다른 도착 권역, 다른 운영 기준 버전, 다른 고객사
+    engine = _fake_engine().engine
+    other_wh, other_rule, other_company = (str(uuid.UUID(int=i)) for i in (4, 22, 32))
+    business = lambda *a: _lead(*a, basis="BUSINESS_DAY")
+    _add_lead_rows(
+        engine,
+        business("OUTBOUND_HANDLING", other_wh, 1),
+        business("CUSTOMER_DELIVERY", W_DEST, 2, "EAST"),
+        business("AIR_TRANSIT", W_KR, 3, "EAST"),
+        {**business("OUTBOUND_HANDLING", W_DEST, 1), "operating_rule_set_id": other_rule},
+        {**business("INBOUND_HANDLING", W_DEST, 1), "company_id": other_company},
+        first=True,
+    )  # fmt: skip
+
+    assert _unsupported(engine) is None
+
+
+def test_only_the_row_the_engine_picks_among_duplicates_counts():
+    # to_region_code 가 없는 종류는 같은 창고 행이 둘일 수 있다. 엔진은 첫 행(store.lead_days),
+    # CUSTOMER_DELIVERY 는 마지막으로 맞은 행을 쓴다. 엔진이 쓰지 않는 쪽은 막지 않는다
+    unused = _fake_engine().engine
+    _add_lead_rows(unused, _lead("OUTBOUND_HANDLING", W_DEST, 1, basis="BUSINESS_DAY"))
+    _add_lead_rows(
+        unused, _lead("CUSTOMER_DELIVERY", W_DEST, 2, "WEST", basis="BUSINESS_DAY"), first=True
+    )  # fmt: skip
+    assert _unsupported(unused) is None
+
+    used = _fake_engine().engine
+    _add_lead_rows(
+        used, _lead("OUTBOUND_HANDLING", W_DEST, 1, basis="BUSINESS_DAY"), first=True
+    )
+    _add_lead_rows(
+        used, _lead("CUSTOMER_DELIVERY", W_DEST, 2, "WEST", basis="BUSINESS_DAY")
+    )
+    assert _unsupported(used) == (
+        "운영 기준 버전 3: 리드타임 OUTBOUND_HANDLING WH-WEST BUSINESS_DAY"
+        "·CUSTOMER_DELIVERY WH-WEST→WEST BUSINESS_DAY(계산은 CALENDAR_DAY만 지원)"
+    )
+
+
+def test_missing_lead_time_row_is_not_this_checks_job():
+    # 없는 행은 엔진(도착 창고 출고 처리·고객 배송 → 보류)과 대응안(MISSING_OPERATING_RULE)이 다룬다
+    assert _unsupported(_fake_engine(oh_kr=None, air_kr=None).engine) is None
+
+
+def test_all_unsupported_values_are_listed_in_one_message_in_fixed_order():
+    engine = _fake_engine(
+        air_kr=_lead("AIR_TRANSIT", W_KR, 3, "WEST", basis="BUSINESS_DAY"),
+        oh_dest=_lead("OUTBOUND_HANDLING", W_DEST, 1, basis="BUSINESS_DAY"),
+    ).engine
+    engine.snap["basis_days"] = 14
+    engine.store.t[
+        "operating_lead_times"
+    ].reverse()  # 표의 행 순서와 상관없이 정해진 순서
+
+    assert _unsupported(engine) == (
+        "운영 기준 버전 3: 판매 기준 일수 14(계산은 28일만 지원),"
+        " 리드타임 OUTBOUND_HANDLING WH-WEST BUSINESS_DAY·AIR_TRANSIT KR-ORIGIN→WEST BUSINESS_DAY"
+        "(계산은 CALENDAR_DAY만 지원)"
+    )
+
+
+def test_unknown_day_basis_value_also_holds():
+    # DDL 은 두 값만 받지만, 달력일이라고 확인된 행만 계산에 쓴다
+    engine = _fake_engine(
+        inbound_dest=_lead("INBOUND_HANDLING", W_DEST, 1, basis="WORKING_DAY")
+    ).engine
+
+    assert _unsupported(engine) == (
+        "운영 기준 버전 3: 리드타임 INBOUND_HANDLING WH-WEST WORKING_DAY(계산은 CALENDAR_DAY만 지원)"
+    )
+
+
+def test_engine_hold_comes_before_operating_rule_hold(monkeypatch):
+    engine = _fake_engine(
+        oh_dest=_lead("OUTBOUND_HANDLING", W_DEST, 1, basis="BUSINESS_DAY")
+    ).engine
+    calls = _patch_engine(
+        monkeypatch, engine.snap, hold=("MISSING_REQUIRED_DATA", "행사 일정 없음")
+    )
+
+    assert _build(engine) == EI.EngineHold("MISSING_REQUIRED_DATA", "행사 일정 없음")
+    assert calls == ["build"]
+
+
+def test_operating_rule_hold_makes_a_valid_on_hold_failure_summary(monkeypatch):
+    # 분석 준비 노드는 보류를 hold_summary(code, message)로 바꾼다. 새 보류도 보류 코드·DDL 규칙에 맞는다
+    engine = _fake_engine(
+        cd_same=_lead("CUSTOMER_DELIVERY", W_DEST, 2, "WEST", basis="BUSINESS_DAY")
+    ).engine
+    engine.snap["basis_days"] = 14
+    _patch_engine(monkeypatch, engine.snap)
+
+    built = _build(engine)
+    summary = hold_summary(built.code, built.message)
+
+    assert built.code in HOLD_CODES
+    assert (summary.status, summary.failed_step, summary.failure_code) == (
+        AnalysisOutcome.ON_HOLD, AnalysisStep.VALIDATING, "REQUIRED_DATA_INVALID")  # fmt: skip
+    assert (summary.attempt_count, summary.retry_exhausted) == (1, False)
+    assert (
+        summary.failure_message
+        == built.message
+        == (
+            "운영 기준 버전 3: 판매 기준 일수 14(계산은 28일만 지원),"
+            " 리드타임 CUSTOMER_DELIVERY WH-WEST→WEST BUSINESS_DAY(계산은 CALENDAR_DAY만 지원)"
+        )
+    )
 
 
 async def test_run_not_visible_tells_to_check_worker_session_and_active_company(
@@ -677,6 +917,59 @@ async def test_run_before_next_days_collections_uses_last_data_day(
             built.store, EI._calendar(), str(built.shipment_id), basis.run_date, built.confirm_t,
             stage=built.snap["stage"], E=built.snap["E"].isoformat(),
         )  # fmt: skip
+
+
+_SET_AIR_DAY_BASIS = text(
+    "UPDATE operating_lead_times SET day_basis = 'BUSINESS_DAY'"
+    " WHERE company_id = :company_id AND lead_time_type = 'AIR_TRANSIT'"
+    " AND (to_region_code = :region) = :same_region"
+)
+_SET_SALES_BASIS_DAYS = text(
+    "UPDATE operating_rule_sets SET sales_basis_days = 14 WHERE company_id = :company_id"
+)
+_DEST_REGION = text(
+    "SELECT w.region_code FROM shipments s"
+    " JOIN warehouses w ON w.company_id = s.company_id AND w.warehouse_id = s.warehouse_id"
+    " WHERE s.shipment_id = :shipment_id"
+)
+
+
+async def test_unsupported_operating_rules_in_db_hold_the_run(
+    db_write_session, engine_dir
+):
+    # 실제 엔진·개발 DB. READY 실행의 운영 기준을 트랜잭션 안에서 바꾼다(시험이 끝나면 롤백).
+    # 엔진 저장소 캐시는 (고객사, 입력 순번) 열쇠라 DB 를 바꾼 뒤에는 비워야 새로 읽는다
+    db = db_write_session
+    run = _by_code(await _runs(db, "A_BEAUTY"), "AN-260101-002")
+    shipment_id = (await EI._run_input(db, run)).shipment_id
+    region = await db.scalar(_DEST_REGION, {"shipment_id": shipment_id})
+    params = {"company_id": run.company_id, "region": region}
+
+    # ① 이 실행이 읽지 않는 행(다른 도착 권역 항공)만 영업일: 보류하지 않고 저장된 판정과 같다
+    changed = await db.execute(_SET_AIR_DAY_BASIS, {**params, "same_region": False})
+    assert changed.rowcount >= 1
+    built = await EI.build_engine_input(db, run)
+    assert isinstance(built, EI.EngineInput), built
+    assert (
+        EI.decision_of(built).decision_signature_sha256 == run.decision_signature_sha256
+    )
+    kr_code = built.snap["kr"]["warehouse_code"]
+    version = built.snap["rule"]["version_no"]
+
+    # ② 이 실행이 읽는 행(도착 권역 항공)을 영업일로, 판매 기준을 14일로: 계산 전에 보류
+    changed = await db.execute(_SET_AIR_DAY_BASIS, {**params, "same_region": True})
+    assert changed.rowcount == 1
+    assert (await db.execute(_SET_SALES_BASIS_DAYS, params)).rowcount == 1
+    engine_store_cache().clear()
+    held = await EI.build_engine_input(db, run)
+
+    assert held == EI.EngineHold(
+        code="REQUIRED_DATA_INVALID",
+        message=(
+            f"운영 기준 버전 {version}: 판매 기준 일수 14(계산은 28일만 지원),"
+            f" 리드타임 AIR_TRANSIT {kr_code}→{region} BUSINESS_DAY(계산은 CALENDAR_DAY만 지원)"
+        ),
+    )
 
 
 # --- 정답 대조: overlay 실행 21건 (선택 실행) ---------------------------------------------------
