@@ -47,6 +47,6 @@
 - 시험 헬퍼에서 `await`를 생성식 안에 넣어 풀기에 실패했습니다 → 목록으로 바꿨습니다.
 
 ## 6. 남은 일
-- A 확인: `expected_plan_simulation` 형식이 T10 구현과 맞는지
+- ~~A 확인: `expected_plan_simulation` 형식이 T10 구현과 맞는지~~ → 맞음. T10(GLOW-133)이 이 형식 그대로 읽습니다(`docs/analysis/option-outcomes.md` 2절)
 - 엔진 입력 캐시(고객사당 저장소 읽기 약 9.5초)
 - 입력 검증(GLOW-100): 약속 시각이 날짜 끝이 아닌 주문(4.1절), `BUSINESS_DAY` 리드타임
