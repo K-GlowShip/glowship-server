@@ -279,16 +279,16 @@ class ManualSyncService:
             )
 
     async def run_until_midnight(self, tenant: TenantContext, first: TickTicket) -> int:
-        """데모의 다음 날로: 첫 tick 을 적용한 뒤 다음 자정 tick 까지 이어서 진행한다. 진행한 tick 수"""
+        """
+        데모의 다음 날로: 첫 tick 을 적용한 뒤 다음 자정 tick 까지 이어서 진행한다. 진행한 tick 수.
+        한 tick 의 다섯 원천이 모두 실패하면 멈춘다. 다음 tick 시각은 마지막 적재 수집 기준(next_tick_at)이라
+        전부 실패한 tick 뒤에는 같은 tick 을 다시 정해 끝나지 않기 때문이다(PR #91 리뷰). 빠진 구간은 다음 누름이 다시 받는다.
+        """
         target = next_midnight(first.plan.at)
         ticket = first
-        await self.run_tick(ticket)
         count = 1
-        while ticket.plan.at < target:
-            ticket = await self.request_tick(tenant)
-            await self.run_tick(ticket)
-            count += 1
-        return count
+        if not any(await self.run_tick(ticket)):
+            return count
         while ticket.plan.at < target:
             ticket = await self.request_tick(tenant)
             count += 1

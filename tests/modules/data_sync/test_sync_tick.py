@@ -107,7 +107,7 @@ async def test_run_until_midnight_runs_ticks_up_to_the_midnight_tick(monkeypatch
 
     async def run_tick(t):
         ran.append(t.plan.at)
-        return []
+        return [object()]  # 적재된 원천이 있음
 
     monkeypatch.setattr(service, "request_tick", request_tick)
     monkeypatch.setattr(service, "run_tick", run_tick)
@@ -118,3 +118,46 @@ async def test_run_until_midnight_runs_ticks_up_to_the_midnight_tick(monkeypatch
     assert ran[0] == _t("2026-07-02T23:30:00Z") and ran[-1] == _t(
         "2026-07-03T00:00:00Z"
     )
+
+
+@pytest.mark.parametrize(
+    ("first_fails", "expected_count"),
+    [
+        (False, 2),  # 두 번째 tick 의 원천이 모두 실패 → 거기서 멈춤
+        (True, 1),  # 첫 tick 부터 모두 실패
+    ],
+)
+async def test_run_until_midnight_stops_when_every_source_of_a_tick_fails(
+    monkeypatch, first_fails, expected_count
+):
+    # 전부 실패한 tick 은 마지막 적재 수집이 움직이지 않아 request_tick 이 같은 tick 을 다시 정한다(PR #91 리뷰 재현).
+    # 멈추지 않으면 이 시험은 끝나지 않으므로 호출 수 상한으로 막는다.
+    service = ManualSyncService(
+        open_session=None, virtual_start=START, load_scenario=lambda: None
+    )
+    stuck = _t("2026-07-02T08:10:00Z")
+    calls = {"n": 0}
+
+    def ticket(at):
+        return TickTicket(
+            plan=TickPlan(at=at, windows={}), started=(), company_code="A"
+        )
+
+    async def request_tick(tenant):
+        return ticket(stuck)
+
+    async def run_tick(t):
+        calls["n"] += 1
+        assert calls["n"] <= 3, "모두 실패한 tick 뒤에도 계속 반복함"
+        if calls["n"] == 1 and not first_fails:
+            return [object()] * len(TICK_ORDER)
+        return [None] * len(TICK_ORDER)
+
+    monkeypatch.setattr(service, "request_tick", request_tick)
+    monkeypatch.setattr(service, "run_tick", run_tick)
+
+    first = ticket(_t("2026-07-02T08:00:00Z") if not first_fails else stuck)
+    count = await service.run_until_midnight(None, first)
+
+    assert count == expected_count
+    assert calls["n"] == expected_count
