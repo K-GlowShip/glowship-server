@@ -40,13 +40,16 @@ from app.modules.delay_analysis.application.agent.tools.validation_schemas impor
     ValidateAgentOutputInput,
 )
 from app.modules.delay_analysis.infrastructure.engine import explanation_assets as XA
-from app.modules.delay_analysis.infrastructure.engine.engine_input import EngineInput
+from app.modules.delay_analysis.infrastructure.engine.engine_input import (
+    BaseDateResolution,
+    EngineInput,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
 
 """
-    설명 생성을 그래프 실행 묶음에 잇는 감싸기 (GLOW-127 후속, DV3-3 해소, docs/agent-flow/explanation.md 2절)
+    설명 생성을 그래프 실행 묶음에 잇는 감싸기 (GLOW-127 후속, docs/agent-flow/explanation.md 2절)
       1. make_explainer()(ctx, now) = generate_explanation 을 ctx.engine 값으로 직접 부른 결과
       2. 지연 선적 코드는 엔진 저장소 선적 표에서. 실행 ID 가 어긋나거나 코드가 없으면 모델을 부르기 전에 연결 오류
       3. 추적은 설명 시도 기록을 받는 추적기에만(도구 시도만 받는 추적기면 건너뜀)
@@ -86,6 +89,13 @@ def engine_input(engine, monkeypatch):
         delay_event_id=uuid.UUID(int=7),
         shipment_id=SHIPMENT_ID,
         base_date=date(2026, 3, 10),
+        base_date_resolution=BaseDateResolution(
+            base_date=date(2026, 3, 10),
+            run_date=date(2026, 3, 10),
+            inventory_limit=None,
+            order_limit=None,
+            late_sources=(),
+        ),
         input_seq=1,
         confirm_t="2026-03-10T00:00:00Z",
         snap=snap,

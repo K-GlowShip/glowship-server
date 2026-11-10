@@ -600,7 +600,7 @@ async def _check_tools(engine: EI.EngineInput, run: AnalysisRun) -> None:
             t.quantity / 28
             == snap["mu_ch"][(wh_id[t.warehouse_code], t.sku_code, t.sales_channel)]
         )
-    # 개발 3 요청: T8 skus[] 가 영향·관찰·선적 SKU 를 모두 담는다
+    # 설명·대응안 쪽 요청: T8 skus[] 가 영향·관찰·선적 SKU 를 모두 담는다
     t8_codes = {s.sku_code for s in t8.skus}
     assert (
         set(analysis.get("k_imp") or [])
@@ -648,7 +648,7 @@ async def test_reanalysis_without_trigger_uses_latest_observation(
 async def test_run_before_next_days_collections_uses_last_data_day(
     db_session, engine_dir
 ):
-    # ⑫ 데모 상황 재현(#51, PR #56 검증 PV2-6): 같은 실행을 다음 날 00:05Z 에 만든 것으로 바꾼다.
+    # ⑫ 데모 상황 재현(#51, PR #56 검증): 같은 실행을 다음 날 00:05Z 에 만든 것으로 바꾼다.
     #    입력 순번·트리거는 그대로라 다음 날 수집(00:02Z 시작)은 입력에 없고 엔진이 보는 자료는 같다(= 그날 자료가 입력에 들어오기 전 실행). 새 규칙은 D 를 마지막 자료 날(원래 D)로 당겨 보류 없이
     #    같은 판정 서명을 내고, 옛 규칙(D = 실행 날짜)은 엔진이 보류한다(음성 대조)
     runs = await _runs(db_session, "A_BEAUTY")

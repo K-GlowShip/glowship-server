@@ -42,7 +42,7 @@ async def generate_explanation(*, snap, analysis, analysis_run_id: str, shipment
                                now: datetime, adapter=None, tracer=None) -> ExplanationPassed | ExplanationFailed
 ```
 
-- **`snap`·`analysis`:** 엔진 입력 스냅샷과 `pipeline.analyze` 결과입니다. GLOW-125 `EngineInput.snap`·`analysis`를 그대로 넘깁니다. 그래프는 이 함수를 직접 부르지 않고, 아래 감싸기 `make_explainer()`가 만든 `explain(ctx, now)`를 부릅니다(2.1절, 11-08 DV3-3 해소).
+- **`snap`·`analysis`:** 엔진 입력 스냅샷과 `pipeline.analyze` 결과입니다. GLOW-125 `EngineInput.snap`·`analysis`를 그대로 넘깁니다. 그래프는 이 함수를 직접 부르지 않고, 아래 감싸기 `make_explainer()`가 만든 `explain(ctx, now)`를 부릅니다(2.1절, 11-08).
 - **`shipment_code`:** 설명 첫 문장의 지연 선적 코드입니다. 엔진 하네스는 저장소의 선적 표에서 꺼냅니다. 서버도 GLOW-125 `EngineInput.store`의 선적 표 `store.ships[str(shipment_id)]["shipment_code"]`에서 꺼냅니다(엔진 하네스와 같음, 열쇠는 문자열 ID, `delayed_shipment_code`).
 - **`adapter`:** 기본은 엔진 `MockAdapter`입니다(라벨은 해시를 대조한 자산에서 읽음). 실제 외부 모델 호출은 승인되지 않았고, 엔진 `ExternalModelAdapter`는 부르면 거부합니다. 모델을 바꿀 때는 이 자리에 같은 `complete(prompt, request)` 모양의 어댑터를 넣고, 자산 등록부에 모델 설정을 등록합니다.
 

@@ -31,7 +31,7 @@ def option_differences(
 ) -> list[str]:
     """
     T10·T11 출력이 엔진 판정 서명(analysis["signature"])과 다른 곳. 빈 목록이면 같다.
-    판정 서명은 엔진 결과로 만들어지므로(개발 1 decision_of), 대응안 도구(A 의 순수 함수) 결과가 다르면
+    판정 서명은 엔진 결과로 만들어지므로(엔진 입력 decision_of), 대응안 도구(A 의 순수 함수) 결과가 다르면
     화면에 보일 값과 STALE 판정 서명이 어긋난다(인터페이스 문서 2절, 최종 분담안 v2).
     """
     signature = analysis["signature"]
@@ -60,7 +60,7 @@ async def compare_node(state: AnalysisState, config: RunnableConfig) -> dict:
     대응안 비교 노드 (agentflow 5.3, 인터페이스 문서 2절)
       - T10 대응안 결과에서 순위에 쓰는 값만 골라(계약 7절) T11 로 추천 순위를 매깁니다.
       - T10·T11 출력을 엔진 판정 서명과 대조해 다르면 FAILED(UNEXPECTED_TOOL_ERROR)로 멈춥니다.
-      - 같으면 판정 서명·의존 범위를 만듭니다(개발 1 decision_of, 결정 2). 설명이 판정 서명 SHA-256 을 쓰므로 설명보다 먼저입니다.
+      - 같으면 판정 서명·의존 범위를 만듭니다(엔진 입력 decision_of, 결정 2). 설명이 판정 서명 SHA-256 을 쓰므로 설명보다 먼저입니다.
       - 실패 단계는 VALIDATING_OUTPUT(비교·설명·결과 검증, 인터페이스 5절).
     """
     runtime = runtime_of(config)
