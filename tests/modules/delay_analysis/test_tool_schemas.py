@@ -652,6 +652,7 @@ _LINE = (*_PENDING, "lines", 0)
     ("label", "change"),
     [
         ("확보일 한 자리 월", _set((*_PENDING, "secured_date"), "2026-1-9")),
+        ("확보일 없는 날짜", _set((*_PENDING, "secured_date"), "2026-02-30")),
         ("확보일 시각", _set((*_PENDING, "secured_date"), "2026-01-09T00:00:00Z")),
         ("확보일 없음", _set((*_PENDING, "secured_date"), _DROP)),
         ("줄 수량 문자열", _set((*_LINE, "quantity"), "2")),

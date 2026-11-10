@@ -235,7 +235,10 @@ def test_kr_air_runs_the_shared_allocator_from_d():
 
 
 def test_pending_dispatch_goes_to_the_allocator_as_engine_json():
-    """T5 출고 대기 주문(모델)은 엔진 restore.carry 모양 그대로(확보일 = 문자열) 첫날 입력에 들어가고, 그 확보일이 결과에 쓰인다."""
+    """T5 출고 대기 주문(모델)은 엔진 restore.carry 모양 그대로(확보일 = 문자열) 첫날 입력에 들어가고, 그 확보일이 결과에 쓰인다.
+
+    입력은 _input() 을 고쳐 O1 을 D−1 확보로 옮긴 것이라 T7 위험 주문(O1 미확보)과는 맞지 않는다.
+    배정 모듈에 넘기는 모양과 확보일 사용만 보는 시험이다(대응안별 결과 수치는 다른 시험)."""
     body = _input().model_dump(mode="json")
     dest = body["open_orders"]["allocation_state"][1]
     assert dest["warehouse_code"] == "WH-W"
