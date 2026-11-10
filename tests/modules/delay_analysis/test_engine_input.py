@@ -596,6 +596,13 @@ def test_rows_the_engine_does_not_read_do_not_hold():
         {**business("INBOUND_HANDLING", W_DEST, 1), "company_id": other_company},
         first=True,
     )  # fmt: skip
+    # 고객 배송은 엔진이 조건에 맞는 마지막 행을 쓴다. 다른 권역 행을 맨 뒤에도 두어야
+    # 권역 조건을 빠뜨린 고르기(그 창고의 마지막 고객 배송 행)를 잡는다
+    _add_lead_rows(
+        engine,
+        business("CUSTOMER_DELIVERY", W_DEST, 2, "EAST"),
+        business("CUSTOMER_DELIVERY", W_DONOR, 4, "EAST"),
+    )
 
     assert _unsupported(engine) is None
 
