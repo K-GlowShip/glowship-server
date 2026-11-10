@@ -13,7 +13,7 @@
 | 목록 | 파일 | 개수 | 담는 것 | 대조하는 곳 |
 | --- | --- | --- | --- | --- |
 | 런타임 목록 | `app/modules/delay_analysis/infrastructure/engine/engine_manifest.json` | 32 | 서버가 실행할 때 쓰는 파일: 엔진 모듈, 설명 자산, 달력 설정, `synth2025_v5/allocation_core.py` | 서버 시작 확인, 분석, 데모 시드(`load_verified_engine_dir`) |
-| 시험 목록 | `tests/modules/delay_analysis/engine_test_manifest.json` | 12 | 시험에서만 쓰는 파일: `glowship_engine/tests/`(자체 시험 4, fixture 3, 금지 표현 사례 2, `__init__.py`), `synth2025_v5/tests/`(판정 실행기 2) | 시험 쪽 도우미(`engine_test_modules.py`) |
+| 시험 목록 | `tests/modules/delay_analysis/engine_test_manifest.json` | 12 | 시험에서만 쓰는 파일: `glowship_engine/tests/`(자체 시험 4, fixture 3, 금지 표현 사례 2, `__init__.py`), `synth2025_v5/tests/`(판정 실행기 `run_g2.py`와 그 정답 사례 `golden_cases.py`) | 시험 쪽 도우미(`engine_test_modules.py`) |
 
 - 시험 목록은 저장소 `tests/` 아래에 있어 배포 이미지에 들어가지 않습니다(`.dockerignore`). 서버 코드는 시험 목록을 읽지 않습니다.
 

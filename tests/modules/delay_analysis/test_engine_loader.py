@@ -288,6 +288,8 @@ def test_changed_or_missing_engine_test_file_stops_every_test_file(fake_engine, 
     error = by_module.value
     found = error.mismatched if damage == "changed" else error.missing
     assert found == ["glowship_engine/tests/fixture_x.py"]
+    # 대조가 먼저다. 대조에서 멈췄으면 바뀐 파일의 코드는 실행되지 않았다
+    assert "glowship_engine.tests.fixture_x" not in sys.modules
 
 
 def test_engine_test_helper_checks_runtime_manifest_first(fake_engine):
@@ -297,6 +299,8 @@ def test_engine_test_helper_checks_runtime_manifest_first(fake_engine):
         load_engine_test_module("fixture_x")
 
     assert error.value.mismatched == ["glowship_engine/core.py"]
+    # 대조에서 멈춰 가짜 엔진의 어떤 모듈도 불러오지 않았다
+    assert _engine_modules() == {}
 
 
 def test_engine_test_helper_refuses_files_outside_test_manifest(fake_engine):
