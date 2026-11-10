@@ -250,7 +250,7 @@ async def get_sales_history(ctx: EngineToolContext, payload: None) -> SalesHisto
 
 
 def _allocation_state(snap: dict[str, Any]) -> list[dict[str, Any]]:
-    """D−1 배정 하루 재생 결과(엔진 ReplayReservationSource.restore). 형식은 계약 3.5절(9절 Q12를 이 작업에서 채움).
+    """D−1 배정 하루 재생 결과(엔진 ReplayReservationSource.restore). 형식은 계약 3.5절 표, 모델은 AllocationState(9절 Q12).
 
     엔진 주문 층(core.simulate_orders)이 읽는 값을 엔진 모양 그대로 둔다: 확보 뒤 출고 대기(carry)와 대기 주문 코드.
     보호·확보 수량은 SKU 코드 순 배열로 바꾼다."""

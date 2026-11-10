@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 
@@ -23,7 +23,8 @@ from app.modules.shipment.infrastructure.shipment_enums import (
     조회 도구 T1~T5·T8 출력 = 분석 입력 스냅샷 (docs/agent-flow/tool-contracts.md 3절)
       - 모든 조회는 실행의 입력 순번(input_seq) 이하로 적용된 수집이 적재한 값만 읽는다(1절 "입력 기준").
       - 배열 정렬 키는 각 클래스 설명에 적었다(문서 표의 "배열(`키`)"). 정렬은 도구가 맞추고, 모델은 검사하지 않는다.
-      - T5 allocation_state 의 필드 형식은 엔진 연결 작업에서 정한다(9절 Q1·Q12). 지금은 자리만 둔다.
+      - T5 allocation_state 는 엔진 배정 재생 결과를 엔진 모양 그대로 형식 모델로 받는다(3.5절, 9절 Q12).
+        T10 이 출고 대기 주문을 엔진에 넘길 때는 model_dump(mode="json") 으로 되돌린다(날짜 → YYYY-MM-DD).
 """
 
 
@@ -203,12 +204,39 @@ class OpenOrder(ToolModel):
     lines: list[OpenOrderLine]
 
 
+class PendingDispatchLine(ToolModel):
+    """정렬: line_no. 엔진은 남은 수량이 있는 줄만 넣는다(allocation_core 출고 대기)."""
+
+    line_no: StrictInt
+    sku_code: StrictStr
+    quantity: StrictInt = Field(ge=1)
+
+
+class PendingDispatch(ToolModel):
+    """D−1에 확보되어 출고를 기다리는 주문(엔진 restore.carry). 정렬: order_code"""
+
+    order_code: StrictStr
+    secured_date: ToolDate
+    lines: list[PendingDispatchLine]
+
+
+class AllocationState(ToolModel):
+    """창고 하나의 D−1 배정 하루 재생 결과(엔진 restore[wh]). 정렬: warehouse_code"""
+
+    warehouse_code: StrictStr
+    replay_result_sha256: Sha256Hex
+    pending_dispatch: list[PendingDispatch]
+    # 확보하지 못하고 기다리는 주문(restore.waiting). 정렬: 코드
+    waiting_order_codes: UniqueCodes
+    blocked_order_protection: list[SkuQuantity]
+    secured_waiting_for_dispatch: list[SkuQuantity]
+
+
 class OpenOrders(ToolModel):
     """T5 출력"""
 
     orders: list[OpenOrder]
-    # D−1 배정 하루 재생 결과(창고별). 형식은 엔진 연결 작업에서 정한다(9절 Q1·Q12).
-    allocation_state: list[dict[str, Any]]
+    allocation_state: list[AllocationState]
 
 
 # --- T8 get_operating_rules ----------------------------------------------------------------------

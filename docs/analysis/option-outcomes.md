@@ -35,7 +35,7 @@
 | `ol.risks`·`h_end`·`simE` | T7 `risks[]`·`simulation_horizon_end`·`expected_plan_simulation` | 위험 주문, 계획 유지·다른 권역 출고의 확보 수량 |
 | 공급일 S, 긴급 항공 SKU, 사전 판정 | T9 `options[]` | 대응안별 분기 |
 
-- **이슈 #62 답(T5 `allocation_state` 형식):** 배정 다시 돌리기에는 `pending_dispatch[]`와 `waiting_order_codes[]`(+ T5 `orders[]`의 줄)로 충분합니다. `blocked_order_protection[]`·`secured_waiting_for_dispatch[]`·`replay_result_sha256`은 T10이 읽지 않습니다. 모델은 `list[dict]` 그대로 두었습니다(형식 모델로 바꿀지는 PR 리뷰에서 정함).
+- **이슈 #62 답(T5 `allocation_state` 형식):** 배정 다시 돌리기에는 `pending_dispatch[]`와 `waiting_order_codes[]`(+ T5 `orders[]`의 줄)로 충분합니다. `blocked_order_protection[]`·`secured_waiting_for_dispatch[]`·`replay_result_sha256`은 T10이 읽지 않습니다. 모델은 `list[dict]` 그대로 두었습니다(형식 모델로 바꿀지는 PR 리뷰에서 정함). → 실행 묶음 채우기(GLOW-128)에서 형식 모델(`AllocationState`)로 바꿈. T10은 모델 속성으로 읽고, 엔진에 넘기는 출고 대기 주문만 `model_dump(mode="json")`으로 되돌립니다(모드를 빼면 확보일이 `date`로 넘어가 배정 모듈이 결과 해시를 만들다 `TypeError`).
 - **`impact-tools.md` 6절 답(T7 `expected_plan_simulation` 형식):** 계획 유지와 다른 권역 출고가 읽는 값(위험 주문 확보일, 판정 기준일의 줄별 보호량)으로 충분합니다. 형식을 바꾸지 않았습니다.
 - 배정 입력의 고객사 코드는 자리 값(`T10`)입니다. 배정 모듈은 이 값을 범위 판정(모든 주문이 같은 고객사·창고인지)에만 쓰고, T10이 읽는 확보일·보호량에는 영향이 없습니다.
 
@@ -67,4 +67,4 @@
 
 ## 6. 남은 일
 - ~~실제 도구 교체(등록표에 가짜 T10 대신 이 함수를 `pure_tool`로)~~ — 실제 실행 묶음 `run_start/engine_runtime.py` `ENGINE_TOOLS`에 `pure_tool(calculate_option_outcomes)`로 등록함(GLOW-128 묶음 채우기)
-- T5 `allocation_state` 모델을 형식이 있는 모델로 바꿀지(이슈 #62 세 번째 항목, 9절 Q12)
+- ~~T5 `allocation_state` 모델을 형식이 있는 모델로 바꿀지(이슈 #62 세 번째 항목, 9절 Q12)~~ — 형식 모델로 바꿈(GLOW-128 묶음 채우기, 계약 3.5절 표)

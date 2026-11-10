@@ -234,6 +234,31 @@ def test_kr_air_runs_the_shared_allocator_from_d():
     )
 
 
+def test_pending_dispatch_goes_to_the_allocator_as_engine_json():
+    """T5 출고 대기 주문(모델)은 엔진 restore.carry 모양 그대로(확보일 = 문자열) 첫날 입력에 들어가고, 그 확보일이 결과에 쓰인다."""
+    body = _input().model_dump(mode="json")
+    dest = body["open_orders"]["allocation_state"][1]
+    assert dest["warehouse_code"] == "WH-W"
+    dest["pending_dispatch"] = [
+        {"order_code": "O1", "secured_date": "2026-03-09", "lines": [{"line_no": 1, "sku_code": "A", "quantity": 10}]}]  # fmt: skip
+    dest["waiting_order_codes"] = ["O2"]
+    data = CalculateOptionOutcomesInput.model_validate(body)
+    (pending,) = data.open_orders.allocation_state[1].pending_dispatch
+    assert pending.secured_date == date(2026, 3, 9)
+
+    simulate, calls = _allocator({})
+    kr = _options(calculate_option_outcomes(data, simulate))["KR_AIR_REPLENISH"]
+    ((first, _schedule),) = calls
+    assert first["pending_dispatch"] == dest["pending_dispatch"]
+    assert [o["order_code"] for o in first["orders"]] == ["O2"]
+    # O1 은 D−1 에 이미 확보 → 확보일 03-09 + 출고 1일 + 배송 2일 = 03-12 ≤ 약속 03-20
+    o1 = _lines(kr)[L1]
+    assert (o1.outcome, o1.expected_delivery_at) == (
+        "RECOVERED",
+        "2026-03-12T23:59:59Z",
+    )
+
+
 def test_other_region_fills_orders_from_the_donor_pool():
     simulate, _calls = _allocator({})
     other = _options(calculate_option_outcomes(_input(), simulate))[
