@@ -1,0 +1,246 @@
+name: Deploy Dev
+
+# develop 의 Test 워크플로가 성공하면 FastAPI 이미지를 빌드해 Amazon ECR 에 올리고(build-and-push), SSM 으로 EC2 에 배포한다(deploy).
+#
+# 흐름
+#   트리거:         develop 에서 Test 워크플로가 끝나면(workflow_run) 그 결론이 success 이고, 그 Test 가 "이 저장소의 develop 에
+#                   직접 push 된 커밋"에서 돈 것일 때만 진행한다. 테스트가 실패한 커밋은 배포하지 않는다.
+#                   `branches: [develop]` 은 Test 를 일으킨 브랜치 이름만 보므로, fork 의 develop 브랜치에서 연 PR 의 Test(pull_request)도
+#                   통과한다. 그래서 job 조건에서 event == push 와 head_repository == 이 저장소를 함께 확인한다(fork 코드 배포 차단).
+#                   수동 실행(workflow_dispatch)은 현재 develop 커밋을 배포한다.
+#   build-and-push: checkout(Test 가 검사한 커밋) → OIDC 로 AWS 역할 가정(비밀키 없음) → ECR 로그인 → docker build(Dockerfile) → push
+#   deploy:         scripts/deploy/deploy-dev.sh 를 SSM RunShellScript 로 EC2 에 보내 bash 로 실행 → 끝날 때까지 폴링 → 결과 로그 출력
+#                   (EC2 에 SSH 로 들어가지 않고, 스크립트를 미리 복사해 둘 필요도 없다)
+#
+# GitHub 저장소 Settings 에 미리 넣어야 하는 값
+#   Secrets  AWS_ROLE_ARN         Actions 가 가정할 IAM 역할 ARN (예: arn:aws:iam::123456789012:role/glowship-github-actions)
+#   Variables AWS_REGION          ECR·EC2 가 있는 리전 (예: ap-northeast-2)
+#   Variables ECR_REPOSITORY      ECR 저장소 이름 (예: glowship-server)
+#   Variables DEV_EC2_INSTANCE_ID dev 서버 EC2 인스턴스 ID (예: i-0123456789abcdef0)
+#   Variables IMAGE_PLATFORM      (선택) EC2 CPU 아키텍처. 기본 linux/amd64. Graviton(arm) 인스턴스면 linux/arm64
+#   Variables DEV_ENGINE_DIR      (선택) EC2 에 둔 분석 엔진 폴더 경로. 비우면 엔진 없이 배포(분석 기능 비활성)
+#   Environment dev               deploy job 이 사용. Deployment branches 를 develop 만으로 제한한다(아래 "저장소 설정" 참고)
+#
+# 저장소 설정 (관리자)
+#   - Environment dev 의 Deployment branches 를 "Selected branches: develop" 으로 제한한다. 신뢰 정책이 environment:dev 토큰을
+#     허용하므로, 제한이 없으면 아무 브랜치의 워크플로나 이 환경을 써서 역할을 가정할 수 있다.
+#   - develop 규칙 세트에 필수 상태 검사 pytest(Test 워크플로의 job 이름)를 넣어 실패한 PR 이 머지되지 않게 한다.
+#     이 워크플로의 workflow_run 조건은 그 설정이 빠졌을 때의 2차 방어다.
+#
+# AWS 쪽 준비 (한 번만)
+#   1. IAM > Identity providers 에 GitHub OIDC 공급자 추가: token.actions.githubusercontent.com, audience sts.amazonaws.com
+#   2. IAM 역할 생성. 신뢰 정책의 조건으로 이 저장소만 허용한다. sub 는 두 값을 모두 넣는다
+#      (build-and-push 는 브랜치 ref 로, deploy 는 environment 로 토큰이 발급된다. workflow_run 은 기본 브랜치(develop) 문맥으로 돈다):
+#        "repo:<조직>/<저장소>:ref:refs/heads/develop", "repo:<조직>/<저장소>:environment:dev"
+#      이 저장소는 OIDC 주체를 ID 포함 불변 형식으로 쓰도록 설정돼 있어 <조직>/<저장소> 자리가
+#      K-GlowShip@<조직 ID>/glowship-server@<저장소 ID> 모양이다 (gh api repos/<조직>/<저장소>/actions/oidc/customization/sub 로 확인).
+#      권한 정책:
+#        - ecr:GetAuthorizationToken (리소스 *)
+#        - 해당 ECR 저장소에 ecr:BatchCheckLayerAvailability, ecr:CompleteLayerUpload, ecr:InitiateLayerUpload,
+#          ecr:PutImage, ecr:UploadLayerPart, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer
+#        - ssm:SendCommand (리소스: 해당 EC2 인스턴스 ARN 과 arn:aws:ssm:<리전>::document/AWS-RunShellScript)
+#        - ssm:GetCommandInvocation (리소스 *)
+#   3. ECR 저장소 생성 (이름은 ECR_REPOSITORY 와 같게). 태그 불변(immutable)은 끄거나 dev-latest 태그 줄을 지운다.
+#   4. EC2 준비는 scripts/deploy/deploy-dev.sh 머리말 "EC2 준비" 참고 (SSM Agent, 인스턴스 역할, docker, 설정 파일)
+#
+# 이미지 태그
+#   <커밋 SHA>    롤백·추적용. 배포는 이 태그를 쓴다.
+#   dev-latest    사람이 최신 dev 이미지를 찾을 때용 (가변 태그)
+
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+
+# OIDC 토큰을 받으려면 id-token: write 가 필요하다. 나머지는 읽기만.
+permissions:
+  id-token: write
+  contents: read
+
+# 같은 브랜치의 배포가 겹치지 않게 한다. 진행 중인 배포는 취소하지 않는다(이미지 push 가 반쯤 된 상태를 피함).
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  # 배포할 커밋. workflow_run 이면 Test 가 검사한 커밋, 수동 실행이면 현재 커밋.
+  DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  build-and-push:
+    name: Build and push image to ECR
+    # Test 가 실패·취소된 커밋은 배포하지 않는다. 수동 실행은 그대로 진행한다.
+    # workflow_run 은 이 저장소 권한(비밀값·OIDC)으로 돌므로, Test 를 일으킨 것이 "이 저장소 develop 으로의 push" 일 때만 받는다.
+    # fork 에서 연 PR 의 Test(event == pull_request, head_repository 가 fork)가 성공해도 fork 코드를 배포하지 않게 하기 위해서다.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image name
+        id: meta
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          echo "image=${REGISTRY}/${REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${DEPLOY_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ vars.IMAGE_PLATFORM || 'linux/amd64' }}
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image }}:dev-latest
+          # 빌드 캐시를 GitHub Actions 캐시에 둬서 의존성 레이어를 매번 다시 설치하지 않는다.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed image"
+            echo '```'
+            echo "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.image_tag }}"
+            echo "${{ steps.meta.outputs.image }}:dev-latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to dev EC2 via SSM
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub Environment 를 쓰면 배포 이력이 남고, 필요하면 Settings > Environments 에서 승인자를 둘 수 있다.
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build SSM command parameters
+        # RunShellScript 의 commands 는 줄 배열이고 SSM 이 줄바꿈으로 이어 `sh` 로 실행한다. deploy-dev.sh 는 bash 전용 문법
+        # (배열·pipefail)을 쓰므로, 스크립트를 파일로 쓴 뒤(heredoc, 변수 확장 없음) 환경변수를 넣고 bash 로 실행한다.
+        # EC2 의 /bin/sh 가 bash 가 아니어도 동작한다. 값은 jq 가 JSON 과 셸 인용(@sh)으로 안전하게 감싼다.
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.image_tag }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ENGINE_DIR: ${{ vars.DEV_ENGINE_DIR }}
+        run: |
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg region "$AWS_REGION" \
+            --arg engine_dir "$ENGINE_DIR" \
+            --rawfile script scripts/deploy/deploy-dev.sh \
+            '{commands: [
+              "set -eu",
+              "script=\"$(mktemp /tmp/glowship-deploy-dev.XXXXXX)\"",
+              "cat > \"$script\" <<'"'"'__GLOWSHIP_DEPLOY_EOF__'"'"'",
+              $script,
+              "__GLOWSHIP_DEPLOY_EOF__",
+              ("export IMAGE=" + ($image | @sh)),
+              ("export AWS_REGION=" + ($region | @sh)),
+              ("export ENGINE_DIR=" + ($engine_dir | @sh)),
+              "status=0; bash \"$script\" || status=$?; rm -f \"$script\"; exit $status"
+            ]}' > ssm-params.json
+          echo "commands 줄 수: $(jq '.commands | length' ssm-params.json)"
+
+      - name: Send deploy command (SSM)
+        id: send
+        env:
+          INSTANCE_ID: ${{ vars.DEV_EC2_INSTANCE_ID }}
+        run: |
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "glowship-server deploy ${DEPLOY_SHA::7}" \
+            --timeout-seconds 600 \
+            --parameters file://ssm-params.json \
+            --query 'Command.CommandId' --output text)"
+          echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
+          echo "SSM CommandId: $command_id"
+
+      - name: Wait for command and show output
+        env:
+          INSTANCE_ID: ${{ vars.DEV_EC2_INSTANCE_ID }}
+          COMMAND_ID: ${{ steps.send.outputs.command_id }}
+          # send-command 의 --timeout-seconds(600) 와 맞춘다. aws ssm wait command-executed 는 최대 100초만 기다려서 쓰지 않는다.
+          WAIT_MAX_SECONDS: "660"
+          POLL_SECONDS: "10"
+        run: |
+          deadline=$(( $(date +%s) + WAIT_MAX_SECONDS ))
+          status="Pending"
+          while :; do
+            # 명령이 에이전트에 전달되기 전에는 InvocationDoesNotExist 가 날 수 있어 실패로 보지 않는다
+            if aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" > invocation.json 2>/dev/null; then
+              status="$(jq -r '.Status' invocation.json)"
+              case "$status" in
+                Pending|InProgress|Delayed) ;;
+                *) break ;;
+              esac
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::SSM 명령이 ${WAIT_MAX_SECONDS}초 안에 끝나지 않았습니다 (마지막 상태: ${status})"
+              break
+            fi
+            sleep "$POLL_SECONDS"
+          done
+
+          if [ -f invocation.json ]; then
+            echo "::group::deploy-dev.sh stdout"
+            jq -r '.StandardOutputContent' invocation.json
+            echo "::endgroup::"
+            echo "::group::deploy-dev.sh stderr"
+            jq -r '.StandardErrorContent' invocation.json
+            echo "::endgroup::"
+          fi
+
+          {
+            echo "### Deploy to dev"
+            echo "- commit: \`${DEPLOY_SHA::7}\`"
+            echo "- image: \`${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.image_tag }}\`"
+            echo "- SSM status: **${status}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" != "Success" ]; then
+            echo "::error::SSM 명령이 ${status} 로 끝났습니다"
+            exit 1
+          fi

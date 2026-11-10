@@ -12,6 +12,10 @@ from app.modules.decision.presentation.reanalysis_schemas import (
     ReanalysisCreateRequest,
     ReanalysisCreateResponse,
 )
+from app.modules.delay_analysis.application.run_start.app_runner import (
+    get_analysis_runner,
+)
+from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
 from app.modules.user.infrastructure.user_enums import UserRoleCode
 
 # Client 팀원·팀장용 재분석 요청 API. 고객사 범위는 로그인 토큰의 company_id 로 정한다.
@@ -61,12 +65,15 @@ async def request_reanalysis(
     _client=Depends(require_client),
     tenant: TenantContext = Depends(get_tenant_context),
     service: ReanalysisService = Depends(get_reanalysis_service),
+    runner: AnalysisRunner = Depends(get_analysis_runner),
 ) -> ReanalysisCreateResponse:
     result = await service.request(
         tenant,
         analysis_run_id=run_id,
         request_reason=request.request_reason if request else None,
     )
+    # 서비스가 새 실행을 커밋한 뒤 분석을 시작한다(자동 시작이 꺼져 있으면 DETECTED 그대로)
+    runner.start(tenant.company_id, result.run_id)
     return ReanalysisCreateResponse(
         run_id=result.run_id,
         version_no=result.version_no,

@@ -34,7 +34,7 @@ async def coordinator_node(state: AnalysisState, config: RunnableConfig) -> dict
                 GetDelayContextInput(
                     analysis_run_id=str(state["analysis_run_id"]),
                     delay_event_id=str(state["delay_event_id"]),
-                    base_date=runtime.base_date,
+                    base_date=runtime.ctx.base_date,
                     input_seq=runtime.input_seq,
                 ),
                 step=AnalysisStep.ANALYZING_IMPACT,

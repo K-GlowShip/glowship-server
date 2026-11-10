@@ -14,18 +14,25 @@ from app.core.rls_context import set_rls_context
 from app.modules.delay_analysis.infrastructure.engine.engine_input_store import (
     check_input_seq,
     engine_timestamp,
-    load_company_engine_store,
 )
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
     load_verified_engine_dir,
+)
+from app.modules.delay_analysis.infrastructure.engine.engine_operating_rules import (
+    UNSUPPORTED_RULE_HOLD_CODE,
+    unsupported_operating_rules,
+)
+from app.modules.delay_analysis.infrastructure.engine.engine_store_cache import (
+    get_company_engine_store,
 )
 
 """
     실행 하나의 엔진 입력 (GLOW-125 2부, docs/analysis/engine-input.md)
       - 엔진 하네스(run_s1_s5.analyze_run)와 같은 순서로 쓴다.
           1) judge_no_delay(session, run)   E ≤ P 면 NO_DELAY. 저장소를 읽기 전(가벼운 조회 두 개)
-          2) build_engine_input(session, run)   저장소(#36) → snapshot.build → pipeline.analyze. Hold 면 EngineHold
+          2) build_engine_input(session, run)   저장소(#36, 고객사·입력 순번 캐시 #60) → snapshot.build → 운영 기준 검사 → pipeline.analyze.
+             엔진 Hold 나 계산이 지원하지 않는 운영 기준(GLOW-100, engine_operating_rules)이면 EngineHold
           3) 도구 T1~T8 은 EngineInput.snap·analysis 에서 옮기기만 한다. decision_of 로 판정 서명·의존 범위를 꺼낸다
       - 엔진 계산(pipeline.analyze)은 실행마다 한 번, 만들 때 스레드에서 한다.
         처음 읽을 때 계산하면(동기 속성) 이벤트 루프가 그동안 멈추므로 미리 계산한다(사용자 결정 11-06).
@@ -55,7 +62,9 @@ class AnalysisRunLike(Protocol):
 
 @dataclass(frozen=True)
 class EngineHold:
-    """엔진 snapshot.Hold 를 서버 값으로 바꾼 것. 실행 ON_HOLD(VALIDATING) → hold_summary(code, message)"""
+    """입력 검증 보류: 엔진 snapshot.Hold 를 서버 값으로 바꾼 것, 또는 계산이 지원하지 않는 운영 기준.
+
+    실행 ON_HOLD(VALIDATING) → hold_summary(code, message)"""
 
     code: str  # REQUIRED_DATA_INVALID | MISSING_REQUIRED_DATA
     message: str
@@ -230,7 +239,9 @@ async def judge_no_delay(session: AsyncSession, run: AnalysisRunLike) -> NoDelay
 
 # 엔진 store.order_collection_ok 와 같은 규칙
 ORDER_OK_STATUSES = ("SUCCEEDED", "PARTIAL_SUCCESS")
-# 이 시각 전에 시작한 수집 = 2025 초기 적재(2025 접수일 전부를 다룸)
+# 이 시각 전에 시작한 수집 = 2025 초기 적재(2025 접수일 전부를 다룸).
+# 엔진도 같은 값을 고정한다: store.order_collection_ok 의 "2026-01-01"·"2025-12-31", store.DCR_SQL 의 '2026-01-01'.
+# D 는 엔진 판정과 같아야 하므로 데이터에서 따로 정하지 않는다. 엔진이 바꾸면 해시 목록과 Store 소스 대조 시험이 멈춘다(#67 리뷰)
 INITIAL_LOAD_BEFORE = "2026-01-01"
 _INITIAL_LOAD_LIMIT = date(2026, 1, 1)  # 2025-12-31 + 1
 
@@ -293,17 +304,21 @@ def _build_and_analyze(
         )
     except snapshot.Hold as hold:
         return EngineHold(code=hold.code, message=hold.message)
+    # 엔진이 고른 운영 기준 버전·리드타임 행을 본다. 엔진 보류가 먼저이고, 걸리면 계산하지 않는다
+    unsupported = unsupported_operating_rules(store, snap)
+    if unsupported is not None:
+        return EngineHold(code=UNSUPPORTED_RULE_HOLD_CODE, message=unsupported)
     return snap, load_engine_module("pipeline").analyze(snap), basis
 
 
 async def build_engine_input(
     session: AsyncSession, run: AnalysisRunLike
 ) -> EngineInput | EngineHold:
-    """실행 하나의 엔진 입력. 입력 검증 실패(엔진 Hold)는 EngineHold 로 돌려준다(예외 아님).
+    """실행 하나의 엔진 입력. 입력 검증 실패(엔진 Hold, 계산이 지원하지 않는 운영 기준)는 EngineHold 로 돌려준다(예외 아님).
 
     저장소·입력 순번이 맞지 않는 등 시스템 문제는 EngineInputError·LookupError 로 올린다(보류가 아님)."""
     ri = await _run_input(session, run)
-    store = await load_company_engine_store(session, run.company_id, run.input_seq)
+    store = await get_company_engine_store(session, run.company_id, run.input_seq)
     check_input_seq(store, run.company_id, ri.confirm_t, run.input_seq)
     built = await asyncio.to_thread(_build_and_analyze, store, str(run.company_id), ri)
     if isinstance(built, EngineHold):

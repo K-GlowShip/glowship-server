@@ -12,7 +12,7 @@
 | 멈출 때 | `ToolFailure(summary)` | 노드는 이것을 받아 실행을 끝냅니다. `summary`는 `FailureSummary` |
 | 실패 요약 | `FailureSummary` | 상태 + 5컬럼(`failed_step`·`failure_code`·`attempt_count`·`retry_exhausted`·`failure_message`). 만들 때 DDL 규칙을 먼저 확인합니다 |
 | 저장할 값 | `FailureSummary.columns()` | 실행을 실패·보류로 끝낼 때 `analysis_runs`에서 바꿔야 하는 열을 **모두** 돌려줍니다. 서비스가 그대로 넣습니다: 상태와 5컬럼, `completed_status = status`(ck23), `result_class = NULL`(ck21), `dependency_scope = NULL`(ck36). 설명 실패면 `explanation_validation_status = FAILED`, `final_explanation_json = NULL`, `explanation_generated_at = NULL`도 넣습니다(ck26·ck7). `decision_signature`는 바꾸지 않습니다(ck37·ck40이 막지 않음) |
-| 보류 | `hold_summary(code, message, attempt_count=1)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: `BlockingIssue.failure_message`). 시도 횟수는 마지막 도구의 실제 횟수입니다 |
+| 보류 | `hold_summary(code, message, attempt_count=1)` | 필수 자료 부족·검증 오류. 문구는 판정한 쪽 것을 그대로 씁니다(예: 엔진 입력 보류 `EngineHold`의 메시지). 시도 횟수는 마지막 도구의 실제 횟수입니다 |
 | 설명 실패 | `explanation_failure(attempt_detail)` | 엔진 생성기가 3회 모두 실패했을 때. 엔진의 시도 기록 문자열을 문구 뒤에 붙입니다 |
 
 ## 2. 오류별 처리
@@ -75,6 +75,7 @@
 | 재시도 12건 | 시간 초과 3회 → 소진(정답 E3 v2와 같은 5개), 2회 실패 뒤 성공, 일시 오류 3회, 시도 시간 제한, 권한·필수 자료·분류 안 된 예외는 1회, 일시 → 권한(시도 2), 일시 → 필수 자료(ON_HOLD 시도 2), 빈 `backoff_seconds`, 안쪽 실패 그대로, 기록 훅 장애 무시 |
 | 값 규칙 11건 | 설명 실패·보류의 `columns()` 열, 보류 코드가 data_sync와 같음, 틀린 값 8가지를 거부 |
 | 실제 DB CHECK 4건 | 모델의 CHECK가 42개, 만드는 요약 8종이 FINALIZED·NO_RISK 실제 행 위에서 42개 모두 통과(기준 행 자체도 통과), 열을 빼거나 틀리게 하면 ck23·ck21·ck36·ck7·ck10~14·ck26이 각각 거부 |
+| 통합 시험 T13(그래프 전체) | 연결된 그래프에서 단계별 재시도 수·도구 호출 수·실패 요약과, 그 요약을 저장한 실제 행까지: `docs/agent-flow/integration-tests-t13-t20.md` 3절 |
 
 **시험이 실패를 잡는지(변이 시험):** 코드를 일부러 바꿔 시험이 실패하는지 확인했습니다. 끝난 뒤 원래대로 돌렸습니다.
 - 최대 시도 3 → 4: 6건 실패

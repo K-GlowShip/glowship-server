@@ -4,11 +4,12 @@ from datetime import datetime
 from pydantic import Field, field_validator, model_validator
 
 from app.core.schemas import CamelModel
+from app.core.text_input import clean_free_text
 
 """
     의견·선택 초안 저장 요청·응답 (API 18 POST /analysis-runs/{runId}/drafts, API 명세 v6.2 4.6절)
       - 대응안(responseOptionId)과 의견(opinionText) 둘 다 선택이지만 둘 중 하나는 있어야 합니다.
-      - 의견은 앞뒤 공백을 뺀 뒤 1~600자(글자 수)이고, 뺀 값을 저장합니다 (C25).
+      - 의견은 앞뒤 공백을 뺀 뒤 1~600자(글자 수)이고, 뺀 값을 저장합니다 (C25). NUL 문자는 거부합니다(이슈 #49, core/text_input.py).
       - 형식 오류는 422 VALIDATION_ERROR 입니다(명세는 400, 현재 구현은 422. D3).
 """
 
@@ -33,12 +34,7 @@ class MemberDraftCreateRequest(CamelModel):
     def strip_opinion(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("의견은 공백만으로 쓸 수 없습니다.")
-        if len(stripped) > OPINION_MAX_LENGTH:
-            raise ValueError(f"의견은 {OPINION_MAX_LENGTH}자 이하여야 합니다.")
-        return stripped
+        return clean_free_text(v, label="의견", max_length=OPINION_MAX_LENGTH)
 
     @model_validator(mode="after")
     def require_option_or_opinion(self) -> MemberDraftCreateRequest:

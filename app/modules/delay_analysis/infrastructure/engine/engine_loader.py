@@ -103,3 +103,9 @@ def load_verified_engine_dir() -> Path:
 def load_engine_module(name: str) -> ModuleType:
     """예) load_engine_module("pipeline"), load_engine_module("explain.validator")"""
     return import_engine_module(load_verified_engine_dir(), name)
+
+
+def load_allocation_module() -> ModuleType:
+    """주문 배정 모듈(synth2025_v5/allocation_core). 엔진 core 가 형제 폴더를 sys.path 에 넣고 불러온 것을 그대로 쓴다.
+    해시 목록에 있는 같은 파일이라, 엔진 계산과 대응안 도구(T10)가 같은 배정 규칙으로 돈다."""
+    return load_engine_module("core").AC

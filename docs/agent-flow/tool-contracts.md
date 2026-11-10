@@ -27,7 +27,7 @@
 | --- | --- |
 | 도구 유형 | **조회 도구**(T1·T2·T3·T4·T5·T8)는 DB를 읽기만 합니다. **계산·검증 도구**(T6·T7·T9·T10·T11·T12)는 입력만으로 계산하는 순수 함수입니다. DB·현재 시각·난수·언어 모델을 쓰지 않습니다(엔진 `core.py` 머리말, 업무 분장 5절) |
 | 범위 | 조회 도구는 실행의 고객사(`company_id`) 범위에서만 읽습니다. 워커 역할 세션에 `app.company_id`를 설정하고, 조회 조건에도 `company_id`를 넣습니다(GLOW-98 실행 상태 조회기와 같은 방식) |
-| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`)으로 고정한 엔진 입력**에서만 값을 옮깁니다. 엔진 입력 저장소는 `data_sync_runs`와 수집 단위 표(`inventory_daily`·`shipment_schedule_snapshots`·`data_validation_issues`)를 `applied_seq <= input_seq`로 거르고, 변경 기록과 현재 상태 표(주문·선적·SKU 등)는 거르지 않고 엔진의 시각 규칙(`confirm_t`)에 맡깁니다. 엔진이 나중 수집의 변경 기록으로 주문의 과거 상태를 되돌려 보기 때문입니다(사용자 결정 11-05, 문서 차이 DV1-1). 표별 기준은 `docs/analysis/engine-input-store.md` 2절. 입력 순번을 쓰는 이유는 serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다 |
+| 입력 기준(컷오프) | 조회 도구는 **실행의 입력 순번(`analysis_runs.input_seq`)으로 고정한 엔진 입력**에서만 값을 옮깁니다. 엔진 입력 저장소는 `data_sync_runs`와 수집 단위 표(`inventory_daily`·`shipment_schedule_snapshots`·`data_validation_issues`)를 `applied_seq <= input_seq`로 거르고, 변경 기록과 현재 상태 표(주문·선적·SKU 등)는 거르지 않고 엔진의 시각 규칙(`confirm_t`)에 맡깁니다. 엔진이 나중 수집의 변경 기록으로 주문의 과거 상태를 되돌려 보기 때문입니다(사용자 결정 11-05). 표별 기준은 `docs/analysis/engine-input-store.md` 2절. 입력 순번을 쓰는 이유는 serviceflow 5.2절 "왜 시각이 아니라 순번인가"와 STALE 판정(순번 기준)이 같은 기준을 쓰게 하기 위해서입니다 |
 | 저장 | 도구는 업무 DB에 쓰지 않습니다. 결과 저장은 서비스가 합니다(agentflow 4절 "부작용 없음") |
 | JSON 키 | snake_case입니다. 엔진과 DB 열 이름을 그대로 써서 저장 단계에서 키를 바꾸지 않게 합니다(D20과 같은 방향) |
 | 값 모양 | 분석 JSON 계약 v3 0절을 따릅니다. 식별자는 UUID 소문자 하이픈 문자열, 날짜는 `YYYY-MM-DD`(UTC 달력일), 시각은 `YYYY-MM-DDTHH:MM:SSZ`, 수량은 개(EA) 정수, raw 값은 소수 4자리 10진 문자열입니다. 결측은 키를 빼지 않고 `null`로 둡니다 |
@@ -168,7 +168,7 @@ D = min(실행 날짜, 최신 재고일 + 1, 성공한 주문 수집이 다룬 �
 | `lead_times.dest_inbound_handling_days` | 정수 | 예 | 도착 창고 입고 처리 | `INBOUND_HANDLING`, 도착 창고 | `lt.inbound_dest` |
 | `skus[]` | 배열(`sku_code`) `{sku_id, sku_code, emergency_air_eligible}` | 아니오 | **고객사 SKU 전체**(아래 문단). 긴급 항공 가능 여부 | `skus.emergency_air_eligible`(boolean) | `sku_attr` |
 
-리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 다만 엔진은 `day_basis`를 보지 않고 그 행의 일수로 계산하므로, 그런 행이 생기면 T8 출력(`null`)과 엔진 계산이 어긋납니다(2026 H1은 없음). 그런 행을 어떻게 다룰지(멈춤·보류)는 입력 검증(GLOW-100)에서 다시 정합니다. 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다. **`skus[]`는 그 고객사의 SKU 전체입니다.** 엔진 `snapshot.build`가 상태 조건 없이 고객사의 `skus` 행을 모두 `sku_attr`로 만들기 때문입니다(`snapshot.py` 120행). 그래서 영향·관찰·선적 SKU(T6 `impacted_sku_codes`·`watch_sku_codes`, T1 `shipment_skus[]`)는 항상 `skus[]` 안에 있습니다. T9처럼 `skus[]`에서 SKU 속성을 찾는 도구는 이 전제를 씁니다. 조회 도구 시험이 overlay 실행 21건에서 이 포함 관계를 확인합니다(`test_engine_input.py`).
+리드타임 `null` = 운영 기준에 그 행이 없음입니다. **`day_basis = BUSINESS_DAY`인 행도 `null`로 둡니다.** 계산 계약 `T14-v1`은 달력일만 계산하기 때문입니다(9절 Q5). 다만 엔진은 `day_basis`를 보지 않고 그 행의 일수로 계산하므로, 그런 행을 그대로 두면 T8 출력(`null`)과 엔진 계산이 어긋납니다. 그래서 이 실행의 계산이 읽는 리드타임 행 가운데 달력일(`CALENDAR_DAY`)이 아닌 행이 있으면 입력 검증이 엔진 계산 전에 실행을 `ON_HOLD`(`REQUIRED_DATA_INVALID`)로 막습니다(9절 Q5, 이슈 #61. 2026 H1은 그런 행 없음). 보류 문구에 운영 기준 버전과 고칠 행을 적습니다. 계산에 쓰이지 않는 다른 창고·권역·버전의 행은 막지 않습니다. 도착 창고의 출고 처리나 고객 배송이 `null`이면 분석 전체를 보류하고(엔진 `MISSING_REQUIRED_DATA`, 실행 `ON_HOLD`), 나머지가 `null`이면 해당 대응안만 `NEEDS_CHECK`·`MISSING_OPERATING_RULE`입니다(5절). `MISSING_REQUIRED_DATA`는 실행 보류 사유로만 쓰고 대응안 사유로는 쓰지 않습니다(9절 Q7). `skus[]`는 SKU 속성이라 T8에 두었습니다. **`skus[]`는 그 고객사의 SKU 전체입니다.** 엔진 `snapshot.build`가 상태 조건 없이 고객사의 `skus` 행을 모두 `sku_attr`로 만들기 때문입니다(`snapshot.py` 120행). 그래서 영향·관찰·선적 SKU(T6 `impacted_sku_codes`·`watch_sku_codes`, T1 `shipment_skus[]`)는 항상 `skus[]` 안에 있습니다. T9처럼 `skus[]`에서 SKU 속성을 찾는 도구는 이 전제를 씁니다. 조회 도구 시험이 overlay 실행 21건에서 이 포함 관계를 확인합니다(`test_engine_input.py`).
 
 ## 4. 재고 영향 계산 도구 출력 (C 구현)
 
@@ -196,9 +196,9 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `expected_plan_simulation.days[]` | 배열(`date`) | — | D부터 구간 끝까지 하루씩 | `simE.outs` |
 | `expected_plan_simulation.days[].lines[]` | 배열(`order_code`, `line_no`) `{order_code, line_no, protected}` | 아니오 | 그날 배정 출력의 위험 주문 줄 보호 수량 | `outs[날짜].lines` |
 
-`expected_plan_simulation`에는 **위험 주문 줄만** 담습니다. 엔진 T10(`options.py`)이 `simE`에서 읽는 것은 위험 주문의 확보일(`evaluate` 107행, `_outcomes_from_sim`)과 판정일의 줄별 보호량(`_securement` 34~42행, 그날 출력이 없으면 마지막 날)뿐이라 결과가 같습니다. 구간 끝은 `simulation_horizon_end`와 같아 따로 두지 않았습니다. A의 T10 구현이 다른 값을 읽게 되면 이 형식을 다시 맞춥니다.
+`expected_plan_simulation`에는 **위험 주문 줄만** 담습니다. 엔진 T10(`options.py`)이 `simE`에서 읽는 것은 위험 주문의 확보일(`evaluate` 107행, `_outcomes_from_sim`)과 판정일의 줄별 보호량(`_securement` 34~42행, 그날 출력이 없으면 마지막 날)뿐이라 결과가 같습니다. 구간 끝은 `simulation_horizon_end`와 같아 따로 두지 않았습니다. T10 구현(GLOW-133)이 이 형식 그대로 읽습니다.
 
-저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인). 날짜 끝이 아닌 약속 시각이 들어오는 원천이 생기면 갈리므로, 입력 검증(GLOW-100)에서 이런 주문이 있으면 실행을 보류로 막을지 정합니다(엔진에는 없는 검사라 그 작업에서 결정, #26 리뷰).
+저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인). 날짜 끝이 아닌 약속 시각이 들어오는 원천이 생기면 갈립니다. **입력 검증(GLOW-100)은 이런 주문을 보류로 막지 않기로 했습니다(11-10 결정, #26 리뷰 후속).** 엔진과 최종 선택 재확인은 약속을 날짜로 비교하므로, 약속 날짜 안의 배송은 시각과 상관없이 약속을 지킨 것으로 계산됩니다. 위 모델은 시각으로 DDL을 확인해서, `DELAY_INDUCED` 주문의 기준선 배송일이 약속 날짜와 같으면 거부하고(ck6) 실행이 실패로 끝납니다. 보류로 막으면 원천이 다른 시각을 보내는 순간 범위에 걸린 분석이 모두 멈춥니다. 약속 시각을 수집에서 날짜 끝으로 맞출지는 원천 형식·수집 규칙의 문제라 설계 확인이 필요합니다.
 
 ### 4.2 T6 `calculate_inventory_impact` — 예측 층·영향 집합·결과 분류
 
@@ -272,6 +272,8 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 ## 6. T10 `calculate_option_outcomes` — 대응안 결과 (A 구현)
 
 입력: T9 출력과 T1·T2·T3·T4·T5·T8, T6 `items[]`·영향 집합, T7 `risks[]`·`expected_plan_simulation`·`simulation_horizon_end`.
+
+**구현(GLOW-133):** `application/agent/tools/option_outcomes.py`(동기 순수 함수). 엔진 결과를 옮기지 않고 계약 입력만으로 엔진 `options.evaluate`를 다시 계산합니다. 대응안마다 도착 창고 예측 층과 주문 배정을 다시 돌리고, 배정은 해시 대조한 엔진 폴더의 공유 배정 모듈을 불러 씁니다(9절 Q17). 입력 대조·시험은 `docs/analysis/option-outcomes.md`.
 
 출력: `options[]`(T9와 같은 순서). 한 항목이 `response_options` 1행 + `option_order_outcomes` 여러 행이 되고, 서비스가 그대로 저장합니다(`response_option_id` 등 식별자와 `reason` 열은 서비스가 채움).
 
@@ -446,18 +448,19 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q2 | T9를 "사전 판정"으로 두고 최종 상태는 T10이 정함 | **결정: 제안대로** | `precheck`(`CALCULATE`·`NO_SUPPLY`·`NEEDS_CHECK`)는 도구 사이에서만 쓰고 DB에 저장하지 않음. 엔진 `options.evaluate` 169~192행. agentflow 4절 T9 설명은 설계 담당이 고침 |
 | Q3 | T7을 T6보다 먼저 실행 | **결정: 제안대로** | T7 입력에서 "재고 영향"을 뺌. 엔진 `pipeline.analyze`와 결과가 같음. agentflow 4절·5절 순서도는 설계 담당이 고침 |
 | Q4 | 공여 창고 후보가 둘 이상인 고객사 | **결정** | 공여 창고 = 도착 창고가 아닌 `US_3PL` 창고 하나. 미국 창고가 셋 이상인 고객사는 범위 밖이고, 생기면 대응안 규칙부터 다시 정함(2026 H1은 두 고객사 모두 `US_3PL` 2개) |
-| Q5 | 리드타임 `day_basis = BUSINESS_DAY` | **결정** | `T14-v1`은 달력일만 계산. `BUSINESS_DAY` 행은 없는 행과 같이 다룸(T8에서 `null`). 그 뒤 처리는 3.6절 규칙 그대로(2026 H1 22행은 모두 `CALENDAR_DAY`) |
-| Q6 | 판매 기준 일수 | **결정** | 계산은 28일 고정(`T14-v1`, agentflow·명세 D9). 운영 기준 `sales_basis_days`가 28이 아니면 조용히 무시하지 않고, 입력 검증이 실행을 `ON_HOLD`(`REQUIRED_DATA_INVALID`)로 막음 |
+| Q5 | 리드타임 `day_basis = BUSINESS_DAY` | **결정** | `T14-v1`은 달력일만 계산. `BUSINESS_DAY` 행은 없는 행과 같이 다룸(T8에서 `null`). 그 뒤 처리는 3.6절 규칙 그대로(2026 H1 22행은 모두 `CALENDAR_DAY`). **11-10 추가(이슈 #61):** 엔진은 `day_basis`를 보지 않고 그 일수로 계산하므로, 이 실행의 계산이 읽는 리드타임 행에 달력일이 아닌 행이 있으면 입력 검증이 실행을 `ON_HOLD`(`REQUIRED_DATA_INVALID`)로 막음(3.6절). 그래서 실제 실행에서 T8의 `null`은 행이 없는 경우뿐 |
+| Q6 | 판매 기준 일수 | **결정** | 계산은 28일 고정(`T14-v1`, agentflow·명세 D9). 운영 기준 `sales_basis_days`가 28이 아니면 조용히 무시하지 않고, 입력 검증이 실행을 `ON_HOLD`(`REQUIRED_DATA_INVALID`)로 막음(11-10 구현: 엔진 스냅샷을 만든 뒤 계산 전에 Q5와 함께 검사, `docs/analysis/engine-input.md` 4절 8번) |
 | Q7 | 대응안 사유 `MISSING_REQUIRED_DATA` | **결정** | 대응안 사유로 쓰지 않음. 필수 자료 부족은 실행 전체 `ON_HOLD`(엔진 `snapshot.py`의 `Hold`). DDL `response_options_ck7`은 바꾸지 않음(허용해도 쓰지 않을 뿐) |
 | Q8 | `skus.emergency_air_eligible` 형식 | **결정: 제안대로** | boolean. 엔진의 `"true"` 문자열 비교는 CSV를 읽을 때의 형식일 뿐 |
 | Q9 | 다른 권역 출고의 대표 사유가 `DONOR_NO_NEXT_INBOUND`가 되는 경우(6.1절 C) | **결정(설계 담당, PR #19 승인 리뷰)** | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND`(판정 순서 7번). 엔진 참조 구현은 설계 담당이 같은 규칙으로 고침(glowship-plan `b80fd04`, `options.py` `f66e319c6bdd`). agentflow 4절 "실행 가능 조건"에도 반영됨(`1c0eb49`). 모델은 `NOT_FEASIBLE`과의 조합을 거부함 |
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장에서 더함(**11-05 처리:** 출력 계약은 바꾸지 않고 저장할 때 계산. `calculation_status = CALCULATED`, `warehouse_id` = T1 도착 창고, 가용·확정 수요·평균 판매는 T2·T4·T5에서 엔진 식대로, `risk_reason`은 엔진 문구. 서버 `docs/analysis/result-save.md` 4절) |
-| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
+| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함). **11-09(GLOW-133):** T10이 배정을 다시 돌리는 데 T5 `pending_dispatch[]`·`waiting_order_codes[]`와 T7 형식으로 충분함을 확인(이슈 #62). T5 모델을 형식이 있는 모델로 바꿀지는 남음 |
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132 → 11-06 결정 1에 맞춤)** | 입력 연결 오류다. T9는 `RequiredDataError`를 내지만, 그래프의 도구 호출부(`call_tool`)가 재시도 없이 `FAILED`(`UNEXPECTED_TOOL_ERROR`, 메시지에 원래 코드)로 끝낸다. 보류는 분석 준비 단계(`EngineHold`)에서만 낸다. 엔진 입력의 `sku_attr`는 고객사 SKU 전체라 이 경우는 데이터로는 생기지 않는다 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
 | Q16 | T1 단계·예상일 E의 기준(트리거와 최신 관측) | **결정(PR #53 승인 리뷰)** | AUTO 실행은 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 엔진 하네스(`run_s1_s5.py` 153행)와 같음. AUTO와 트리거 있음은 DDL `analysis_runs_ck16`으로 같은 뜻. AUTO 실행은 지연을 판정한 수집의 적재 트랜잭션 안에서 만들어(이슈 #34) 트리거가 곧 입력 순번까지의 최신 관측이므로, 둘이 갈리는 것은 실행 생성을 적재와 떼어 늦게 할 때뿐임. `trigger_shipment_schedule_snapshot_id`는 다른 기준: 엔진 `snapshot.build`는 넘긴 단계·E와 상관없이 최신 관측의 ID를 내므로(219행), 실행 생성을 떼면 이 ID가 실행의 트리거와 달라짐 |
+| Q17 | T10이 대응안마다 주문 배정을 다시 돌리는 방법 | **결정(사용자, 11-09, GLOW-133)** | 데이터 팀 공유 배정 모듈 `allocation_core.simulate`(규칙 `D00-B-b2-v1`)를 해시 대조한 엔진 폴더에서 불러 씀(`engine_loader.load_allocation_module`). 배정 규칙을 서버에 다시 쓰면 데이터 팀 모듈과 따로 고쳐질 수 있고, 공개 저장소에 엔진 코드를 옮겨 적는 셈이라서. 판정·사유·공여 풀·예측 재계산은 T9·T11처럼 서버 코드로 옮김 |
 
 ### 9.1 모델로 옮기며 채운 것
 
@@ -472,7 +475,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | T7 시각 비교 | 배송일 → `T23:59:59Z` | 엔진 `storage.py`, 4.1절 |
 | 식별자·시각 | 문자열로 받음(소문자 UUID, `…Z` 초 단위) | `uuid.UUID`·`datetime`은 대문자·`+09:00`·마이크로초를 받아 다른 모양으로 내보냄(11-04 확인) |
 | 조회 도구 T2~T5·T8의 입력 | **입력 없음(11-06, GLOW-125 2부)** | 범위는 실행마다 한 번 만드는 엔진 입력이 정함(인터페이스 결정 3, 3절 "구현") |
-| T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). A의 T10 구현이 다른 값을 읽으면 다시 맞춤 |
+| T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). T10 구현(GLOW-133)이 이 형식 그대로 읽음 |
 
 ## 10. 작업 중 실패와 원인
 
@@ -487,7 +490,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | F7 | `NOT_FEASIBLE` 사유 가운데 두 개(`PROMISE_UNREACHABLE_LEADTIME`·`NO_TRANSFERABLE_STOCK`)가 언제 나오는지 적지 않음 | 사전 판정·판정 순서만 옮기고, 주문 사유와 대표 사유를 고르는 함수(`_order_reason`·`_other_region`)를 표로 닫지 않음 | A 리뷰로 6.1절을 추가 |
 | F8 | `allocation_core`를 받은 뒤에도 9절 Q1·10절을 "없음"으로 둔 채 push함 | PR 본문만 고치고 문서 본문은 다음 PR로 미룸 | 리뷰 지적으로 이번에 고침 |
 | F9 | PR #19가 머지된 뒤에도 9절 Q9를 "새 질문, 오류로 드러냄"으로 둠 | Q9 결정이 마지막 승인 리뷰(머지 직전)에 달렸고, 문서·인수인계에 옮기지 않음 | 모델 작업 전 재검증(리뷰·agentflow·엔진 대조)에서 찾아 이번에 고침 |
-| F10 | 10절에 "엔진 자체 시험(50·97·57건)은 배정 시뮬레이션 경로까지 실제 `allocation_core`로 통과"라고 적음 | 시험 건수만 보고, 각 시험이 배정 모듈을 실제로 부르는지 확인하지 않음 | 개발 1·2 세션 일치 시험(11-04)에서 배정 모듈을 빈 파일·망가뜨린 파일로 바꿔 확인. 아래 검증 설명을 고침 |
+| F10 | 10절에 "엔진 자체 시험(50·97·57건)은 배정 시뮬레이션 경로까지 실제 `allocation_core`로 통과"라고 적음 | 시험 건수만 보고, 각 시험이 배정 모듈을 실제로 부르는지 확인하지 않음 | 같은 작업을 따로 두 번 한 결과 대조(11-04)에서 배정 모듈을 빈 파일·망가뜨린 파일로 바꿔 확인. 아래 검증 설명을 고침 |
 | F11 | 처음 모델 초안은 `uuid.UUID`·`datetime`·기존 `RawDecimal`(음수 불가)을 그대로 쓰려 함 | 계약 1절 값 모양과 타입의 실제 동작을 대조하지 않음 | 실행해 보고 문자열 타입과 부호 있는 raw 타입으로 바꿈(9.1절) |
 | F12 | T6 `items[]`·T10 `sku_results`를 "K_SHIPMENT의 SKU별"로 적음(PR #19). 모델 주석에도 그대로 옮김 | 엔진 `pipeline.analyze`가 K_SHIPMENT 밖 지연 유발 SKU도 예측 행·대응안 항목에 넣는 것(70~72행)을 확인하지 않음. overlay에는 이런 SKU가 없어 데이터로도 드러나지 않음 | 모델 재검증에서 엔진을 다시 읽어 찾음. 문서·주석을 고침. 모델 규칙은 그 SKU를 `IMPACTED`로 받으므로 바뀌지 않음 |
 | F13 | 모델이 "`NOT_FEASIBLE`이면 집계는 숫자", "`MISSING_OPERATING_RULE`이면 집계 `null`"(6절 판정 순서 1번·집계 NULL 규칙)을 확인하지 않음 | DDL CHECK(ck8·ck9)만 옮기고, DDL에 없는 계약 규칙을 따로 대조하지 않음 | push 전 Glowship_Plan API 명세 4.5 "대응안 집계 규칙" 표와 대조해 찾음. 모델 규칙 2개와 거부 시험 2건을 더함. overlay 39행은 그대로 통과 |
@@ -496,5 +499,5 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 - **대조 스크립트:** 코드값(백틱 안 대문자 값)은 DDL·엔진 원문에, `표.열`은 DDL 열에, 제약·인덱스 이름은 DDL에, 엔진 키는 엔진 코드에 있는지 대조했습니다. 결과는 0건이고, 새로 정한 `CALCULATE`·`NO_SUPPLY`만 예외로 뒀습니다. 없는 코드값·없는 열·없는 제약을 일부러 넣은 음성 시험 3건은 모두 잡혔습니다.
 - **엔진 실행 대조(5~7절):** 엔진 함수를 실제로 실행해 문서 규칙과 대조했습니다. 11-04에 실제 `allocation_core`(`fcb08cf8…`)를 넣고 다시 돌려 **92건 일치**입니다. 대조한 것은 후보 규칙(운송 방식 2 × 단계 5), 추천 순위 4가지 경우, 사전 판정 → 최종 상태 6가지 경우(운영 기준 누락, 지연 선적보다 늦은 공급, 긴급 항공 대상·한국 보유 없음, 공여 창고 다음 입고 전부 없음, 기존 계획 유지)입니다. 문서 규칙을 일부러 세 군데 틀리게 바꾼 음성 실행에서는 어긋남이 잡혔습니다. 이 92건은 수정 전 `options.py`(`974577bcc337`)로 돌린 결과입니다. 수정판이 바꾼 판정 순서 7번(Q9)은 92건에 없는 경우이고, 수정판의 Q9 시험 6건이 따로 확인합니다.
 - **6.1절 사유 표:** 엔진 코드에서 옮겼습니다. 그리고 엔진이 실제로 만든 overlay 결과(대응안 39행, 주문 결과 21행)가 표 A·B의 집합 안에 모두 들어가는 것을 확인했습니다. 다른 권역 출고의 `NO_TRANSFERABLE_STOCK` 2행은 위험 주문이 없는 실행이라 규칙 C-2(넘길 재고 전부 0)로 나온 값입니다. 규칙 C-1(모든 주문 미회복 → 우선순위)은 overlay에 사례가 없어 코드로만 확인했습니다.
-- **엔진 자체 시험:** 엔진 자체 시험(50·97·57건)은 실제 `allocation_core`로 통과했습니다. 다만 배정 모듈을 실제로 부르는 것은 `test_explain`(97건)뿐입니다(`simulate` 109회, `allocate_day` 3,856회). `test_engine`(50)·`test_forbidden_boundary`(57)는 배정 모듈을 빈 파일이나 망가뜨린 파일로 바꿔도 통과합니다(11-04 개발 1·2 세션 일치 시험, F10). Q9 시험(6건)도 배정 모듈을 씁니다.
+- **엔진 자체 시험:** 엔진 자체 시험(50·97·57건)은 실제 `allocation_core`로 통과했습니다. 다만 배정 모듈을 실제로 부르는 것은 `test_explain`(97건)뿐입니다(`simulate` 109회, `allocate_day` 3,856회). `test_engine`(50)·`test_forbidden_boundary`(57)는 배정 모듈을 빈 파일이나 망가뜨린 파일로 바꿔도 통과합니다(11-04 결과 대조, F10). Q9 시험(6건)도 배정 모듈을 씁니다.
 - **모델 대조 시험(GLOW-112):** `test_tool_schemas.py`가 이 문서 3~7절 표의 필드 이름과 모델 필드를 양방향으로, 5절·6.1절 표의 사유 집합과 모델 규칙을 대조합니다. 표 A·B와 사전 판정 사유가 DDL `response_options_ck6`·`ck7`, `option_order_outcomes_ck12` 안에 있는지도 따로 대조합니다(문서와 모델을 함께 잘못 고친 경우를 잡기 위해서). 모델 필드를 빼거나 문서에 가짜 필드·코드값을 넣으면 실패합니다. 실제 DB의 overlay 대응안 39행·주문 결과 21행은 T10 모델을, 위험 주문 7행은 T7 모델을 모두 통과합니다.

@@ -11,6 +11,11 @@ from app.modules.delay_analysis.application.agent.tools.lookup_schemas import (
     SalesHistory,
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import SalesBasisType
+from app.modules.delay_analysis.infrastructure.engine.engine_operating_rules import (
+    SUPPORTED_DAY_BASIS,
+    SUPPORTED_SALES_BASIS_DAYS,
+    lead_time_rows,
+)
 
 if TYPE_CHECKING:
     from app.modules.delay_analysis.infrastructure.engine.engine_input import (
@@ -28,11 +33,11 @@ if TYPE_CHECKING:
 """
 
 _CHANNELS = ("AMAZON", "SEPHORA")  # 엔진 snapshot.build mu_ch 와 같은 순서·값
-_BASIS_DAYS = 28  # 계산 계약 T14-v1 고정(9절 Q6)
+_BASIS_DAYS = SUPPORTED_SALES_BASIS_DAYS  # 28. 계산 계약 T14-v1 고정(9절 Q6)
 
 
 class EngineToolContext(Protocol):
-    """조회 도구가 읽는 실행 문맥. 개발 2 ToolContext(engine = EngineInput)가 그대로 맞는다."""
+    """조회 도구가 읽는 실행 문맥. 그래프 ToolContext(engine = EngineInput)가 그대로 맞는다."""
 
     @property
     def engine(self) -> EngineInput: ...
@@ -325,45 +330,6 @@ async def get_open_orders(ctx: EngineToolContext, payload: None) -> OpenOrders:
 # --- T8 ---------------------------------------------------------------------------------------------
 
 
-def _lead_rows(store, snap: dict[str, Any]) -> dict[str, dict[str, str] | None]:
-    """엔진이 리드타임 7개를 고른 행(snapshot.build 의 lt). 고르는 규칙은 엔진과 같다:
-    store.lead_days 는 조건에 맞는 첫 행, CUSTOMER_DELIVERY 는 반복에서 마지막으로 맞은 행."""
-    cid, rid = snap["company_id"], snap["rule"]["operating_rule_set_id"]
-    dest, donor, kr = snap["dest"], snap["donor"], snap["kr"]
-    rows = [
-        r for r in store.t["operating_lead_times"]
-        if r["company_id"] == cid and r["operating_rule_set_id"] == rid
-    ]  # fmt: skip
-
-    def first(ltype: str, wh_id: str, to_region: str | None = None):
-        return next(
-            (r for r in rows if r["lead_time_type"] == ltype and r["warehouse_id"] == wh_id
-             and (to_region is None or r["to_region_code"] == to_region)),
-            None,
-        )  # fmt: skip
-
-    def last_delivery(wh_id: str):
-        found = None
-        for r in rows:
-            if (
-                r["lead_time_type"] == "CUSTOMER_DELIVERY"
-                and r["warehouse_id"] == wh_id
-                and r["to_region_code"] == dest["region_code"]
-            ):
-                found = r
-        return found
-
-    return {
-        "oh_dest": first("OUTBOUND_HANDLING", dest["warehouse_id"]),
-        "cd_same": last_delivery(dest["warehouse_id"]),
-        "oh_donor": first("OUTBOUND_HANDLING", donor["warehouse_id"]),
-        "cd_cross": last_delivery(donor["warehouse_id"]),
-        "oh_kr": first("OUTBOUND_HANDLING", kr["warehouse_id"]),
-        "air_kr": first("AIR_TRANSIT", kr["warehouse_id"], dest["region_code"]),
-        "inbound_dest": first("INBOUND_HANDLING", dest["warehouse_id"]),
-    }
-
-
 # 계약 LeadTimes 필드 ← 엔진 lt 키 (계약 3.6절)
 _LEAD_FIELDS = {
     "dest_outbound_handling_days": "oh_dest",
@@ -377,12 +343,13 @@ _LEAD_FIELDS = {
 
 
 def _lead_times(engine) -> dict[str, int | None]:
-    """리드타임. 계약 9절 Q5: day_basis = BUSINESS_DAY 행은 없는 행처럼 null.
+    """리드타임. 계약 9절 Q5: day_basis 가 달력일이 아닌 행(BUSINESS_DAY)은 없는 행처럼 null.
 
-    엔진은 day_basis 를 보지 않고 일수를 계산에 쓰므로, BUSINESS_DAY 행이 생기면 T8 과 계산이 어긋난다
-    (2026 H1 은 모두 CALENDAR_DAY. 그런 행의 처리는 입력 검증 GLOW-100 에서 다시 정한다)."""
+    엔진은 day_basis 를 보지 않고 일수를 계산에 쓰므로 그런 행이 있으면 T8 과 계산이 어긋난다.
+    그래서 입력 검증이 엔진 계산 전에 실행을 보류로 막는다(engine_operating_rules, 이슈 #61).
+    실제 실행에서는 이 null 갈래까지 오지 않고, 여기서는 계약 출력 규칙만 지킨다."""
     snap = engine.snap
-    chosen = _lead_rows(engine.store, snap)
+    chosen = lead_time_rows(engine.store, snap)
     out = {}
     for field, key in _LEAD_FIELDS.items():
         row, value = chosen[key], snap["lt"][key]
@@ -393,7 +360,9 @@ def _lead_times(engine) -> dict[str, int | None]:
                 f"리드타임 {key} 를 고른 행이 엔진 계산 값과 다릅니다: 행 {row}, 엔진 {value}"
             )
         out[field] = (
-            value if row is not None and row["day_basis"] == "CALENDAR_DAY" else None
+            value
+            if row is not None and row["day_basis"] == SUPPORTED_DAY_BASIS
+            else None
         )
     return out
 

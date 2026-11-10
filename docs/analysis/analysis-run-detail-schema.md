@@ -252,7 +252,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 대응안 순서는 고정 순서(KEEP → 출항 전 항공 → 한국 창고 항공 → 다른 권역) | 설명의 `option_explanations[]`와 같은 순서(명세 4.5 AI 설명 표). 추천 순위는 `recommendationRank`로 따로 있음 |
 | `dataBasisAt` = 사용한 수집 중 `finished_at`이 가장 이른 것, 끝나지 않은 수집은 뺌 | 명세 4.5 입력 기준 칸 "사용한 수집 중 가장 오래된 수집 시각" |
 | `dataWarnings`는 `[]` | Jira "팀원 참고사항": 실제 값은 백그라운드 실행·저장 작업 뒤 |
-| `sku_results` 모델(`SkuResultItem` 등)은 건드리지 않음 | PR #26(GLOW-112, 개발 2)이 이 모델을 `infrastructure/stored_json_schemas.py`로 옮김. 겹침을 줄이려고 그 구역은 그대로 두고, #26 머지 뒤 develop을 병합하기로 함(사용자 결정 11-05) |
+| `sku_results` 모델(`SkuResultItem` 등)은 건드리지 않음 | PR #26(GLOW-112)이 이 모델을 `infrastructure/stored_json_schemas.py`로 옮김. 겹침을 줄이려고 그 구역은 그대로 두고, #26 머지 뒤 develop을 병합하기로 함(사용자 결정 11-05) |
 
 **알려 둘 점:** 저장된 `sku_results` 항목에 `impact_source` 키가 없으면(v1·v2 엔진 산출물) 응답에는 `"impact_source": null`이 붙습니다(`SkuResultItem` 기본값 `None`). D20 "저장된 그대로"와 엄밀히는 다릅니다. 2026 H1 저장값 856항목은 모두 키가 있어 실제 응답은 저장값과 같습니다(11.4 실제 DB 시험). 이 모델은 #26(머지됨)이 만든 공용 파일 `infrastructure/stored_json_schemas.py`에 있고 에이전트 도구 모델도 함께 쓰므로, 이 PR에서는 고치지 않고 후속으로 다룹니다(PR #32 리뷰 답, 사용자 결정 11-05).
 

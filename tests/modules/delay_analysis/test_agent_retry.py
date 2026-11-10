@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import CheckConstraint, bindparam, text
 from sqlalchemy.dialects import postgresql
 
-from app.modules.data_sync.application.validation import blocking_issues
 from app.modules.delay_analysis.application.agent.retry import (
     EXPLANATION_GENERATION_FAILED,
     MAX_ATTEMPTS,
@@ -294,13 +293,14 @@ async def test_empty_backoff_retries_without_waiting():
     assert (tool.calls, sleeps.waits) == (2, [])
 
 
-def test_hold_code_matches_data_sync_blocking_issue():
-    issue = blocking_issues.BlockingIssue("WMS|SKU|2026-01-01", "NEGATIVE_QUANTITY")
+def test_hold_summary_keeps_message_of_the_hold():
+    """보류 문구는 판정한 쪽(엔진 입력 보류 #53 EngineHold) 것을 그대로 쓴다. 코드는 정답 E9 v1 과 같다"""
+    message = "차단 검증 오류 NEGATIVE_QUANTITY WMS-EWR01|SKU-215|2026-01-01"
 
-    summary = hold_summary(issue.failure_code, issue.failure_message)
+    summary = hold_summary(REQUIRED_DATA_INVALID, message)
 
-    assert REQUIRED_DATA_INVALID == blocking_issues.REQUIRED_DATA_INVALID
-    assert summary.failure_message == issue.failure_message
+    assert REQUIRED_DATA_INVALID == "REQUIRED_DATA_INVALID"
+    assert summary.failure_message == message
 
 
 _OK = {
@@ -357,8 +357,9 @@ def test_model_has_all_42_checks():
 
 
 async def _base_run_id(db, status: str) -> uuid.UUID:
-    """엔진 결과 값(결과 분류·의존 범위·판정 서명)이 찬 완료 행. 진행 중 행에 엔진 값이 남은 최악의 경우를 대신한다."""
-    return (
+    """엔진 결과 값(결과 분류·의존 범위·판정 서명)이 찬 완료 행. 진행 중 행에 엔진 값이 남은 최악의 경우를 대신한다.
+    합성데이터가 없는 DB(CI 는 마이그레이션만 적용)면 다른 DB 시험과 같이 건너뛴다."""
+    run_id = (
         await db.execute(
             text(
                 "SELECT analysis_run_id FROM analysis_runs WHERE status = :s"
@@ -368,7 +369,10 @@ async def _base_run_id(db, status: str) -> uuid.UUID:
             ),
             {"s": status},
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if run_id is None:
+        pytest.skip(f"엔진 값이 찬 {status} 분석 실행이 없는 DB")
+    return run_id
 
 
 async def _failing_checks(db, run_id: uuid.UUID, values: dict[str, Any]) -> list[str]:

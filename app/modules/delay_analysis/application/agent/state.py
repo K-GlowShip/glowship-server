@@ -62,7 +62,7 @@ class AnalysisState(TypedDict, total=False):
     visited_nodes: Annotated[list[str], operator.add]  # 실행된 노드 순서 (확인·추적용)
 
     # 분석 준비
-    # 지연 해소 판정(개발 1 judge_no_delay 결과: 판정 서명·SHA-256) → NO_DELAY
+    # 지연 해소 판정(엔진 입력 judge_no_delay 결과: 판정 서명·SHA-256) → NO_DELAY
     no_delay: Any
 
     # 조정 에이전트 (T1)
@@ -84,10 +84,10 @@ class AnalysisState(TypedDict, total=False):
 
     # 대응안 비교 (T11 → 판정 서명)
     option_ranking: OptionRanking
-    decision: Any  # 판정 서명·의존 범위(개발 1 decision_of 결과). NO_RISK·READY 에 있다
+    decision: Any  # 판정 서명·의존 범위(decision_of 결과). NO_RISK·READY 에 있다
 
     # 추천 근거 설명 → 결과 검증 (T12)
-    explanation: Any  # 통과한 설명(개발 3 ExplanationPassed)
+    explanation: Any  # 통과한 설명(설명 생성 ExplanationPassed)
     # 설명 실패 때 모델·프롬프트 판(model_name·prompt_version) 출처
     explanation_failed: Any
 

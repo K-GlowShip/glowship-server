@@ -12,6 +12,9 @@ from app.modules.data_sync.infrastructure.repository.data_sync_run_repository im
 )
 from app.modules.data_sync.infrastructure.virtual_sources import VirtualSourceScenario
 from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
+from app.modules.delay_analysis.application.run_start.app_runner import (
+    get_analysis_runner,
+)
 
 """
     data_sync 모듈 의존성 조립
@@ -58,4 +61,6 @@ def get_manual_sync_service(
         virtual_start=settings.virtual_clock_start,
         load_scenario=load_scenario,
         load_sources=load_sources,
+        # 커밋된 수집이 만든 AUTO 분석 실행을 분석 실행기에 넘긴다(GLOW-128, 자동 시작이 꺼져 있으면 아무것도 안 함)
+        start_runs=get_analysis_runner().start_many,
     )

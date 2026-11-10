@@ -30,7 +30,7 @@ TOOL_TEMPORARY_ERROR_EXHAUSTED = "TOOL_TEMPORARY_ERROR_EXHAUSTED"
 # 근거: agentflow 7.1 "재시도해도 같은 오류"
 PERMISSION_DENIED = "PERMISSION_DENIED"
 REQUIRED_DATA_INVALID = (
-    "REQUIRED_DATA_INVALID"  # 정답 E9 v1, data_sync blocking_issues 와 같은 값
+    "REQUIRED_DATA_INVALID"  # 정답 E9 v1, 엔진 입력 보류(#53 EngineHold)와 같은 값
 )
 MISSING_REQUIRED_DATA = "MISSING_REQUIRED_DATA"  # API 명세 4.5 ON_HOLD 사유
 # 근거: DDL ck26
@@ -190,7 +190,7 @@ def _tool_message(tool_name: str, code: str, attempts: int) -> str:
 def hold_summary(code: str, message: str, attempt_count: int = 1) -> FailureSummary:
     """
     필수 자료 부족·검증 오류 보류. message 는 판정한 쪽의 문구를 그대로 쓴다
-    (예: data_sync BlockingIssue.failure_message "차단 검증 오류 <코드> <키>", 정답 E9 v1).
+    (예: 엔진 입력 보류 #53 EngineHold 의 message, 정답 E9 v1 "차단 검증 오류 <코드> <키>").
     attempt_count 는 마지막 도구의 최종 시도 횟수다(agentflow 7.1). 일시 오류 뒤 보류되면 2·3 이 된다.
     """
     return FailureSummary(

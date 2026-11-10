@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.runnables import RunnableConfig
@@ -29,7 +29,7 @@ from app.modules.delay_analysis.application.agent.tools.registry import (
       - 엔진 입력은 분석 준비 노드가 실행마다 한 번 만들어 여기에 담는다(start). 상태에 넣지 않는 이유:
         결과가 아니라 입력이고 고객사 전체 스냅샷이라 크다. 상태는 서비스가 받아 저장할 결과만 담는다.
       - 실행 하나에 묶음 하나. 다른 실행에 다시 쓰면 start 가 막는다(ToolContext 도 실행 하나에 하나).
-      - 개발 1(judge_no_delay·build_engine_input·decision_of)·개발 3(설명 생성·T12) 함수는 아직 develop 에 없어
+      - 엔진 입력(judge_no_delay·build_engine_input·decision_of)·설명 생성·T12 함수는 아직 develop 에 없어
         여기서는 노드가 쓰는 모양(Protocol)만 정한다. 실제 함수는 "실제 도구 교체" 작업에서 끼운다.
 """
 
@@ -38,14 +38,14 @@ RUNTIME_KEY = "analysis_runtime"
 
 @runtime_checkable
 class EngineHoldLike(Protocol):
-    """엔진 입력 보류(개발 1 EngineHold). code 는 보류 코드(retry.HOLD_CODES), message 는 판정한 쪽 문구."""
+    """엔진 입력 보류(EngineHold). code 는 보류 코드(retry.HOLD_CODES), message 는 판정한 쪽 문구."""
 
     code: str
     message: str
 
 
 class AnalysisPreparer(Protocol):
-    """분석 준비에 쓰는 개발 1 함수 두 개. 실행 하나에 묶여 있고(세션·실행 정보는 만드는 쪽이 가짐) 순서는 노드가 지킨다."""
+    """분석 준비에 쓰는 엔진 입력 함수 두 개. 실행 하나에 묶여 있고(세션·실행 정보는 만드는 쪽이 가짐) 순서는 노드가 지킨다."""
 
     async def judge_no_delay(self) -> Any | None:
         """지연이 해소됐으면 NO_DELAY 판정(판정 서명·SHA-256), 아니면 None. 엔진 저장소를 읽기 전에 부른다."""
@@ -58,7 +58,7 @@ class AnalysisPreparer(Protocol):
 
 @runtime_checkable
 class ExplanationFailedLike(Protocol):
-    """설명 3회 실패(개발 3 ExplanationFailed). 통과(ExplanationPassed)에는 failure_summary 가 없다."""
+    """설명 3회 실패(설명 생성 ExplanationFailed). 통과(ExplanationPassed)에는 failure_summary 가 없다."""
 
     model_name: str
     prompt_version: str
@@ -68,7 +68,7 @@ class ExplanationFailedLike(Protocol):
 
 # 설명 생성: (도구 문맥, 생성 시각) → 통과 또는 ExplanationFailedLike. 3회 재시도는 함수 안(인터페이스 2절)
 ExplanationGenerator = Callable[[ToolContext, datetime], Awaitable[Any]]
-# 판정 서명·의존 범위(개발 1 decision_of): 엔진 입력 → 판정 결과(저장에 그대로 넘김)
+# 판정 서명·의존 범위(엔진 입력 decision_of): 엔진 입력 → 판정 결과(저장에 그대로 넘김)
 DecisionMaker = Callable[[EngineInputLike], Any]
 # 최종 확인(T12) 입력 만들기: 통과한 설명 → T12 입력 모델
 FinalCheckInput = Callable[[Any], BaseModel]
@@ -93,7 +93,6 @@ class AnalysisRuntime:
     decide: DecisionMaker
     explain: ExplanationGenerator
     final_check_input: FinalCheckInput
-    base_date: date  # 기준일 D (실행 생성이 정함)
     input_seq: int  # 실행 입력 순번 (#21)
     tracer: ToolAttemptTracer | None = None
     clock: Callable[[], datetime] = utc_now_seconds  # 설명 생성 시각(UTC, 초 단위)
@@ -118,10 +117,12 @@ class AnalysisRuntime:
             raise RuntimeWiringError(
                 "실행 도구 묶음은 실행 하나에만 씁니다(엔진 입력을 이미 담음)"
             )
+        # 기준일 D 는 엔진 입력이 정한 값을 쓴다(EngineInput.base_date, #67). 실행 날짜와 다를 수 있다:
+        # 그날 재고·주문 자료가 입력에 없으면 마지막 자료 날로 당겨진다. 실행 날짜를 넣으면 T1 입력 확인이 실패한다.
         self._ctx = ToolContext(
             company_id=company_id,
             analysis_run_id=analysis_run_id,
-            base_date=self.base_date,
+            base_date=engine.base_date,
             input_seq=self.input_seq,
             engine=engine,
             tracer=self.tracer,

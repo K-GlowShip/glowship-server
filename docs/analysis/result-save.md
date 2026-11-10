@@ -114,3 +114,28 @@ outcome = await save_analysis_failure(
 - **잡히지 않은 음성 변경:** 위 6절. 같은 결과를 내는 변경이었습니다.
 - **음성 변경이 적용되지 않은 채 "통과"로 읽힘:** ruff가 줄 모양을 바꿔 바꿀 문자열을 못 찾았는데 시험이 그대로 돌아 "통과"가 나왔습니다. 적용 여부를 출력으로 확인한 뒤 다시 했습니다.
 - **시험 준비 순서:** 실패 실행을 진행 중으로 되돌릴 때 실패 요약 열보다 상태를 먼저 바꿔 ck10에 걸렸습니다. 실패 요약 열부터 비우도록 고쳤습니다(저장 코드 문제 아님).
+
+## 9. 지연 해소 저장 (`save_no_delay`, 분석 자동 시작 GLOW-128)
+
+```python
+outcome = await save_no_delay(
+    db,
+    company_id=company_id,
+    analysis_run_id=run_id,
+    decision_signature=no_delay.decision_signature,  # judge_no_delay 결과(엔진 pipeline.no_delay)
+    decision_signature_sha256=no_delay.decision_signature_sha256,
+    now=None,  # 가상 시각이면 실행 시작 시각
+)
+```
+
+| 항목 | 규칙 | 근거 |
+| --- | --- | --- |
+| 쓰는 열 | `status`·`completed_status` = `NO_DELAY`, 판정 서명·SHA-256, 끝난 시각 | DDL ck23·ck39~41, 확정 DB E8 v2 |
+| 비우는 열 | 결과 분류·의존 범위·실패 요약 5열·설명 3열·STALE 4열·`status_reason`(쓰지 않음) | ck10·ck20~22·ck27·ck37, 확정 DB E8 v2 모두 NULL |
+| 결과 행 | 없음(표 4개 모두) | 명세 4.5 "NO_DELAY 결과 행이 없다" |
+| 재판정 | 하지 않음 | `NO_DELAY`는 STALE 대상이 아님(serviceflow 5.2, ck25) |
+| 에피소드 | 보지 않음 | 회복 실행은 에피소드가 닫힌 뒤 분석된다(#63, 확정 DB E8 v2) |
+| 입력 확인 | 잠그기 전에 판정 서명이 `decision_signature.v1`·`status NO_DELAY`·`options []`이고 SHA-256이 소문자 16진수 64자리인지. 아니면 `ResultSaveInputError` | ck39·ck41을 DB 오류가 아니라 입력 오류로 |
+| 끝난 시각 | 다른 저장 함수와 같음(없으면 DB 시각, 있으면 max(now, 시작 + 1초)). 확정 DB는 소요 0초(하네스가 끝난 시각 = 시작) | 이슈 #39 규칙 3 |
+
+시험(`tests/modules/delay_analysis/test_run_start_sql.py`): 확정 DB E8 v2를 진행 중으로 되돌려 같은 서명으로 저장하면 끝난 시각만 빼고 확정 행과 열 단위로 같습니다. 서명이 틀리면 저장 전에 거부되고, STALE이면 아무것도 쓰지 않습니다.

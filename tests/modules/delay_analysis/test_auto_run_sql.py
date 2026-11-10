@@ -198,3 +198,174 @@ async def test_같은_수집을_다시_보내도_실행은_한_번(db_write_sess
 )
 def test_이전_실행_STALE_사유는_엔진_하네스와_같다(trigger, expected):
     assert previous_run_stale_reason(trigger) == expected
+
+
+async def _drop_runs(db, company_id, shipment_code):
+    """시작 때 실행을 만들지 못한 열린 지연을 만든다(이 PR 전 코드로 열렸거나 실행 생성이 건너뛰어진 경우)"""
+    await db.execute(
+        text(
+            """
+            DELETE FROM analysis_run_data_versions v USING analysis_runs r, delay_events e, shipments s
+             WHERE v.analysis_run_id = r.analysis_run_id AND r.delay_event_id = e.delay_event_id
+               AND e.shipment_id = s.shipment_id AND s.company_id = :c AND s.shipment_code = :s
+            """
+        ),
+        {"c": company_id, "s": shipment_code},
+    )
+    await db.execute(
+        text(
+            """
+            DELETE FROM analysis_runs r USING delay_events e, shipments s
+             WHERE r.delay_event_id = e.delay_event_id AND e.shipment_id = s.shipment_id
+               AND s.company_id = :c AND s.shipment_code = :s
+            """
+        ),
+        {"c": company_id, "s": shipment_code},
+    )
+
+
+async def test_실행이_없는_열린_지연의_후속_판정은_첫_실행을_지연_시작으로_만든다(
+    db_write_session,
+):
+    """#63 리뷰 [권장] 재현 1: 수정 전에는 EPISODE_START_MISMATCH(ck18)로 수집 전체가 FAILED"""
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _ingest(db, DAY1, company_id, [shipment])
+    await _drop_runs(db, company_id, shipment.shipment_code)
+    worse = replace(
+        shipment,
+        current_expected_3pl_inbound_date=shipment.current_expected_3pl_inbound_date
+        + timedelta(days=10),
+    )
+
+    result = await _ingest(db, DAY2, company_id, [worse])
+
+    [run] = await _runs(db, company_id, shipment.shipment_code)
+    assert result.episode_outcomes[0].trigger_reason == TriggerReason.SCHEDULE_WORSENED
+    assert (run.version_no, run.trigger_reason, run.status, run.is_latest) == (
+        1,
+        "EPISODE_STARTED",
+        "DETECTED",
+        True,
+    )
+    assert run.trigger_shipment_schedule_snapshot_id == (
+        result.episode_outcomes[0].trigger_snapshot_id
+    )
+    assert result.created_run_ids == (run.analysis_run_id,)
+
+
+async def test_실행이_없는_지연이_회복으로_닫히면_실행을_만들지_않는다(
+    db_write_session,
+):
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _ingest(db, DAY1, company_id, [shipment])
+    await _drop_runs(db, company_id, shipment.shipment_code)
+    planned = shipment.current_expected_3pl_inbound_date - timedelta(days=30)
+
+    result = await _ingest(
+        db,
+        DAY2,
+        company_id,
+        [replace(shipment, current_expected_3pl_inbound_date=planned)],
+    )
+
+    assert result.created_run_ids == ()
+    assert await _runs(db, company_id, shipment.shipment_code) == []
+    assert (
+        await db.scalar(
+            text(
+                "SELECT e.close_reason FROM delay_events e JOIN shipments s USING (shipment_id)"
+                " WHERE s.shipment_code = :s"
+            ),
+            {"s": shipment.shipment_code},
+        )
+        == "RECOVERED"
+    )
+
+
+async def _hide_operating_rules(db, company_id):
+    """그날 적용되는 운영 기준이 없는 고객사(새 고객사)를 만든다: 기준의 적용 시작일을 먼 뒤로 민다(롤백됨)"""
+    await db.execute(
+        text(
+            "UPDATE operating_rule_sets SET effective_from = DATE '2099-01-01' WHERE company_id = :c"
+        ),
+        {"c": company_id},
+    )
+
+
+async def test_운영_기준이_없으면_실행만_건너뛰고_수집은_적재한다(db_write_session):
+    """#63 리뷰 [권장] 재현 2: 수정 전에는 OPERATING_RULE_MISSING 으로 수집 FAILED·새 선적 0건"""
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _hide_operating_rules(db, company_id)
+
+    result = await _ingest(db, DAY1, company_id, [shipment])
+
+    loaded = await db.scalar(
+        text(
+            "SELECT count(*) FROM shipments WHERE company_id = :c AND shipment_code = :s"
+        ),
+        {"c": company_id, "s": shipment.shipment_code},
+    )
+    assert loaded == 1  # 선적은 적재됨
+    assert [o.action for o in result.episode_outcomes] == ["START"]  # 에피소드는 열림
+    assert result.created_run_ids == ()
+    assert [(s.delay_event_id, s.code) for s in result.skipped_auto_runs] == [
+        (result.episode_outcomes[0].delay_event_id, "OPERATING_RULE_MISSING")
+    ]
+    assert await _runs(db, company_id, shipment.shipment_code) == []
+
+
+async def test_건너뛴_판정은_이전_실행_STALE_도_되돌리고_다음_후속에서_새_버전을_만든다(
+    db_write_session,
+):
+    db = db_write_session
+    company_id = await _company(db)
+    shipment = await _delayed_new_shipment(db, company_id)
+    await _ingest(db, DAY1, company_id, [shipment])
+    restore = (
+        await db.execute(
+            text(
+                "SELECT operating_rule_set_id, effective_from FROM operating_rule_sets WHERE company_id = :c"
+            ),
+            {"c": company_id},
+        )
+    ).all()
+    await _hide_operating_rules(db, company_id)
+    worse = replace(
+        shipment,
+        current_expected_3pl_inbound_date=shipment.current_expected_3pl_inbound_date
+        + timedelta(days=10),
+    )
+
+    skipped = await _ingest(db, DAY2, company_id, [worse])
+
+    [first] = await _runs(db, company_id, shipment.shipment_code)
+    assert [s.code for s in skipped.skipped_auto_runs] == ["OPERATING_RULE_MISSING"]
+    assert (first.status, first.is_latest) == ("DETECTED", True)  # STALE 도 함께 되돌림
+
+    for row in restore:  # 운영 기준을 다시 넣은 뒤 다음 후속 판정
+        await db.execute(
+            text(
+                "UPDATE operating_rule_sets SET effective_from = :f WHERE operating_rule_set_id = :i"
+            ),
+            {"f": row.effective_from, "i": row.operating_rule_set_id},
+        )
+    later = replace(worse, current_stage="AT_PORT")
+    result = await _ingest(db, DAY3, company_id, [later])
+
+    first, second = await _runs(db, company_id, shipment.shipment_code)
+    assert (first.status, first.stale_primary_reason) == (
+        "STALE",
+        "DELAY_STAGE_CHANGED",
+    )
+    assert (second.version_no, second.trigger_reason, second.is_latest) == (
+        2,
+        "STAGE_CHANGED",
+        True,
+    )
+    assert result.skipped_auto_runs == ()

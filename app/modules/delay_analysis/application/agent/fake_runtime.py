@@ -64,7 +64,7 @@ from app.modules.shipment.infrastructure.shipment_enums import (
       - 도구 12개·분석 준비·판정 서명·설명을 가짜로 채워 그래프가 끝까지 흐르게 한다.
       - 가짜 도구 출력은 model_construct 로 만든다(검증 없이, 노드가 읽는 필드만 채움). 이 묶음은 흐름
         (부르는 순서·종료 갈래·실패 처리)을 보는 용도다. 출력 값이 계약에 맞는지는 도구를 만드는 쪽 시험
-        (개발 1 정답 대조, A 엔진 대조, #26 모델 시험)과 실제 도구로 바꾼 뒤 통합 시험(T14)이 본다.
+        (엔진 입력 정답 대조, A 엔진 대조, #26 모델 시험)과 실제 도구로 바꾼 뒤 통합 시험(T14)이 본다.
       - 노드가 만드는 도구 입력(T7·T6·T9·T10·T11)은 실제 계약 모델이라 검증된다. Pydantic 은 이미 만든 모델을
         다른 모델에 넣을 때 필드 검사는 다시 하지 않지만 모델 뒤 검사(model_validator after)는 다시 돌린다.
         그래서 다음 입력에 들어가는 가짜(T7·T9·T6)는 그 뒤 검사를 통과하게 채운다.
@@ -98,7 +98,7 @@ class FakeScenario:
 
 @dataclass(frozen=True)
 class FakeEngineInput:
-    """EngineInputLike 와 같은 칸(DV1-5). 실행 ID 들은 가짜 값이고 도구 가짜는 읽지 않는다."""
+    """EngineInputLike 와 같은 칸. 실행 ID 들은 가짜 값이고 도구 가짜는 읽지 않는다."""
 
     snap: dict[str, Any]
     analysis: dict[str, Any]
@@ -394,7 +394,6 @@ def fake_runtime(
         final_check_input=lambda passed: FakeFinalCheckInput(
             explanation=passed.final_explanation_json
         ),
-        base_date=BASE_DATE,
         input_seq=1,
         tracer=tracer,
         clock=lambda: datetime(2026, 1, 2, 9, 0, tzinfo=UTC),

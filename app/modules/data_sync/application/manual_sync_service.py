@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -62,11 +63,15 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 세션은 워커 역할 전용 세션(open_worker_session)이다. 요청 세션(get_db)과 따로이며 수집 서비스가 직접 커밋한다.
       - 가상 시각이면 수집 서비스 now 를 이번 수집 시각으로 고정한다. 수집 시작·일정 스냅샷 관측 시각이 이 값이고,
         완료 시각은 시작 + 30초다(이슈 #39 규칙 3). 실제 시각이면 서버의 지금 시각을 그대로 쓴다.
+      - 적용이 커밋된 뒤 이 수집이 만든 AUTO 분석 실행(created_run_ids, GLOW-18)을 start_runs 로 넘긴다(GLOW-128 자동 시작).
+        넘기는 함수가 예외를 내도 수집 결과는 그대로다(이미 커밋됨). 실행은 DETECTED 로 남아 다음 서버 시작 정리가 시작한다.
 """
 
 logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+# 커밋된 수집이 만든 분석 실행을 넘겨받는다(고객사, 실행 ID 들). 분석 실행기 start_many 와 같은 모양
+RunStarter = Callable[[uuid.UUID, Sequence[uuid.UUID]], object]
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,7 @@ class ManualSyncService:
         load_scenario: Callable[[], VirtualTmsScenario | None],
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         load_sources: Callable[[], VirtualSourceScenario | None] = lambda: None,
+        start_runs: RunStarter | None = None,
     ):
         self.open_session = open_session
         self.virtual_start = virtual_start
@@ -93,6 +99,7 @@ class ManualSyncService:
         self.now = now
         # 고객사 tick(다섯 원천)이 읽는 가상 원천 응답 (가상 TMS + 가상 ERP·WMS 파일)
         self.load_sources = load_sources
+        self.start_runs = start_runs
 
     def _ingest(self, db: AsyncSession, at: datetime) -> DataIngestService:
         stale = StaleJudgmentService(db, StaleChangeRepository(db))
@@ -151,13 +158,15 @@ class ManualSyncService:
                 logger.exception("수동 수집 %s: 원천 응답을 받지 못해 FAILED", run_id)
                 return None
             try:
-                return await ingest.apply(
+                result = await ingest.apply(
                     ticket.started, parsed.shipments, parsed.rejections
                 )
             except Exception:
                 # apply 가 이미 되돌리고 FAILED 를 남겼다
                 logger.exception("수동 수집 %s: 적용 실패", run_id)
                 return None
+        self._start_created_runs(ticket.started.company_id, result, run_id)
+        return result
 
     # --- 고객사 tick: 동기화 버튼 한 번에 다섯 원천을 함께 (2026-11-09 결정) ---------------------------------------
 
@@ -245,12 +254,29 @@ class ManualSyncService:
                 )
                 return None
             try:
-                return await ingest.apply(run, records, rejections)
+                result = await ingest.apply(run, records, rejections)
             except Exception:
                 logger.exception(
                     "동기화 %s %s: 적용 실패", run.source_domain, window.at
                 )
                 return None
+        self._start_created_runs(run.company_id, result, run.data_sync_run_id)
+        return result
+
+    def _start_created_runs(
+        self, company_id: uuid.UUID, result: IngestResult, run_id: object
+    ) -> None:
+        """커밋된 수집이 만든 AUTO 분석 실행을 분석 실행기에 넘긴다(GLOW-128). 실패해도 수집 결과는 그대로(DETECTED 로 남음)"""
+        if not result.created_run_ids or self.start_runs is None:
+            return
+        try:
+            self.start_runs(company_id, result.created_run_ids)
+        except Exception:
+            logger.exception(
+                "수동 수집 %s: 분석 실행 %s 시작 실패(DETECTED 로 남음)",
+                run_id,
+                list(result.created_run_ids),
+            )
 
     async def run_until_midnight(self, tenant: TenantContext, first: TickTicket) -> int:
         """데모의 다음 날로: 첫 tick 을 적용한 뒤 다음 자정 tick 까지 이어서 진행한다. 진행한 tick 수"""
@@ -262,6 +288,15 @@ class ManualSyncService:
             ticket = await self.request_tick(tenant)
             await self.run_tick(ticket)
             count += 1
+        return count
+        while ticket.plan.at < target:
+            ticket = await self.request_tick(tenant)
+            count += 1
+            if not any(await self.run_tick(ticket)):
+                logger.warning(
+                    "다음 날로 %s: tick 의 원천이 모두 실패해 멈춤", ticket.plan.at
+                )
+                break
         return count
 
 

@@ -5,6 +5,9 @@ from datetime import date, datetime
 from sqlalchemy import UUID, Text, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
+    last_applied_sync_started_at,
+)
 from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerType
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.analysis_run_data_version import (
@@ -71,15 +74,6 @@ _LATEST_RUN_CODE_OF_DAY = text(
      WHERE company_id = :company_id AND run_code LIKE :day_prefix || '%'
     """
 ).bindparams(bindparam("company_id", type_=_UUID), bindparam("day_prefix", type_=Text))
-
-# 고객사의 마지막 적재 수집 시작(초 단위, 엔진이 읽는 모양). 넘겨받은 실행 시각 확인에 쓴다(이슈 #50)
-_LAST_APPLIED_SYNC_STARTED_AT = text(
-    """
-    SELECT date_trunc('second', MAX(started_at))
-      FROM data_sync_runs
-     WHERE company_id = :company_id AND applied_seq IS NOT NULL
-    """
-).bindparams(bindparam("company_id", type_=_UUID))
 
 
 @dataclass(frozen=True)
@@ -165,9 +159,7 @@ class RunCreationRepository:
         엔진은 실행 시각 t 에 "시작 ≤ t 인 적재 수집의 최대 순번"을 입력 순번으로 본다(초 아래를 버림,
         PR #36 check_input_seq). 실행 시각이 이 값보다 이르면 실행의 input_seq 와 어긋난다.
         """
-        return await self.db.scalar(
-            _LAST_APPLIED_SYNC_STARTED_AT, {"company_id": company_id}
-        )
+        return await last_applied_sync_started_at(self.db, company_id)
 
     async def find_domain_latest_sync_run_ids(
         self, company_id: uuid.UUID, input_seq: int
