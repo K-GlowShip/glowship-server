@@ -136,7 +136,7 @@ await set_rls_context(
 | `test_me_service.py` | 가짜 Repository로 서비스 로직 검증. Client 성공(고객사명 포함), 토큰이 아니라 DB 값 사용, ADMIN·OWNER는 `None`이고 `companies`를 읽지 않음, 첫 조회 전 RLS 컨텍스트 설정 순서, 사용자 없음 401, DISABLED 403, 고객사 행 없음 |
 | `test_me_api.py` | 라우터 검증. 쿠키 없음·만료 토큰·refresh 토큰 401, 성공 200과 camelCase 키 5개, OWNER·ADMIN의 `null` 직렬화, 서비스 예외의 401·403 변환. 서비스는 `dependency_overrides`로 대체, 쿠키는 `create_access_token`으로 발급 |
 
-로컬 DB 확인: 2026 H1 합성 계정은 로그인할 수 없으므로(명세 D24) `POST /auth/signup`으로 만든 ADMIN과, 그 ADMIN을 `admin_assignments`에 넣은 뒤 `POST /admin/users`로 만든 Client 계정으로 Swagger에서 로그인한 다음 `GET /api/v1/me`를 호출합니다.
+로컬 DB 확인: 2026 H1 합성 계정은 로그인할 수 없으므로(명세 D24) `POST /auth/signup`(개발용, `POSTGRES_ROLE`을 비운 로컬 연결에서만 동작)으로 만든 ADMIN과, 그 ADMIN을 `admin_assignments`에 넣은 뒤 `POST /admin/users`로 만든 Client 계정으로 Swagger에서 로그인한 다음 `GET /api/v1/me`를 호출합니다.
 
 ## 6. 아직 없는 것
 

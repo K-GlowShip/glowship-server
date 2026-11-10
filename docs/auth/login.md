@@ -42,6 +42,8 @@ sequenceDiagram
 
 회원가입(`POST /api/v1/auth/signup`)과 같은 요청 스키마(`EmailLoginRequest`)를 사용합니다.
 
+회원가입은 **개발용**입니다(이슈 #78). 운영(`APP_ENV=prod`)에서는 등록하지 않아 404이고, `users`에 직접 INSERT하므로 `POSTGRES_ROLE`을 비운 로컬 연결(superuser)에서만 동작합니다. 앱 역할 연결(`POSTGRES_ROLE=glowship_v4_app`)에서는 앱 역할에 `users` INSERT 권한이 없어(0001) 권한 오류(500)가 나며, 코드로 따로 처리하지 않습니다. 운영 계정은 DB에 직접 넣습니다(README "운영 배포 DB 계정" 5번).
+
 ### 성공 응답
 
 ```http
@@ -242,7 +244,8 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/auth_api_router.py` | `/auth/signup`·`/auth/login`·`/auth/logout` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/auth_api_router.py` | `/auth/login`·`/auth/logout` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/signup_api_router.py` | `/auth/signup` 엔드포인트(개발용, 운영 미등록. 등록은 `app/main.py` `include_dev_routers`) |
 | `app/modules/user/application/auth_service.py` | `login` 비즈니스 로직, `TokenPair` |
 | `app/modules/user/application/exception/user_exceptions.py` | `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED` |
 | `app/core/security/jwt.py` | 토큰 발급·검증, `JwtConfig`, `TokenType`, `TokenError` |

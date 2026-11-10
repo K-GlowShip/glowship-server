@@ -209,6 +209,12 @@ uv run uvicorn app.main:app --reload
   2. 워커 로그인 계정을 만들어 워커 역할에 넣습니다: `GRANT glowship_v4_worker TO <워커계정>`. `.env`에 `WORKER_POSTGRES_USER`·`WORKER_POSTGRES_PASSWORD`. `POSTGRES_ROLE`을 넣으면 워커 계정이 없을 때 기동이 실패합니다.
   3. 서버는 연결할 때 역할을 바꿉니다(`app/core/database.py` `create_app_engine`·`create_worker_engine`). RLS 정책이 역할 이름(`current_user`)을 비교하므로, 고정하지 않으면 고객사 데이터가 모두 숨겨집니다.
   4. **사용자 없이 도는 백그라운드 작업(수집 적재·분석 자동 시작·결과 저장)은 워커 세션(`open_worker_session`)을 씁니다.** 앱 역할은 활성 사용자(`app.user_id`)를 요구해서, 앱 세션으로 돌리면 행이 보이지 않습니다(PR #48 리뷰).
+  5. **운영자(ADMIN·OWNER) 계정은 DB에 직접 넣습니다.** 회원가입 `POST /api/v1/auth/signup`은 개발용이라 `APP_ENV=prod`에서는 등록하지 않고, 앱 역할에는 `users` INSERT 권한이 없습니다(이슈 #78, 명세 D5).
+     - 비밀번호 해시와 사용자 ID를 만듭니다(비밀번호는 영문·숫자 6~16자, 입력이 화면·기록에 남지 않음):
+       `uv run python -c "import bcrypt, getpass, uuid; p=getpass.getpass('비밀번호: '); print(uuid.uuid7()); print(bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode())"`
+     - 앱·워커 계정이 아닌 관리자(소유자·superuser) 계정으로 접속해 넣습니다. `user_id`·`display_name`은 DB 기본값이 없고, 운영자는 `company_id`가 `NULL`이어야 합니다(`users_ck2`):
+       `INSERT INTO users (user_id, company_id, role_code, status, email, password_hash, display_name) VALUES ('<사용자 ID>', NULL, 'ADMIN', 'ACTIVE', '<이메일>', '<해시>', '<표시 이름>');`
+     - ADMIN이 고객사 일을 하려면 `admin_assignments`에 담당 고객사 배정도 넣습니다.
 
 v6.2 DDL로 만든 DB(팀 공통 개발 DB)의 마이그레이션:
 
