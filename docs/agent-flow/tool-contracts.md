@@ -196,7 +196,7 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 | `expected_plan_simulation.days[]` | 배열(`date`) | — | D부터 구간 끝까지 하루씩 | `simE.outs` |
 | `expected_plan_simulation.days[].lines[]` | 배열(`order_code`, `line_no`) `{order_code, line_no, protected}` | 아니오 | 그날 배정 출력의 위험 주문 줄 보호 수량 | `outs[날짜].lines` |
 
-`expected_plan_simulation`에는 **위험 주문 줄만** 담습니다. 엔진 T10(`options.py`)이 `simE`에서 읽는 것은 위험 주문의 확보일(`evaluate` 107행, `_outcomes_from_sim`)과 판정일의 줄별 보호량(`_securement` 34~42행, 그날 출력이 없으면 마지막 날)뿐이라 결과가 같습니다. 구간 끝은 `simulation_horizon_end`와 같아 따로 두지 않았습니다. A의 T10 구현이 다른 값을 읽게 되면 이 형식을 다시 맞춥니다.
+`expected_plan_simulation`에는 **위험 주문 줄만** 담습니다. 엔진 T10(`options.py`)이 `simE`에서 읽는 것은 위험 주문의 확보일(`evaluate` 107행, `_outcomes_from_sim`)과 판정일의 줄별 보호량(`_securement` 34~42행, 그날 출력이 없으면 마지막 날)뿐이라 결과가 같습니다. 구간 끝은 `simulation_horizon_end`와 같아 따로 두지 않았습니다. T10 구현(GLOW-133)이 이 형식 그대로 읽습니다.
 
 저장할 때 배송일은 `T23:59:59Z` 시각이 됩니다(엔진 `storage.py`). 그래서 모델은 그 시각으로 DDL을 확인합니다: 예상 배송 > 약속(`at_risk_orders_ck2`), `PRE_EXISTING`이면 기준선 배송 > 약속(ck5), `DELAY_INDUCED`이면 기준선 배송 ≤ 약속(ck6). 엔진은 날짜로 비교하므로 약속 시각이 `T23:59:59Z`가 아니면 두 비교가 갈릴 수 있습니다. 개발 DB(v6.2 + 2026 H1 적재)의 주문 171,888건(2025-01-01 ~ 2026-06-30 접수, 고객사 2곳)은 약속 시각이 모두 `23:59:59Z`입니다(11-04 확인). 날짜 끝이 아닌 약속 시각이 들어오는 원천이 생기면 갈리므로, 입력 검증(GLOW-100)에서 이런 주문이 있으면 실행을 보류로 막을지 정합니다(엔진에는 없는 검사라 그 작업에서 결정, #26 리뷰).
 
@@ -272,6 +272,8 @@ T9~T11이 읽는 값만 적습니다. 저장 열은 `inventory_impact_results`·
 ## 6. T10 `calculate_option_outcomes` — 대응안 결과 (A 구현)
 
 입력: T9 출력과 T1·T2·T3·T4·T5·T8, T6 `items[]`·영향 집합, T7 `risks[]`·`expected_plan_simulation`·`simulation_horizon_end`.
+
+**구현(GLOW-133):** `application/agent/tools/option_outcomes.py`(동기 순수 함수). 엔진 결과를 옮기지 않고 계약 입력만으로 엔진 `options.evaluate`를 다시 계산합니다. 대응안마다 도착 창고 예측 층과 주문 배정을 다시 돌리고, 배정은 해시 대조한 엔진 폴더의 공유 배정 모듈을 불러 씁니다(9절 Q17). 입력 대조·시험은 `docs/analysis/option-outcomes.md`.
 
 출력: `options[]`(T9와 같은 순서). 한 항목이 `response_options` 1행 + `option_order_outcomes` 여러 행이 되고, 서비스가 그대로 저장합니다(`response_option_id` 등 식별자와 `reason` 열은 서비스가 채움).
 
@@ -453,11 +455,12 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q9 | 다른 권역 출고의 대표 사유가 `DONOR_NO_NEXT_INBOUND`가 되는 경우(6.1절 C) | **결정(설계 담당, PR #19 승인 리뷰)** | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND`(판정 순서 7번). 엔진 참조 구현은 설계 담당이 같은 규칙으로 고침(glowship-plan `b80fd04`, `options.py` `f66e319c6bdd`). agentflow 4절 "실행 가능 조건"에도 반영됨(`1c0eb49`). 모델은 `NOT_FEASIBLE`과의 조합을 거부함 |
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장에서 더함(**11-05 처리:** 출력 계약은 바꾸지 않고 저장할 때 계산. `calculation_status = CALCULATED`, `warehouse_id` = T1 도착 창고, 가용·확정 수요·평균 판매는 T2·T4·T5에서 엔진 식대로, `risk_reason`은 엔진 문구. 서버 `docs/analysis/result-save.md` 4절) |
-| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함) |
+| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함). **11-09(GLOW-133):** T10이 배정을 다시 돌리는 데 T5 `pending_dispatch[]`·`waiting_order_codes[]`와 T7 형식으로 충분함을 확인(이슈 #62). T5 모델을 형식이 있는 모델로 바꿀지는 남음 |
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132 → 11-06 결정 1에 맞춤)** | 입력 연결 오류다. T9는 `RequiredDataError`를 내지만, 그래프의 도구 호출부(`call_tool`)가 재시도 없이 `FAILED`(`UNEXPECTED_TOOL_ERROR`, 메시지에 원래 코드)로 끝낸다. 보류는 분석 준비 단계(`EngineHold`)에서만 낸다. 엔진 입력의 `sku_attr`는 고객사 SKU 전체라 이 경우는 데이터로는 생기지 않는다 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
 | Q16 | T1 단계·예상일 E의 기준(트리거와 최신 관측) | **결정(PR #53 승인 리뷰)** | AUTO 실행은 트리거 일정 스냅샷, 재분석은 입력 순번까지의 최신 관측. 엔진 하네스(`run_s1_s5.py` 153행)와 같음. AUTO와 트리거 있음은 DDL `analysis_runs_ck16`으로 같은 뜻. AUTO 실행은 지연을 판정한 수집의 적재 트랜잭션 안에서 만들어(이슈 #34) 트리거가 곧 입력 순번까지의 최신 관측이므로, 둘이 갈리는 것은 실행 생성을 적재와 떼어 늦게 할 때뿐임. `trigger_shipment_schedule_snapshot_id`는 다른 기준: 엔진 `snapshot.build`는 넘긴 단계·E와 상관없이 최신 관측의 ID를 내므로(219행), 실행 생성을 떼면 이 ID가 실행의 트리거와 달라짐 |
+| Q17 | T10이 대응안마다 주문 배정을 다시 돌리는 방법 | **결정(사용자, 11-09, GLOW-133)** | 데이터 팀 공유 배정 모듈 `allocation_core.simulate`(규칙 `D00-B-b2-v1`)를 해시 대조한 엔진 폴더에서 불러 씀(`engine_loader.load_allocation_module`). 배정 규칙을 서버에 다시 쓰면 데이터 팀 모듈과 따로 고쳐질 수 있고, 공개 저장소에 엔진 코드를 옮겨 적는 셈이라서. 판정·사유·공여 풀·예측 재계산은 T9·T11처럼 서버 코드로 옮김 |
 
 ### 9.1 모델로 옮기며 채운 것
 
@@ -472,7 +475,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | T7 시각 비교 | 배송일 → `T23:59:59Z` | 엔진 `storage.py`, 4.1절 |
 | 식별자·시각 | 문자열로 받음(소문자 UUID, `…Z` 초 단위) | `uuid.UUID`·`datetime`은 대문자·`+09:00`·마이크로초를 받아 다른 모양으로 내보냄(11-04 확인) |
 | 조회 도구 T2~T5·T8의 입력 | **입력 없음(11-06, GLOW-125 2부)** | 범위는 실행마다 한 번 만드는 엔진 입력이 정함(인터페이스 결정 3, 3절 "구현") |
-| T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). A의 T10 구현이 다른 값을 읽으면 다시 맞춤 |
+| T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). T10 구현(GLOW-133)이 이 형식 그대로 읽음 |
 
 ## 10. 작업 중 실패와 원인
 
