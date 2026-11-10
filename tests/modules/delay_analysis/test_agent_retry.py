@@ -357,8 +357,9 @@ def test_model_has_all_42_checks():
 
 
 async def _base_run_id(db, status: str) -> uuid.UUID:
-    """엔진 결과 값(결과 분류·의존 범위·판정 서명)이 찬 완료 행. 진행 중 행에 엔진 값이 남은 최악의 경우를 대신한다."""
-    return (
+    """엔진 결과 값(결과 분류·의존 범위·판정 서명)이 찬 완료 행. 진행 중 행에 엔진 값이 남은 최악의 경우를 대신한다.
+    합성데이터가 없는 DB(CI 는 마이그레이션만 적용)면 다른 DB 시험과 같이 건너뛴다."""
+    run_id = (
         await db.execute(
             text(
                 "SELECT analysis_run_id FROM analysis_runs WHERE status = :s"
@@ -368,7 +369,10 @@ async def _base_run_id(db, status: str) -> uuid.UUID:
             ),
             {"s": status},
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if run_id is None:
+        pytest.skip(f"엔진 값이 찬 {status} 분석 실행이 없는 DB")
+    return run_id
 
 
 async def _failing_checks(db, run_id: uuid.UUID, values: dict[str, Any]) -> list[str]:

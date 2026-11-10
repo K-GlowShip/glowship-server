@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.core.exceptions import include_exception_handlers
+from app.core.health import router as health_router
 from app.core.middleware import include_middlewares
 from app.modules.dashboard.presentation.dashboard_api_router import (
     router as dashboard_router,
@@ -70,6 +71,7 @@ include_middlewares(app)
 include_exception_handlers(app)
 
 # Routers
+app.include_router(health_router)  # GET /health (배포 확인용, 인증 없음, /api/v1 밖)
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(client_account_router)
