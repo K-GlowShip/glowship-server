@@ -28,13 +28,15 @@
 import argparse
 import asyncio
 import hashlib
+import json
 import sys
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import UUID as SA_UUID
@@ -45,8 +47,26 @@ from app.core.config import get_settings
 from app.core.locks import lock_analysis_run, lock_company
 from app.core.model_registry import Base
 from app.core.security.tenant import TenantContext
+from app.modules.data_sync.application.ingest.ingest_service import DataIngestService
+from app.modules.data_sync.application.ingest.source_payload import (
+    SourceInventory,
+    SourceOrder,
+    SourceOrderLine,
+    SourceRecord,
+)
 from app.modules.data_sync.application.manual_sync_service import ManualSyncService
-from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
+from app.modules.data_sync.application.virtual_clock import (
+    SOURCE_SLOT,
+    VIRTUAL_FINISH_AFTER,
+)
+from app.modules.data_sync.infrastructure.data_sync_enums import (
+    ConnectionMethod,
+    DataSyncRunStatus,
+    SourceDomain,
+)
+from app.modules.data_sync.infrastructure.repository.ingest_repository import (
+    IngestRepository,
+)
 from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 from app.modules.delay_analysis.application.agent.explanation import (
     ExplanationPassed,
@@ -55,6 +75,9 @@ from app.modules.delay_analysis.application.agent.explanation import (
 from app.modules.delay_analysis.application.run_creation.run_creation_service import (
     create_analysis_run,
     record_input_data_versions,
+)
+from app.modules.delay_analysis.application.stale.stale_service import (
+    StaleJudgmentService,
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import (
     AnalysisRunStatus,
@@ -68,6 +91,9 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 )
 from app.modules.delay_analysis.infrastructure.repository.run_creation_repository import (
     RunCreationRepository,
+)
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
 )
 
 # 결과 표 (엔진 storage.rows_for 가 만드는 표 중 결과 행만 넣는다. 실행 행은 서버가 만든 것을 갱신)
@@ -160,6 +186,104 @@ async def sync_scenario(
         raise DemoSeedError(
             f"수동 수집이 실패했거나 거부가 있습니다: {None if result is None else result.rejections}"
         )
+    return True
+
+
+# --- 0. 보완 하루(선택) ---------------------------------------------------------------------------
+
+SUPPLEMENT_SOURCES = (
+    SourceDomain.PRODUCT,
+    SourceDomain.WAREHOUSE,
+    SourceDomain.ORDER,
+    SourceDomain.SHIPMENT,
+    SourceDomain.INVENTORY,
+)
+
+
+def _utc(value: str) -> datetime:
+    return datetime.fromisoformat(value)  # 'Z' 를 그대로 읽음 (Python 3.11+)
+
+
+def supplement_records(supplement: dict) -> dict[SourceDomain, list[SourceRecord]]:
+    """census extend_day.py 결과(07-01 하루) → 원천별 레코드. 상품·창고·선적은 변경 없음(빈 응답)."""
+    orders = [
+        SourceOrder(
+            order_code=o["order_code"],
+            sales_channel=o["sales_channel"],
+            customer_region=o["customer_region"],
+            warehouse_code=o["warehouse_code"],
+            ordered_at=_utc(o["ordered_at"]),
+            promised_delivery_at=_utc(o["promised_delivery_at"]),
+            status=o["status"],
+            lines=tuple(
+                SourceOrderLine(
+                    line_no=line["line_no"],
+                    sku_code=line["sku_code"],
+                    ordered_quantity=line["ordered_quantity"],
+                    shipped_quantity=line["shipped_quantity"],
+                    line_status=line["line_status"],
+                )
+                for line in o["lines"]
+            ),
+        )
+        for o in supplement["order_response"]
+    ]
+    inventory = [
+        SourceInventory(
+            inventory_date=date.fromisoformat(r["inventory_date"]),
+            warehouse_code=r["warehouse_code"],
+            sku_code=r["sku_code"],
+            on_hand_quantity=r["on_hand_quantity"],
+            reserved_quantity=r["reserved_quantity"],
+            available_quantity=r["available_quantity"],
+            outbound_quantity=r["outbound_quantity"],
+        )
+        for r in supplement["inventory_response"]
+    ]
+    return {
+        SourceDomain.PRODUCT: [],
+        SourceDomain.WAREHOUSE: [],
+        SourceDomain.ORDER: orders,
+        SourceDomain.SHIPMENT: [],
+        SourceDomain.INVENTORY: inventory,
+    }
+
+
+async def load_supplement(
+    db: AsyncSession, company_id: uuid.UUID, supplement: dict
+) -> bool:
+    """
+    보완 하루(census 가 만든 07-01 주문·재고)를 관측일(07-02) 가상 시각에 다섯 원천 수집으로 적재한다(위험 주문 보완, GLOW-89).
+      - 원천 자리(SOURCE_SLOT)·완료 = 시작 + 30초는 수동 수집과 같다. 그래서 뒤의 SHIPMENT 수동 수집은 다음 날(07-03)이 된다.
+      - 이미 그날 재고가 있으면 건너뛴다(여러 번 돌려도 같음). 거부가 하나라도 있으면 멈춘다.
+    """
+    day = date.fromisoformat(supplement["day"])
+    latest = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id})
+    if (
+        latest is not None and latest >= day
+    ):  # 재고가 하나도 없는 고객사면 None (PR #80 리뷰)
+        return False
+    observed = datetime.combine(
+        date.fromisoformat(supplement["observed_at"]), datetime.min.time(), UTC
+    )
+    records = supplement_records(supplement)
+    stale = StaleJudgmentService(db, StaleChangeRepository(db))
+    for domain in SUPPLEMENT_SOURCES:
+        at = observed + timedelta(minutes=SOURCE_SLOT[domain])
+        service = DataIngestService(
+            db,
+            IngestRepository(db),
+            stale,
+            now=lambda at=at: at,
+            finish_after=VIRTUAL_FINISH_AFTER,
+        )
+        result = await service.ingest(
+            company_id, domain, ConnectionMethod.API, records[domain]
+        )
+        if result.rejections or result.status != DataSyncRunStatus.SUCCEEDED:
+            raise DemoSeedError(
+                f"보완 수집 {domain.value} 이 실패했거나 거부가 있습니다: {result.status} {result.rejections[:3]}"
+            )
     return True
 
 
@@ -379,6 +503,7 @@ async def seed_demo(
     scenario: VirtualTmsScenario,
     virtual_start: datetime,
     engine: Engine,
+    supplement: dict | None = None,
 ) -> list[SeededRun]:
     """데모 시드 한 번. 커밋은 부르는 쪽(수동 수집은 수집 서비스가 직접 커밋)."""
     company_id = await db.scalar(
@@ -387,12 +512,23 @@ async def seed_demo(
     )
     if company_id is None:
         raise DemoSeedError(f"고객사 {company_code} 가 없습니다(확정 DB 적재 확인)")
+    if supplement is not None:
+        if supplement["company_code"] != company_code:
+            raise DemoSeedError(
+                f"보완 파일 고객사 {supplement['company_code']} ≠ {company_code}"
+            )
+        await load_supplement(db, company_id, supplement)
     await sync_scenario(
         db, open_session, company_id, company_code, scenario, virtual_start
     )
-    basis_day = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id}) + timedelta(
-        days=1
-    )
+    latest = await db.scalar(_LATEST_INVENTORY_DATE, {"c": company_id})
+    if (
+        latest is None
+    ):  # 재고가 없으면 기준일을 정할 수 없음 (PR #80 리뷰: None + timedelta 오류 대신 알림)
+        raise DemoSeedError(
+            f"고객사 {company_code} 의 재고 행이 없습니다(확정 DB 적재 확인)"
+        )
+    basis_day = latest + timedelta(days=1)
     seeded = []
     for event in (await db.execute(_OPEN_EVENTS, {"c": company_id})).all():
         run = await ensure_run(db, company_id, event)
@@ -422,7 +558,17 @@ async def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="모두 되돌린다(DB 그대로)"
     )
+    parser.add_argument(
+        "--supplement",
+        default=None,
+        help="보완 하루 파일(census extend_day.py 결과 JSON). 주면 데모 수집 전에 관측일 다섯 원천 수집을 넣는다",
+    )
     args = parser.parse_args()
+    supplement = (
+        json.loads(Path(args.supplement).read_text(encoding="utf-8"))
+        if args.supplement
+        else None
+    )
 
     settings = get_settings()
     if settings.virtual_tms_scenario_path is None:
@@ -456,6 +602,7 @@ async def main() -> int:
                     scenario=scenario,
                     virtual_start=settings.virtual_clock_start,
                     engine=engine,
+                    supplement=supplement,
                 )
                 await db.flush()
             except DemoSeedError as error:
