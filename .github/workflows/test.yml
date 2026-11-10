@@ -17,6 +17,9 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   POSTGRES_USER: glowship
   POSTGRES_PASSWORD: glowship
@@ -58,8 +61,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
+        # Dockerfile 의 uv 판과 같게 고정해 CI·이미지·로컬이 같은 판으로 uv.lock 을 읽는다
         uses: astral-sh/setup-uv@v6
         with:
+          version: "0.12.17"
           enable-cache: true
 
       - name: Install Python and dependencies

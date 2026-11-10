@@ -33,6 +33,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---------- runtime: 코드 + .venv ----------
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
+# 배포 스크립트의 옛 이미지 정리(docker image prune --filter label=…)가 이 프로젝트 이미지만 고르는 표식
+LABEL app=glowship-server
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
@@ -42,11 +45,12 @@ RUN groupadd --system app && useradd --system --gid app --home-dir /app --shell 
 
 WORKDIR /app
 
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
+# 코드·의존성은 root 소유로 둔다(읽기·실행만 가능). 실행 사용자 app 이 코드를 고칠 수 없게 하기 위해서다(PR #92 리뷰).
+COPY --from=builder /app/.venv /app/.venv
 # 실행에 필요한 것만 복사한다 (tests·docs·resource 는 .dockerignore 로 제외).
-COPY --chown=app:app app ./app
-COPY --chown=app:app migrations ./migrations
-COPY --chown=app:app alembic.ini pyproject.toml ./
+COPY app ./app
+COPY migrations ./migrations
+COPY alembic.ini pyproject.toml ./
 
 USER app
 

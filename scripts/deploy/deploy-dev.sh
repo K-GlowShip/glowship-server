@@ -20,7 +20,8 @@
 #                  GLOWSHIP_ENGINE_DIR=/opt/engine 을 컨테이너에 준다. 비우면 엔진 없이 뜬다(분석 기능 비활성).
 #   HEALTH_PATH    헬스 확인 경로. 기본 /health (app/core/health.py. 서버가 뜨고 DB 에 SELECT 1 이 되면 200, 아니면 503)
 #   HEALTH_TIMEOUT 헬스 확인 대기 초. 기본 60
-#   ECR_LOGIN      1(기본)이면 ECR 로그인. 로컬 이미지로 시험할 때 0
+#   ECR_LOGIN      1(기본)이면 ECR 로그인·옛 이미지 정리. 로컬 이미지로 시험할 때 0 (pull·정리 건너뜀)
+#   LOG_DIR        헬스 실패 때 컨테이너 로그를 남길 폴더. 기본 /var/log/glowship (Actions 로그로는 보내지 않음)
 #
 # EC2 준비 (한 번만)
 #   - SSM Agent 동작 (Amazon Linux 2023 기본 포함), 인스턴스 역할에 AmazonSSMManagedInstanceCore + AmazonEC2ContainerRegistryReadOnly
@@ -123,8 +124,14 @@ start_container "$IMAGE"
 if wait_healthy; then
   log "헬스 확인 통과: ${HEALTH_PATH}"
 else
-  log "헬스 확인 실패. 컨테이너 로그(마지막 50줄):"
-  docker logs --tail 50 "$APP_NAME" 2>&1 || true
+  # 컨테이너 로그는 EC2 안에만 남긴다. SSM 출력은 공개 저장소의 Actions 로그로 가는데, 앱 로그에는 SQL 바인딩 값
+  # (로그인 이메일 등)이 섞일 수 있기 때문이다(PR #92 리뷰). 보려면 SSM 세션이나 콘솔에서 아래 경로를 연다.
+  log_dir="${LOG_DIR:-/var/log/glowship}"
+  mkdir -p "$log_dir"
+  failure_log="$log_dir/deploy-failed-$(date +%Y%m%dT%H%M%S).log"
+  docker logs --tail 200 "$APP_NAME" > "$failure_log" 2>&1 || true
+  chmod 600 "$failure_log" || true
+  log "헬스 확인 실패. 컨테이너 로그는 서버에만 남겼습니다: $failure_log"
   if [ -n "$previous_image" ] && [ "$previous_image" != "$IMAGE" ]; then
     log "직전 이미지로 되돌립니다: $previous_image"
     start_container "$previous_image"
@@ -137,7 +144,11 @@ else
   exit 1
 fi
 
-# 6. 옛 이미지 정리 (돌고 있는 컨테이너가 쓰는 이미지는 지워지지 않는다)
-docker image prune -af --filter "until=24h" >/dev/null 2>&1 || true
+# 6. 옛 이미지 정리. 이 프로젝트 이미지(Dockerfile 의 LABEL app=glowship-server)만, 24시간 넘게 안 쓴 것만 지운다.
+#    로컬 시험(ECR_LOGIN=0)에서는 다른 프로젝트 이미지를 건드리지 않도록 아예 건너뛴다.
+#    돌고 있는 컨테이너가 쓰는 이미지는 지워지지 않는다.
+if [ "$ECR_LOGIN" = "1" ]; then
+  docker image prune -af --filter "label=app=glowship-server" --filter "until=24h" >/dev/null 2>&1 || true
+fi
 
 log "배포 완료: $IMAGE"
