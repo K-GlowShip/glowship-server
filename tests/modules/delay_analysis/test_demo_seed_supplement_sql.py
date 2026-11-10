@@ -190,6 +190,25 @@ async def test_seed_with_supplement_gives_order_risk(db_write_session):
         and r.baseline <= r.promised < r.expected
         for r in risks
     )
+    # 항구·출항 전은 위험 주문 0행(PRE_EXISTING 도 없음). 화면 숫자가 해상 3건과 같게(이슈 #103, demo-seed.md 7-3)
+    others = (
+        await db.execute(
+            text(
+                """
+                SELECT s.shipment_code, count(a.at_risk_order_id) AS n
+                  FROM analysis_runs r JOIN delay_events e USING (delay_event_id)
+                  JOIN shipments s ON s.shipment_id = e.shipment_id
+                  LEFT JOIN at_risk_orders a ON a.analysis_run_id = r.analysis_run_id
+                 WHERE r.is_latest AND s.shipment_code IN ('DEMO-0702-PORT', 'DEMO-0702-PRE')
+                 GROUP BY 1 ORDER BY 1
+                """
+            )
+        )
+    ).all()
+    assert [(o.shipment_code, o.n) for o in others] == [
+        ("DEMO-0702-PORT", 0),
+        ("DEMO-0702-PRE", 0),
+    ]
     run_days = await db.scalar(
         text(
             "SELECT array_agg(DISTINCT r.started_at::date) FROM analysis_runs r"

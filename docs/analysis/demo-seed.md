@@ -104,5 +104,6 @@
 | `DEMO-0702-PORT` 항구 · WH-EAST · SKU-018 | `READY_FOR_REVIEW` · `FORECAST_ONLY_READY` | 현행 유지 `FEASIBLE`(추천), 타 지역 출고 `NOT_FEASIBLE`(`FORECAST_EFFECT_BELOW_ONE_UNIT`) | 없음 |
 | `DEMO-0702-PRE` 출항 전 · WH-EAST · SKU-022 | `NO_RISK` · `PURE_NO_RISK` | — | 없음 |
 
+- **화면 숫자(2026-11-10, 데모 DB `glowship_demo`를 API 로 읽음, 이슈 #103):** 지연 목록 `atRiskOrderCount` 해상 3·항구 0·출항 전 0, 대시보드 `atRiskOrderCount` 3(`atRiskOrderRate` 0.0168, `lastSyncedAt` 07-03 00:03:30). 현재 실행의 위험 주문은 해상 `DELAY_INDUCED` 3행뿐이고 `PRE_EXISTING`은 0행이다(같은 DB 의 `PRE_EXISTING` 7행은 01-15 에 만든 `STALE` 실행이라 숫자에 들어가지 않는다). 끝까지 시험이 항구·출항 전 0행을 확인한다. 보완 하루를 건너뛰면(이미 넣었거나 파일 날짜가 맞지 않음) 시드가 "보완 하루 건너뜀"을 한 줄 출력한다.
 - 기준일이 하루 뒤(07-02)라 항구·출항 전 결과가 기본 시드와 다르다(사건 주문 없이 보완 하루만 넣어도 같음). 판단 API 18·19 대상은 해상·항구 2건이다.
 - 사건을 항구 선적(SKU-018)에 두면 위험 주문이 나오지 않는다: 그 선적의 계획 입고일(06-30)이 기준일보다 일러, 계획대로였어도 늦는 주문(`PRE_EXISTING`)이 되기 때문이다(엔진 `core.order_layer`, 결과 분류는 `DELAY_INDUCED` 가 있어야 `READY_ORDER_RISK`). 그래서 계획 입고일(07-03)이 기준일 뒤인 해상 선적 SKU 에 둔다.
