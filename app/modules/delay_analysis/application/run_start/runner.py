@@ -30,6 +30,7 @@ from app.modules.delay_analysis.application.run_start.transitions import (
     IN_PROGRESS_STEPS,
     RESTART_FAILURE_MESSAGE,
     StartedRun,
+    UnfinishedRun,
     advance_status,
     begin_analysis,
     fail_unfinished,
@@ -57,6 +58,8 @@ from app.modules.delay_analysis.infrastructure.repository.run_status_repository 
         그 실행은 다음 서버 시작 정리가 FAILED 로 끝낸다. 취소(CancelledError)는 잡지 않는다(종료 때 다음 시작 정리로).
       - 서버 시작 정리 sweep_on_startup: DETECTED 는 다시 시작, 진행 중은 그때 단계로 FAILED(사용자 결정 11-08).
         서버 프로세스가 하나라는 전제다(둘 이상이면 다른 프로세스가 돌리는 실행을 FAILED 로 만든다, docs/analysis/auto-start.md 5절).
+        실행 하나를 FAILED 로 바꾸다 예외가 나면 로그만 남기고 다음 실행으로 넘어간다(서버가 뜨지 않게 하지 않음).
+        남은 실행 조회 자체가 실패하면 그대로 올려 서버 시작을 멈춘다(설정·권한 잘못이라 바로 알려야 함).
       - 종료 shutdown: 돌던 작업을 유예 시간만큼 기다리고 남은 것은 취소한다.
 """
 
@@ -85,6 +88,8 @@ async def _reuse(db: AsyncSession) -> AsyncIterator[AsyncSession]:
 class SweepResult:
     restarted: list[uuid.UUID] = field(default_factory=list)
     failed: list[uuid.UUID] = field(default_factory=list)
+    # FAILED 로 바꾸다 예외가 난 실행(진행 중으로 남음, 다음 시작 정리가 다시 봄)
+    errors: list[uuid.UUID] = field(default_factory=list)
 
 
 def initial_state(run: StartedRun) -> dict[str, Any]:
@@ -278,25 +283,37 @@ class AnalysisRunner:
                 if self.start(item.company_id, item.analysis_run_id):
                     result.restarted.append(item.analysis_run_id)
                 continue
-            async with self.open_session() as db:
-                saved = await fail_unfinished(
-                    db,
-                    company_id=item.company_id,
-                    analysis_run_id=item.analysis_run_id,
-                    message=RESTART_FAILURE_MESSAGE,
-                    now=await self._save_time_of(
-                        db, item.company_id, item.analysis_run_id
-                    ),
+            try:
+                saved = await self._fail_on_restart(item)
+            except Exception:
+                # 실행 하나 때문에 서버가 뜨지 않게 하지 않는다. 그 실행은 진행 중으로 남아 다음 시작 정리가 다시 본다
+                logger.exception(
+                    "서버 시작 정리: 분석 실행 %s 를 FAILED 로 바꾸지 못했습니다(다음 시작 때 다시 정리)",
+                    item.analysis_run_id,
                 )
-                await db.commit()
+                result.errors.append(item.analysis_run_id)
+                continue
             if saved is not None and saved.saved:
                 result.failed.append(item.analysis_run_id)
         logger.info(
-            "서버 시작 정리: 다시 시작 %d건, 분석 도중 멈춰 FAILED %d건",
+            "서버 시작 정리: 다시 시작 %d건, 분석 도중 멈춰 FAILED %d건, 정리 실패 %d건",
             len(result.restarted),
             len(result.failed),
+            len(result.errors),
         )
         return result
+
+    async def _fail_on_restart(self, item: UnfinishedRun) -> ResultSaveOutcome | None:
+        async with self.open_session() as db:
+            saved = await fail_unfinished(
+                db,
+                company_id=item.company_id,
+                analysis_run_id=item.analysis_run_id,
+                message=RESTART_FAILURE_MESSAGE,
+                now=await self._save_time_of(db, item.company_id, item.analysis_run_id),
+            )
+            await db.commit()
+        return saved
 
     async def shutdown(self) -> None:
         """돌던 작업을 유예 시간만큼 기다리고 남은 것은 취소한다(취소된 실행은 다음 시작 정리가 FAILED 로)."""

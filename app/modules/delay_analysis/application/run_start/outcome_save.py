@@ -35,9 +35,12 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import CompletedSt
       | NO_DELAY              | save_no_delay           | judge_no_delay 결과의 판정 서명·SHA-256
       | STALE(노드 경계)       | 저장 안 함              | 상태는 수집이 이미 STALE 로 바꿈
       - 종료 상태가 없으면(그래프가 outcome 없이 끝남) 연결 실수라 OutcomeMissingError 로 올린다. 실행기가 FAILED 로 남긴다.
-      - 입력 데이터 버전(analysis_run_data_versions)은 보류(ON_HOLD)가 아니면 저장과 같은 트랜잭션에서 기록한다.
-        입력 검증을 통과한 실행에만 기록하는 규칙(run_creation_service 머리말, 확정 DB 보류 실행 0건·나머지 도메인 5건)이다.
-        재분석 실행은 만들 때 기록하지 않아(docs/analysis/auto-start.md 3절) 여기서 채워진다. 이미 있으면 다시 넣지 않는다.
+      - 입력 데이터 버전(analysis_run_data_versions)은 보류(ON_HOLD)가 아니면 저장과 같은 트랜잭션에서 기록한다
+        (STALE 로 멈춘 실행 포함). 입력 검증을 통과한 실행에만 기록하는 규칙(run_creation_service 머리말, 확정 DB 보류 실행
+        0건·나머지 도메인 5건, 사용자 결정 11-10)이다. 그래프 밖에서 끝내는 FAILED 는 transitions.fail_unfinished 가 같은 규칙으로 기록한다.
+        재분석 실행은 만들 때 기록하지 않아 여기서 채워진다. 이미 있으면 다시 넣지 않는다.
+        자동(AUTO) 실행은 지금 만들 때 기록하므로(auto_run_service) 보류로 끝나도 5건이다. 확정 DB 와 다른 이 부분은
+        docs/analysis/auto-start.md 3절에 적었다.
       - 저장 함수들은 실행이 아직 진행 중일 때만 쓰고, 커밋은 부르는 쪽이 한다.
 """
 

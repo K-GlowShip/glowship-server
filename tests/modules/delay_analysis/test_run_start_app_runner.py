@@ -81,6 +81,22 @@ def test_enabling_without_all_tools_stops_startup():
     A.check_auto_start_ready(_settings(analysis_auto_start_enabled=False))
 
 
+def test_enabling_without_engine_dir_stops_startup(monkeypatch, tmp_path):
+    """T10 이 들어온 뒤를 흉내 내려고 빠진 도구를 비운다. 그때도 엔진 경로가 비어 있으면 멈춘다."""
+    monkeypatch.setattr(A, "missing_engine_tools", list)
+
+    with pytest.raises(A.AutoStartNotReadyError, match="GLOWSHIP_ENGINE_DIR"):
+        A.check_auto_start_ready(
+            _settings(analysis_auto_start_enabled=True, glowship_engine_dir=None)
+        )
+    A.check_auto_start_ready(
+        _settings(analysis_auto_start_enabled=True, glowship_engine_dir=tmp_path)
+    )
+    A.check_auto_start_ready(
+        _settings(analysis_auto_start_enabled=False, glowship_engine_dir=None)
+    )
+
+
 def test_engine_runtime_cannot_be_built_until_t10(monkeypatch):
     with pytest.raises(ValueError, match="calculate_option_outcomes"):
         A.build_app_runner(_settings()).runtime_factory(object(), _run())

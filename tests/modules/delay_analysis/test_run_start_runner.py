@@ -71,6 +71,7 @@ class _Db:
         self.session_log: list[str] = []
         self.unfinished: list[UnfinishedRun] = []
         self.fail_raises = False
+        self.fail_raises_for: set[uuid.UUID] = set()
 
     def detected(self, n=1):
         ids = [uuid.uuid4() for _ in range(n)]
@@ -94,7 +95,7 @@ class _Db:
         return True
 
     async def fail(self, db, *, company_id, analysis_run_id, message, now=None):
-        if self.fail_raises:
+        if self.fail_raises or analysis_run_id in self.fail_raises_for:
             raise RuntimeError("저장 실패(시험)")
         self.failed[analysis_run_id] = message
 
@@ -371,3 +372,26 @@ async def test_sweep_restarts_detected_and_fails_in_progress(db):
     assert result.restarted == [detected]
     assert db.failed[in_progress] == RESTART_FAILURE_MESSAGE
     assert db.saved[detected]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+
+
+async def test_sweep_continues_when_one_run_cannot_be_failed(db):
+    """실행 하나를 FAILED 로 바꾸다 예외가 나도 서버 시작을 멈추지 않고 다음 실행을 정리한다."""
+    broken, ok = uuid.uuid4(), uuid.uuid4()
+    (detected,) = db.detected()
+    for run_id in (broken, ok):
+        db.status[run_id] = "ANALYZING_IMPACT"
+    db.fail_raises_for = {broken}
+    db.unfinished = [
+        UnfinishedRun(COMPANY, broken, "ANALYZING_IMPACT"),
+        UnfinishedRun(COMPANY, ok, "ANALYZING_IMPACT"),
+        UnfinishedRun(COMPANY, detected, "DETECTED"),
+    ]
+    runner = _runner(db)
+
+    result = await runner.sweep_on_startup()
+    await runner.wait_idle()
+
+    assert result.errors == [broken]
+    assert broken not in db.failed
+    assert db.failed[ok] == RESTART_FAILURE_MESSAGE
+    assert result.restarted == [detected]

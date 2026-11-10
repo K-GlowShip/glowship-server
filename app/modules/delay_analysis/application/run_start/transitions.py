@@ -20,6 +20,9 @@ from app.modules.delay_analysis.application.result_save.result_save_service impo
     ResultSaveOutcome,
     save_analysis_failure,
 )
+from app.modules.delay_analysis.application.run_creation.run_creation_service import (
+    record_input_data_versions,
+)
 from app.modules.delay_analysis.infrastructure.analysis_enums import AnalysisRunStatus
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 
@@ -37,8 +40,9 @@ from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
         닫으므로(#63), 닫힌 에피소드에서 시작해 NO_DELAY 로 끝나야 한다(확정 DB E8 v2).
       - is_latest 가 거짓이면 경고 로그만 남기고 시작한다. 지금 생성 경로로는 생길 수 없는 상태이고, 건너뛰면
         영원히 DETECTED 로 남는다.
-      - 입력 데이터 버전은 여기서 기록하지 않는다. 입력 검증(엔진 입력)을 통과한 뒤 저장 단계에서 기록한다
-        (run_creation_service 규칙, 확정 DB 의 보류 실행은 데이터 버전 0건). outcome_save.save_graph_outcome 참고.
+      - 입력 데이터 버전은 여기서 기록하지 않는다. 보류(ON_HOLD)가 아닌 종료를 저장할 때 기록한다
+        (run_creation_service 규칙, 확정 DB 의 보류 실행만 데이터 버전 0건). outcome_save.save_graph_outcome·
+        fail_unfinished 참고(사용자 결정 11-10, docs/analysis/auto-start.md 3절).
 
     단계 전이 advance_status (VALIDATING → ANALYZING_IMPACT → ANALYZING_OPTIONS → VALIDATING_OUTPUT)
       - 명세 8절 "진행 중일 때만 상태 전이(L2)". 진행 중이고 앞으로 가는 전이만 한다. 그 사이 STALE 이 됐으면
@@ -193,12 +197,16 @@ async def fail_unfinished(
     """
     진행 중(VALIDATING~VALIDATING_OUTPUT)인 실행을 지금 단계로 FAILED 저장한다. DETECTED·끝난 실행은 그대로(None).
     DETECTED 를 두는 이유: 아직 아무것도 하지 않은 실행이라 다음 시작 정리가 다시 시작한다.
+    입력 데이터 버전도 같은 트랜잭션에서 기록한다. 보류가 아닌 종료는 모두 기록하는 규칙이라, 그래프 밖에서
+    끝내는 FAILED(마지막 잡기·시작 정리)도 그래프 안 FAILED 와 같게 5건이 된다(확정 DB FAILED 실행과 같음).
+    이미 있으면 다시 넣지 않는다(자동 실행은 만들 때 기록).
     now: 끝난 시각(저장 함수와 같은 규칙, 가상 시각이면 실행 시작 시각을 넘긴다).
     """
     await set_rls_context(db, user_id=None, company_id=company_id)
     run = await lock_analysis_run(db, analysis_run_id)
     if run is None or run.status not in IN_PROGRESS_STEPS:
         return None
+    await record_input_data_versions(db, run)
     return await save_analysis_failure(
         db,
         company_id=company_id,

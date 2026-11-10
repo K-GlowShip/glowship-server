@@ -173,6 +173,39 @@ async def test_fail_unfinished_keeps_current_step_and_skips_detected(db_write_se
     assert untouched is None and (await _row(db, hold)).status == "DETECTED"
 
 
+async def test_fail_unfinished_records_data_versions_like_graph_failure(
+    db_write_session,
+):
+    """
+    그래프 밖에서 끝내는 FAILED(마지막 잡기·시작 정리)도 입력 데이터 버전을 기록한다(사용자 결정 11-10).
+    재분석 실행처럼 만들 때 기록하지 않은 실행을 흉내 내려고 지운 뒤 부른다. DETECTED 는 그대로 0건.
+    """
+    db = db_write_session
+    rid = await _run_of(db, "NO_DELAY")
+    company = await _reset(db, rid, "ANALYZING_IMPACT")
+    hold = await _run_of(db, "ON_HOLD")
+    hold_company = await _reset(db, hold)
+    for run_id in (rid, hold):
+        await db.execute(
+            text("DELETE FROM analysis_run_data_versions WHERE analysis_run_id = :id"),
+            {"id": run_id},
+        )
+
+    await fail_unfinished(
+        db, company_id=company, analysis_run_id=rid, message=RESTART_FAILURE_MESSAGE
+    )
+    await fail_unfinished(
+        db,
+        company_id=hold_company,
+        analysis_run_id=hold,
+        message=RESTART_FAILURE_MESSAGE,
+    )
+
+    assert (await _row(db, rid)).status == "FAILED"
+    assert await db.scalar(_DATA_VERSIONS, {"id": rid}) == 5
+    assert await db.scalar(_DATA_VERSIONS, {"id": hold}) == 0
+
+
 async def test_find_unfinished_runs_sees_reset_run(db_write_session):
     db = db_write_session
     rid = await _run_of(db, "ON_HOLD")
