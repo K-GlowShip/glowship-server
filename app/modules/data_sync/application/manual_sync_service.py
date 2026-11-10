@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,11 +53,15 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 세션은 워커 역할 전용 세션(open_worker_session)이다. 요청 세션(get_db)과 따로이며 수집 서비스가 직접 커밋한다.
       - 가상 시각이면 수집 서비스 now 를 이번 수집 시각으로 고정한다. 수집 시작·일정 스냅샷 관측 시각이 이 값이고,
         완료 시각은 시작 + 30초다(이슈 #39 규칙 3). 실제 시각이면 서버의 지금 시각을 그대로 쓴다.
+      - 적용이 커밋된 뒤 이 수집이 만든 AUTO 분석 실행(created_run_ids, GLOW-18)을 start_runs 로 넘긴다(GLOW-128 자동 시작).
+        넘기는 함수가 예외를 내도 수집 결과는 그대로다(이미 커밋됨). 실행은 DETECTED 로 남아 다음 서버 시작 정리가 시작한다.
 """
 
 logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+# 커밋된 수집이 만든 분석 실행을 넘겨받는다(고객사, 실행 ID 들). 분석 실행기 start_many 와 같은 모양
+RunStarter = Callable[[uuid.UUID, Sequence[uuid.UUID]], object]
 
 
 @dataclass(frozen=True)
@@ -75,11 +80,13 @@ class ManualSyncService:
         virtual_start: datetime | None,
         load_scenario: Callable[[], VirtualTmsScenario | None],
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        start_runs: RunStarter | None = None,
     ):
         self.open_session = open_session
         self.virtual_start = virtual_start
         self.load_scenario = load_scenario
         self.now = now
+        self.start_runs = start_runs
 
     def _ingest(self, db: AsyncSession, at: datetime) -> DataIngestService:
         stale = StaleJudgmentService(db, StaleChangeRepository(db))
@@ -138,10 +145,20 @@ class ManualSyncService:
                 logger.exception("수동 수집 %s: 원천 응답을 받지 못해 FAILED", run_id)
                 return None
             try:
-                return await ingest.apply(
+                result = await ingest.apply(
                     ticket.started, parsed.shipments, parsed.rejections
                 )
             except Exception:
                 # apply 가 이미 되돌리고 FAILED 를 남겼다
                 logger.exception("수동 수집 %s: 적용 실패", run_id)
                 return None
+        if result.created_run_ids and self.start_runs is not None:
+            try:
+                self.start_runs(ticket.started.company_id, result.created_run_ids)
+            except Exception:
+                logger.exception(
+                    "수동 수집 %s: 분석 실행 %s 시작 실패(DETECTED 로 남음)",
+                    run_id,
+                    list(result.created_run_ids),
+                )
+        return result

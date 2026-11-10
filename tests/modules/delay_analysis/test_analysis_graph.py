@@ -621,3 +621,25 @@ async def test_실행_도구_묶음_연결_실수는_실패_요약으로_바꾸�
         )
     with pytest.raises(RuntimeWiringError, match="analysis_runtime"):
         await build_analysis_graph().ainvoke(_input(), {"configurable": {}})
+
+
+async def test_tool_context_takes_base_date_from_engine_input():
+    """기준일 D 는 엔진 입력(EngineInput.base_date, #67)에서 온다. 그날 자료가 없으면 실행 날짜보다 이르다."""
+    import dataclasses
+    from datetime import date
+
+    runtime = fake_runtime()
+    pulled = dataclasses.replace(runtime.preparer.engine, base_date=date(2025, 12, 31))
+    runtime.preparer.engine = pulled
+    seen = []
+    t1 = runtime.registry[ToolName.GET_DELAY_CONTEXT]
+
+    async def spy(ctx, payload):
+        seen.append(payload.base_date)
+        return await t1.fn(ctx, payload)
+
+    runtime.registry[ToolName.GET_DELAY_CONTEXT] = dataclasses.replace(t1, fn=spy)
+    await _run(runtime=runtime)
+
+    assert runtime.ctx.base_date == date(2025, 12, 31)
+    assert seen == [date(2025, 12, 31)]

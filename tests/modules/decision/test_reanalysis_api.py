@@ -190,3 +190,43 @@ async def test_service_rejection_is_returned_as_is(fake_service, error):
 
     assert response.status_code == error.error_code.status_code
     assert response.json()["code"] == error.error_code.code
+
+
+# --- 분석 자동 시작 연결 (GLOW-128) --------------------------------------------------------------
+
+
+class RecordingRunner:
+    def __init__(self):
+        self.started: list[tuple] = []
+
+    def start(self, company_id, run_id):
+        self.started.append((company_id, run_id))
+        return True
+
+
+@pytest.fixture
+def runner():
+    from app.modules.delay_analysis.application.run_start.app_runner import (
+        get_analysis_runner,
+    )
+
+    recording = RecordingRunner()
+    app.dependency_overrides[get_analysis_runner] = lambda: recording
+    yield recording
+    app.dependency_overrides.pop(get_analysis_runner, None)
+
+
+async def test_new_run_is_handed_to_runner_after_service(fake_service, runner):
+    response = await _post()
+
+    assert response.status_code == 202
+    assert runner.started == [(COMPANY_ID, NEW_RUN_ID)]
+
+
+async def test_rejected_request_starts_nothing(fake_service, runner):
+    fake_service.error = DecisionException(DecisionErrorCode.RUN_IN_PROGRESS)
+
+    response = await _post()
+
+    assert response.status_code == 409
+    assert runner.started == []

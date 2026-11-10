@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     # 0 이면 캐시를 끄고 실행마다 저장소를 새로 읽는다.
     engine_store_cache_max_entries: int = Field(default=2, ge=0)
 
+    # Analysis auto start (GLOW-128, 이슈 #51, docs/analysis/auto-start.md)
+    # 켜면 지연 감지(AUTO)·재분석(API 20)으로 만든 실행을 서버 안에서 바로 분석하고 저장한다. 서버 시작 때 남은 실행을 정리한다.
+    # 기본은 꺼짐: 실제 실행 묶음은 대응안 결과 도구 T10(GLOW-133, #90)을 아직 등록하지 않아 만들 수 없다.
+    # 등록·켜기는 실제 묶음 끝까지 시험·NFR-001 측정과 함께 한다(사용자 결정 11-09·11-10, docs/analysis/auto-start.md 7절).
+    # 꺼져 있으면 지금처럼 실행이 DETECTED 로 남는다.
+    analysis_auto_start_enabled: bool = False
+    # 한 서버 프로세스가 동시에 돌리는 분석 실행 수. 넘치면 DETECTED 그대로 기다린다(docs/analysis/auto-start.md 2절).
+    analysis_max_concurrent_runs: int = Field(default=4, ge=1)
+    # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
+    analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
+
     @field_validator("glowship_engine_dir", mode="before")
     @classmethod
     def _blank_engine_dir_is_unset(cls, value: object) -> object:

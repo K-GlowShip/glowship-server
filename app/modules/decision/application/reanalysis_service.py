@@ -27,11 +27,14 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerReas
         다른 재분석이 끝나기를 기다리고, L2 를 잡은 뒤 실행 상태를 다시 읽어 판정합니다.
       - 판정(reanalysis_policy) 을 통과하면 create_analysis_run(USER_REANALYSIS) 으로 새 실행을 만듭니다(개발자 3 함수).
         이전 실행은 is_latest 만 내리고 상태는 그대로입니다(재분석은 STALE 사유가 아님, 명세 4.6).
-      - 새 실행은 DETECTED 이고, 분석을 다시 돌리는 일(입력 확정 이후)은 이 서비스 밖입니다(GLOW-128).
+      - 새 실행은 DETECTED 이고, 분석을 다시 돌리는 일(입력 확정 이후)은 이 서비스 밖입니다. 라우터가 커밋 뒤
+        분석 실행기(GLOW-128 run_start)에 넘깁니다.
       - 실행 시각(이슈 #50): L1 뒤 DecisionClock.run_started_at 으로 구해 넘깁니다. 가상 시각이면 고객사 마지막 적재 수집 시작
         (7월 초), 아니면 넘기지 않아 DB 시각입니다. 기준일·run_code·운영 기준·requested_at 이 이 시각을 따릅니다.
       - 고객사에 없는 실행은 잠그기 전에 404 로 거릅니다(로컬 superuser 는 RLS 를 우회하므로 잠금 전에 고객사 조건으로 확인).
-      - 커밋은 요청 단위 세션(get_db)이 합니다. 거부하면 아무것도 바꾸지 않습니다.
+      - 새 실행을 만들면 여기서 커밋합니다(사용자 결정 11-08, docs/analysis/auto-start.md 4절). 요청 세션(get_db)의 커밋은 응답을 보낸 뒤에 돌아
+        (FastAPI 0.162 의존성 종료 순서), 그 전에 분석을 시작하면 새 실행이 아직 보이지 않습니다. API 25 수동 수집도
+        같은 이유로 요청 안에서 커밋합니다. 거부하면 커밋 전에 예외라 아무것도 바꾸지 않습니다.
 """
 
 
@@ -85,9 +88,12 @@ class ReanalysisService:
             started_at=started_at,
         )
         new_run = creation.run
-        return ReanalysisResult(
+        # 커밋하면 세션 설정에 따라 ORM 객체가 만료되므로 돌려줄 값을 먼저 읽는다
+        result = ReanalysisResult(
             run_id=new_run.analysis_run_id,
             version_no=new_run.version_no,
             parent_run_id=new_run.parent_analysis_run_id,
             status=new_run.status,
         )
+        await self.db.commit()
+        return result

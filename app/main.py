@@ -24,6 +24,10 @@ from app.modules.decision.presentation.member_draft_api_router import (
 from app.modules.decision.presentation.reanalysis_api_router import (
     router as reanalysis_router,
 )
+from app.modules.delay_analysis.application.run_start.app_runner import (
+    check_auto_start_ready,
+    get_analysis_runner,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_startup import (
     verify_engine_on_startup,
 )
@@ -59,7 +63,12 @@ from app.modules.user.presentation.signup_api_router import router as signup_rou
 async def lifespan(_: FastAPI):
     # 엔진 경로가 설정돼 있으면 시작할 때 해시 대조를 한 번 한다(원본이 없거나 다르면 서버가 뜨지 않음)
     verify_engine_on_startup()
+    # 분석 자동 시작(GLOW-128): 켰는데 도구가 덜 등록됐으면 멈추고, 켜져 있으면 남은 실행을 정리한다(꺼져 있으면 아무것도 안 함)
+    check_auto_start_ready(get_settings())
+    runner = get_analysis_runner()
+    await runner.sweep_on_startup()
     yield
+    await runner.shutdown()
 
 
 def include_dev_routers(app: FastAPI, settings: Settings) -> None:

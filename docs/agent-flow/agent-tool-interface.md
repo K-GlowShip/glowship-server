@@ -51,7 +51,7 @@
 class ToolContext:
     company_id: uuid.UUID
     analysis_run_id: uuid.UUID
-    base_date: date  # 기준일 D (실행 started_at 의 UTC 날짜)
+    base_date: date  # 기준일 D = EngineInput.base_date (실행 날짜보다 이를 수 있음)
     input_seq: int  # 실행 입력 순번 (#21)
     engine: EngineInputLike  # 엔진 입력 EngineInput (snap·analysis·store·실행 ID·기준일·입력 순번)
     tracer: ToolAttemptTracer | None = None  # GLOW-124 RunTracer
@@ -154,6 +154,8 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 | 엔진 입력 보류 | `save_analysis_failure` | `hold_summary(code, message)` |
 | NO_DELAY | `save_no_delay` | `judge_no_delay` 결과의 판정 서명·SHA-256 |
 | 노드 경계 STALE | 저장 안 함 | 상태는 서비스가 이미 STALE로 바꿈 |
+
+- 이 표대로 저장하는 코드는 분석 자동 시작의 `run_start/outcome_save.py`(`save_graph_outcome`)입니다. 보류가 아니면 같은 트랜잭션에서 입력 데이터 버전도 기록합니다([분석 자동 시작](../analysis/auto-start.md) 3절).
 
 ## 8. 작업 중 실패와 원인
 

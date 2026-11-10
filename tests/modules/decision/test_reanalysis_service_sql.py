@@ -243,3 +243,24 @@ async def test_run_of_other_company_or_unknown_is_404(db_write_session):
             await _service(db).request(
                 tenant, analysis_run_id=run_id, request_reason=None
             )
+
+
+async def test_reanalysis_commits_before_returning(db_write_session):
+    """새 실행을 서비스가 커밋한다(사용자 결정 11-08, docs/analysis/auto-start.md 4절): 요청 세션 커밋은 응답 뒤라, 그 전에 분석을 시작하면 새 실행이 안 보인다."""
+    db = db_write_session
+    row = await _run(db, status="STALE", is_latest=True)
+    await _reopen(db, row.delay_event_id)
+    commits = []
+    original = db.commit
+
+    async def counting_commit():
+        commits.append("commit")
+        await original()
+
+    db.commit = counting_commit
+
+    await _service(db).request(
+        _tenant(row), analysis_run_id=row.analysis_run_id, request_reason=None
+    )
+
+    assert commits == ["commit"]
