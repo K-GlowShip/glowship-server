@@ -25,6 +25,9 @@ from app.modules.delay_analysis.application.run_creation.run_creation_service im
 )
 from app.modules.delay_analysis.application.run_start.transitions import StartedRun
 from app.modules.delay_analysis.infrastructure.analysis_enums import CompletedStatus
+from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
+    recalculator_or_none,
+)
 
 """
     그래프 종료 상태 → 저장 함수 (docs/agent-flow/agent-tool-interface.md 7절 표, agentflow 5.5 출력 표)
@@ -102,8 +105,13 @@ async def save_graph_outcome(
         await record_input_data_versions(db, run)
     ids = {"company_id": run.company_id, "analysis_run_id": run.analysis_run_id}
     if outcome in (AnalysisOutcome.READY_FOR_REVIEW, AnalysisOutcome.NO_RISK):
+        # 저장 직후 재판정도 판정 서명 재계산을 쓴다(이슈 #75)
         return await save_analysis_result(
-            db, **ids, result=analysis_result_from_state(state), now=now
+            db,
+            **ids,
+            result=analysis_result_from_state(state),
+            recalculator=recalculator_or_none(db),
+            now=now,
         )
     if outcome == AnalysisOutcome.NO_DELAY:
         no_delay = state["no_delay"]

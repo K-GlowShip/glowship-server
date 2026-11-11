@@ -48,6 +48,9 @@ from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 from app.modules.delay_analysis.application.stale.stale_service import (
     StaleJudgmentService,
 )
+from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
+    recalculator_or_none,
+)
 from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
     StaleChangeRepository,
 )
@@ -72,7 +75,7 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 # 실제 시각으로 이만큼 넘게 RUNNING 인 수집은 죽은 것으로 보고 다음 동기화 요청에서 FAILED 로 닫는다(이슈 #94).
-# 버튼 한 번은 약 0.3초, 다음 날로는 30~45초라 정상 작업을 닫지 않는다.
+# RUNNING 하나는 tick 하나(로컬 약 0.3초) 동안만 산다. 다음 날로도 tick 마다 새로 만들므로 정상 작업을 닫지 않는다(이슈 #113).
 STALE_RUNNING_AFTER = timedelta(minutes=10)
 
 
@@ -116,7 +119,10 @@ class ManualSyncService:
         self.start_runs = start_runs
 
     def _ingest(self, db: AsyncSession, at: datetime) -> DataIngestService:
-        stale = StaleJudgmentService(db, StaleChangeRepository(db))
+        # STALE 2차: 판정 서명을 다시 계산해 바뀐 실행만 STALE (이슈 #75). 엔진 경로가 없으면 1차만
+        stale = StaleJudgmentService(
+            db, StaleChangeRepository(db), recalculator_or_none(db)
+        )
         if self.virtual_start is None:
             # 실제 시각: 시작·완료 모두 지금 시각 (완료는 시작보다 늦게, 이슈 #39 규칙 3)
             return DataIngestService(db, IngestRepository(db), stale, now=self.now)

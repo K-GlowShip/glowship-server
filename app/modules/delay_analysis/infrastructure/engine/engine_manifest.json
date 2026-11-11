@@ -115,8 +115,8 @@
     },
     {
       "path": "glowship_engine/explain/textcheck.py",
-      "sha256": "b13ca9e6956e71ae6d24f5ed9e791acfff6bfa32321ea7b89995f383b45c7b6b",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+      "sha256": "d0f344652920622c16c4c633293e40b5a9aab0f58cda641053083b1c2a25ad21",
+      "recorded_in": "glowship-plan f18f86d tools/glowship_engine/explain/textcheck.py (코드 토큰 수정판, 평가 시나리오 설명 GLOW-58)"
     },
     {
       "path": "glowship_engine/explain/validator.py",
