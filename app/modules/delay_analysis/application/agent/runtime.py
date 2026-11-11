@@ -29,8 +29,9 @@ from app.modules.delay_analysis.application.agent.tools.registry import (
       - 엔진 입력은 분석 준비 노드가 실행마다 한 번 만들어 여기에 담는다(start). 상태에 넣지 않는 이유:
         결과가 아니라 입력이고 고객사 전체 스냅샷이라 크다. 상태는 서비스가 받아 저장할 결과만 담는다.
       - 실행 하나에 묶음 하나. 다른 실행에 다시 쓰면 start 가 막는다(ToolContext 도 실행 하나에 하나).
-      - 엔진 입력(judge_no_delay·build_engine_input·decision_of)·설명 생성·T12 함수는 아직 develop 에 없어
-        여기서는 노드가 쓰는 모양(Protocol)만 정한다. 실제 함수는 "실제 도구 교체" 작업에서 끼운다.
+      - 여기서는 노드가 쓰는 모양(Protocol)만 정한다. 실제 함수(엔진 입력 judge_no_delay·build_engine_input·decision_of,
+        설명 생성 make_explainer, T12 입력 final_check_input, 실제 도구 12개)를 끼운 묶음은
+        run_start/engine_runtime.build_engine_runtime 이 만든다. 시험은 가짜 묶음(fake_runtime)을 쓴다.
 """
 
 RUNTIME_KEY = "analysis_runtime"

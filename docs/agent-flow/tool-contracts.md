@@ -139,18 +139,18 @@ D = min(실행 날짜, 최신 재고일 + 1, 성공한 주문 수집이 다룬 �
 | `…lines[].order_line_id`·`line_no`·`sku_id`·`sku_code` | | 아니오 | | | |
 | `…lines[].ordered_quantity` | 정수 | 아니오 | | `order_lines.ordered_quantity` | |
 | `…lines[].line_status` | text | 아니오 | `ACTIVE`·`REMOVED_AT_SOURCE`(ck3). 배정에는 `ACTIVE`만 씀 | `order_lines.line_status` | |
-| `allocation_state[]` | 창고별 | — | D−1 배정 하루 재생 결과. 형식은 아래 목록(GLOW-125 2부에서 채움, 9절 Q12) | 엔진 `allocation_core.allocate_day` | `restore[wh]`의 `carry`·`waiting`·`protection`·`secured_wait`·`result_sha256` |
+| `allocation_state[]` | 배열(`warehouse_code`) | — | D−1 배정 하루 재생 결과. 도착·공여 창고마다 한 개 | 엔진 `allocation_core.allocate_day` | `restore[wh]` |
+| `allocation_state[].replay_result_sha256` | SHA-256 | 아니오 | 재생 결과 해시 | | `result_sha256` |
+| `allocation_state[].pending_dispatch[]` | 배열(`order_code`) | — | D−1에 확보되어 출고를 기다리는 주문. 주문 층 시뮬레이션의 첫날 `pending_dispatch`로 들어감 | | `carry`(= `next_pending_dispatch`) |
+| `…pending_dispatch[].secured_date` | 날짜 | 아니오 | 확보일 | | |
+| `…pending_dispatch[].lines[]` | 배열(`line_no`) | — | 남은 수량이 있는 줄 | | |
+| `…lines[].sku_code`·`quantity` | text·정수(1 이상) | 아니오 | | | |
+| `allocation_state[].waiting_order_codes[]` | 코드 배열(중복 없음) | — | D−1 배정에서 확보하지 못하고 기다리는 주문 코드. 주문 층 시뮬레이션의 대기 주문 | | `waiting` |
+| `allocation_state[].blocked_order_protection[]`·`secured_waiting_for_dispatch[]` | 배열(`sku_code`) `{sku_code, quantity}` | — | SKU별 보호 수량·확보 뒤 출고 대기 수량(0 이상) | | `protection`·`secured_wait` |
 
 `allocation_state`는 DB에 저장된 값이 아니라 배정기를 하루 다시 돌려 얻는 값입니다. 엔진은 재생 결과의 예약 수량이 DB `reserved_quantity`와 다르면 보류합니다.
 
-`allocation_state[]` 형식(창고마다 한 개, `warehouse_code` 순). 엔진 주문 층(`core.simulate_orders`)이 읽는 값을 엔진 모양 그대로 둡니다. 모델은 아직 `list[dict]`이라 이 목록은 시험(`test_engine_input.py`)이 확인합니다.
-- `warehouse_code`: 도착·공여 창고
-- `replay_result_sha256`: 재생 결과 해시(`allocate_day`의 `result_sha256`)
-- `pending_dispatch[]`(`order_code` 순): D−1에 확보되어 출고를 기다리는 주문 `{order_code, secured_date, lines[]{line_no, sku_code, quantity}}`. 엔진 `restore.carry`(= `next_pending_dispatch`)이고, 주문 층 시뮬레이션의 첫날 `pending_dispatch`로 그대로 들어갑니다
-- `waiting_order_codes[]`: D−1 배정에서 확보하지 못하고 기다리는 주문 코드(`restore.waiting`). 주문 층 시뮬레이션의 대기 주문입니다
-- `blocked_order_protection[]`·`secured_waiting_for_dispatch[]`(`sku_code` 순) `{sku_code, quantity}`: SKU별 보호 수량·확보 뒤 출고 대기 수량(`restore.protection`·`secured_wait`)
-
-재생 결과의 주문 줄별 상태(`line_state`)는 엔진 계산이 읽지 않아 넣지 않았습니다.
+엔진 주문 층(`core.simulate_orders`)이 읽는 값을 엔진 모양 그대로 둡니다. 엔진 `carry`의 `company_code`·`warehouse_code`는 창고 항목이 이미 정하므로 뺐습니다(배정 모듈은 없으면 그 창고 값으로 봄). T10은 출고 대기 주문을 엔진에 넘길 때 JSON 모양(확보일 `YYYY-MM-DD` 문자열)으로 되돌립니다. 재생 결과의 주문 줄별 상태(`line_state`)는 엔진 계산이 읽지 않아 넣지 않았습니다.
 
 ### 3.6 T8 `get_operating_rules` — 운영 기준
 
@@ -455,7 +455,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | Q9 | 다른 권역 출고의 대표 사유가 `DONOR_NO_NEXT_INBOUND`가 되는 경우(6.1절 C) | **결정(설계 담당, PR #19 승인 리뷰)** | `NEEDS_CHECK` / `DONOR_NO_NEXT_INBOUND`(판정 순서 7번). 엔진 참조 구현은 설계 담당이 같은 규칙으로 고침(glowship-plan `b80fd04`, `options.py` `f66e319c6bdd`). agentflow 4절 "실행 가능 조건"에도 반영됨(`1c0eb49`). 모델은 `NOT_FEASIBLE`과의 조합을 거부함 |
 | Q10 | T6 `min_gap`을 표현할 수 없는 경우 | **결정** | 엔진은 계산할 날이 없으면(D ≥ 입고일) `float("inf")`를 냄(`core.py` 49행). JSON에는 무한대가 없으므로 `null`로 둠. `min_gap`은 가용 − 누적 수요라 음수가 될 수 있어 부호 있는 raw 값으로 받음 |
 | Q11 | T6·T7 출력에 없는 저장 열 | **결정** | T6 `available_quantity`·`committed_open_quantity`·`average_daily_sales`·`calculation_status`·`warehouse_id`, T7 `risk_reason`은 T9~T11이 읽지 않아 이 계약에 넣지 않음. 결과 저장에서 더함(**11-05 처리:** 출력 계약은 바꾸지 않고 저장할 때 계산. `calculation_status = CALCULATED`, `warehouse_id` = T1 도착 창고, 가용·확정 수요·평균 판매는 T2·T4·T5에서 엔진 식대로, `risk_reason`은 엔진 문구. 서버 `docs/analysis/result-save.md` 4절) |
-| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함). **11-09(GLOW-133):** T10이 배정을 다시 돌리는 데 T5 `pending_dispatch[]`·`waiting_order_codes[]`와 T7 형식으로 충분함을 확인(이슈 #62). T5 모델을 형식이 있는 모델로 바꿀지는 남음 |
+| Q12 | T5 `allocation_state`·T7 `expected_plan_simulation`의 필드 형식 | **결정** | 엔진 연결 작업(배정기를 실제로 돌리는 작업)에서 정함. 그때까지 모델은 자리만 둠(`list[dict]`·`dict`). Jira GLOW-112 설명의 "2차"(T5·T7·T10 배정 형식)에 있던 일을 옮긴 것. T10은 T7 `expected_plan_simulation`을 입력으로 받는 것 말고는 배정 형식이 없음(출력 `outcomes[]`는 6절에서 정함). **11-09(GLOW-133):** T10이 배정을 다시 돌리는 데 T5 `pending_dispatch[]`·`waiting_order_codes[]`와 T7 형식으로 충분함을 확인(이슈 #62). ~~T5 모델을 형식이 있는 모델로 바꿀지는 남음~~ **11-10(GLOW-128 실행 묶음 채우기):** T5 `allocation_state`를 형식 모델(`AllocationState`, 여섯 필드 모두)로 바꿈(3.5절 표). 확정 DB 실행 중 엔진 입력이 만들어지는 19건의 창고 상태 38개가 모두 모델을 통과하고, 모델에서 되돌린 출고 대기 주문이 원래 값과 같음. T5·T7 쪽 모두 정해져 Q12는 닫힘 |
 | Q13 | 영향 SKU가 T9 입력 `skus[]`에 없는 경우 | **결정(A, GLOW-132 → 11-06 결정 1에 맞춤)** | 입력 연결 오류다. T9는 `RequiredDataError`를 내지만, 그래프의 도구 호출부(`call_tool`)가 재시도 없이 `FAILED`(`UNEXPECTED_TOOL_ERROR`, 메시지에 원래 코드)로 끝낸다. 보류는 분석 준비 단계(`EngineHold`)에서만 낸다. 엔진 입력의 `sku_attr`는 고객사 SKU 전체라 이 경우는 데이터로는 생기지 않는다 |
 | Q14 | 리드타임이 없을 때 `KR_AIR_REPLENISH`의 `eligible_sku_codes[]` | **결정(A, GLOW-132)** | 정의에 리드타임 조건이 없으므로 그대로 채움. 이 경우 T10은 계산하지 않음 |
 | Q15 | `KEEP_PLAN` 외 `FEASIBLE` 대응안의 T11 정렬 값이 `null`인 경우 | **결정(A, GLOW-134)** | 자료 부족이 아니라 T10 출력 오류이므로 `ValueError`로 멈춤. 재시도 규칙상 분류 안 된 예외로 `FAILED`가 됨(`docs/agent-flow/agent-retry.md` 2절). 엔진은 `TypeError`로 멈춤 |
@@ -476,6 +476,7 @@ Q2~Q9는 PR #19 리뷰에서 설계 담당이 엔진 참조 구현을 기준으�
 | 식별자·시각 | 문자열로 받음(소문자 UUID, `…Z` 초 단위) | `uuid.UUID`·`datetime`은 대문자·`+09:00`·마이크로초를 받아 다른 모양으로 내보냄(11-04 확인) |
 | 조회 도구 T2~T5·T8의 입력 | **입력 없음(11-06, GLOW-125 2부)** | 범위는 실행마다 한 번 만드는 엔진 입력이 정함(인터페이스 결정 3, 3절 "구현") |
 | T7 `expected_plan_simulation` 형식(9절 Q12) | **위험 주문의 확보일 + 날마다 위험 주문 줄 보호 수량(11-06, GLOW-126)** | 엔진 T10(`options.py`)이 `simE`에서 읽는 값과 같음(4.1절 표 아래). T10 구현(GLOW-133)이 이 형식 그대로 읽음 |
+| T5 `allocation_state` 형식(9절 Q12) | **창고별 재생 해시·출고 대기 주문(확보일·줄)·대기 주문 코드·SKU별 보호·확보 대기 수량(11-10, GLOW-128)** | 엔진 `restore[wh]` 모양 그대로(3.5절 표). 확보일은 날짜 타입, 대기 주문 코드는 중복 없음, 출고 대기 줄 수량은 1 이상(배정 모듈이 남은 수량이 있는 줄만 넣음) |
 
 ## 10. 작업 중 실패와 원인
 

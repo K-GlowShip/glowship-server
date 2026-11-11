@@ -198,7 +198,7 @@ class _World:
         for o in data.open_orders.orders:
             self.orders[o.warehouse_id].append(o)
         self.allocation = {
-            a["warehouse_code"]: a for a in data.open_orders.allocation_state
+            a.warehouse_code: a for a in data.open_orders.allocation_state
         }
         self.inbound: dict[str, list[tuple[date, dict[str, int]]]] = defaultdict(list)
         for x in data.inbound_schedule.inbound:
@@ -317,8 +317,9 @@ class _World:
         code, wid = self.dest.warehouse_code, self.dest.warehouse_id
         state = self.allocation[code]
         orders = {o.order_code: o for o in self.orders[wid]}
-        waiting = [_alloc_order(orders[c], code) for c in state["waiting_order_codes"]]
-        pending = state["pending_dispatch"]
+        waiting = [_alloc_order(orders[c], code) for c in state.waiting_order_codes]
+        # 엔진은 확보일을 결과에 옮겨 해시하므로 날짜를 문자열로 되돌린다(mode="json")
+        pending = [p.model_dump(mode="json") for p in state.pending_dispatch]
         receipts: dict[date, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         for arrival, qty in self.inbound[wid]:
             for s, q in qty.items():
@@ -347,7 +348,7 @@ class _World:
             for t in _days(self.D + timedelta(1), self.h_end + timedelta(1))
         ]
         outs = self.simulate(first, schedule)
-        secured = {p["order_code"]: _day(p["secured_date"]) for p in pending}
+        secured = {p.order_code: p.secured_date for p in state.pending_dispatch}
         for out in outs:
             for c, v in out["orders"].items():
                 if v["status"] == "SECURED_WAITING_DISPATCH" and c not in secured:

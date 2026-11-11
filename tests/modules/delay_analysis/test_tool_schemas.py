@@ -608,6 +608,72 @@ def test_timestamp_must_be_utc_seconds_z(value):
     )
 
 
+def _allocation_state():
+    """T5 allocation_state 창고 하나(엔진 restore[wh] 모양, 3.5절 표)"""
+    return {
+        "warehouse_code": "LAX",
+        "replay_result_sha256": "a" * 64,
+        "pending_dispatch": [
+            {"order_code": "ORD-9", "secured_date": "2026-01-09",
+             "lines": [{"line_no": 1, "sku_code": "SKU-1", "quantity": 2}]}],
+        "waiting_order_codes": ["ORD-1"],
+        "blocked_order_protection": [{"sku_code": "SKU-1", "quantity": 0}],
+        "secured_waiting_for_dispatch": [{"sku_code": "SKU-1", "quantity": 2}],
+    }  # fmt: skip
+
+
+def test_allocation_state_round_trips_as_engine_json():
+    body = _allocation_state()
+    model = L.AllocationState.model_validate(body)
+    assert model.pending_dispatch[0].secured_date == date(2026, 1, 9)
+    # T10 이 엔진에 넘기는 모양(mode="json") = 엔진 restore 모양
+    assert model.model_dump(mode="json") == body
+
+
+def _set(path, value):
+    def change(body):
+        target = body
+        for key in path[:-1]:
+            target = target[key]
+        if value is _DROP:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+
+    return change
+
+
+_DROP = object()
+_PENDING = ("pending_dispatch", 0)
+_LINE = (*_PENDING, "lines", 0)
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("확보일 한 자리 월", _set((*_PENDING, "secured_date"), "2026-1-9")),
+        ("확보일 없는 날짜", _set((*_PENDING, "secured_date"), "2026-02-30")),
+        ("확보일 시각", _set((*_PENDING, "secured_date"), "2026-01-09T00:00:00Z")),
+        ("확보일 없음", _set((*_PENDING, "secured_date"), _DROP)),
+        ("줄 수량 문자열", _set((*_LINE, "quantity"), "2")),
+        ("줄 수량 0", _set((*_LINE, "quantity"), 0)),
+        ("줄 번호 실수", _set((*_LINE, "line_no"), 1.0)),
+        ("줄 모르는 키", _set((*_LINE, "need"), 2)),
+        ("엔진 carry 의 고객사 코드", _set((*_PENDING, "company_code"), "A")),
+        ("대기 주문 중복", _set(("waiting_order_codes",), ["ORD-1", "ORD-1"])),
+        ("대기 주문 키 없음", _set(("waiting_order_codes",), _DROP)),
+        ("보호 수량 음수", _set(("blocked_order_protection", 0, "quantity"), -1)),
+        ("재생 해시 모양", _set(("replay_result_sha256",), "xyz")),
+        ("줄별 상태(line_state)", _set(("line_state",), [])),
+    ],
+)
+def test_allocation_state_rejects(label, change):
+    body = _allocation_state()
+    change(body)
+    with pytest.raises(ValidationError):
+        L.AllocationState.model_validate(body)
+
+
 def test_strict_int_and_bool():
     line = {
         "order_line_id": ID,
@@ -845,6 +911,7 @@ UNIQUE_LIST_FIELDS = [
     (OS.OptionPrecheck, "eligible_sku_codes"),
     (L.SalesHistory, "event_names"),
     (L.SalesHistory, "actual_known_days"),
+    (L.AllocationState, "waiting_order_codes"),
 ]
 
 

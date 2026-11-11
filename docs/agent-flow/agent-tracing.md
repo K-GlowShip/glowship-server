@@ -81,7 +81,7 @@ finally:
 ## 6. 아직 안 한 것
 - **재시도 기록 연결(완료):** #28이 머지되어(develop `634ff99`) 실제 `call_with_retry`로 시험했습니다. 도구를 노드에 붙일 때 `on_attempt=tracer.tool_attempt`를 넘기면 됩니다.
 - **실패 갈래의 장애 독립성(완료):** 5절의 장애 독립성 시험은 정상 갈래와 쓰기 장애만 봅니다. 실패 갈래(재시도 소진·권한·설명 3회 실패·보류·STALE)에서 추적기·콜백 자체가 예외를 내는 경우까지 본 통합 시험 T20은 `docs/agent-flow/integration-tests-t13-t20.md` 4절에 있습니다.
-- **그래프에 끼우기:** 실행기(노드 연결 GLOW-129, 자동 시작·저장 GLOW-128)에서 `build_run_tracer`와 `callback_handler()`를 붙이고, 내부 로그 폴더 설정을 정합니다.
+- **그래프에 끼우기(실행기 쪽 완료, GLOW-128 실행 묶음 채우기):** 자동 시작 실행기(`run_start/runner.py`)가 `tracer_factory`로 실행마다 추적기를 만들어 실행 도구 묶음과 그래프 콜백(`callback_handler()`)에 같이 넘기고, 끝나면 `aclose()`로 닫습니다. 만들기·닫기 예외는 경고만 남깁니다. **남은 것:** 앱 실행기(`run_start/app_runner.py`)에 `tracer_factory`(`build_run_tracer` + `TraceOutboxSink`)를 넣고 내부 로그 폴더 설정을 정하는 일 — 자동 시작을 켜는 작업에서 합니다(`docs/analysis/auto-start.md` 7절).
 - **운영 확인 항목(8.1):** 보존 기간(제안 400일), 외부 전송 승인, 마스킹 범위, 서버 로그의 운영 주체·회전·암호화. 정해지기 전에는 내부 로그만 쓰고 지우지 않습니다.
 
 ## 7. 작업 중 실패와 결정

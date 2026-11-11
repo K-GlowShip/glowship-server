@@ -20,6 +20,7 @@ from app.modules.delay_analysis.application.agent.runtime import (
     AnalysisRuntime,
 )
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
+from app.modules.delay_analysis.application.agent.tracing import RunTracer
 from app.modules.delay_analysis.application.result_save.result_save_service import (
     ResultSaveOutcome,
 )
@@ -61,13 +62,20 @@ from app.modules.delay_analysis.infrastructure.repository.run_status_repository 
         실행 하나를 FAILED 로 바꾸다 예외가 나면 로그만 남기고 다음 실행으로 넘어간다(서버가 뜨지 않게 하지 않음).
         남은 실행 조회 자체가 실패하면 그대로 올려 서버 시작을 멈춘다(설정·권한 잘못이라 바로 알려야 함).
       - 종료 shutdown: 돌던 작업을 유예 시간만큼 기다리고 남은 것은 취소한다.
+      - 추적(tracer_factory, docs/agent-flow/agent-tracing.md): 실행마다 시작 전이 뒤 추적기를 하나 만들어 실행 도구 묶음에
+        넘기고(도구·설명 시도), 그래프 콜백으로도 넘겨(실행·노드·갈림길 사건) 실행 하나의 사건이 한 추적기로 이어지게 한다.
+        끝나면 aclose() 로 닫는다(동기 close 는 이벤트 루프를 멈춰 다른 실행의 도구가 시간 초과로 잡힘, PR #42 리뷰).
+        추적기를 만들거나 닫다 예외가 나도 분석은 계속한다(agentflow 8.1 "장애 영향"). 만들기에 실패하면 추적 없이 돈다.
+        없으면(기본) 추적하지 않는다.
 """
 
 logger = logging.getLogger(__name__)
 
 SessionOpener = Callable[[], AbstractAsyncContextManager[AsyncSession]]
-# 실행 하나의 실행 도구 묶음을 만든다(그래프 세션, 시작한 실행)
-RuntimeFactory = Callable[[AsyncSession, StartedRun], AnalysisRuntime]
+# 실행 하나의 실행 도구 묶음을 만든다(그래프 세션, 시작한 실행, 추적기 또는 None)
+RuntimeFactory = Callable[[AsyncSession, StartedRun, RunTracer | None], AnalysisRuntime]
+# 실행 하나의 추적기를 만든다(없으면 None = 추적 안 함). 닫기는 실행기가 한다
+TracerFactory = Callable[[StartedRun], RunTracer | None]
 # 그래프 종료 상태를 저장한다(save_graph_outcome 과 같은 모양, 시험에서 바꿈)
 OutcomeSaver = Callable[..., Awaitable[ResultSaveOutcome | None]]
 # 저장 끝난 시각으로 넘길 값. 가상 시각이면 실행 시작 시각, 아니면 None(DB 시각)
@@ -115,9 +123,11 @@ class AnalysisRunner:
         save_time: SaveTime = _no_save_time,
         save_outcome: OutcomeSaver = save_graph_outcome,
         graph: CompiledStateGraph | None = None,
+        tracer_factory: TracerFactory | None = None,
     ):
         self.open_session = open_session
         self.runtime_factory = runtime_factory
+        self.tracer_factory = tracer_factory
         self.enabled = enabled
         self.shutdown_grace_seconds = shutdown_grace_seconds
         self.save_time = save_time
@@ -194,19 +204,43 @@ class AnalysisRunner:
         run = await self._begin(company_id, analysis_run_id)
         if run is None:
             return
+        tracer = self._open_tracer(run)
+        try:
+            final = await self._run_graph(run, tracer)
+            async with self.open_session() as db:
+                await set_rls_context(db, user_id=None, company_id=company_id)
+                saved = await self.save_outcome(
+                    db, run, final or {}, now=self.save_time(run)
+                )
+                await db.commit()
+        finally:
+            await self._close_tracer(run, tracer)
+        logger.info(
+            "분석 실행 %s 끝: %s (저장 %s)",
+            analysis_run_id,
+            (final or {}).get("outcome"),
+            None if saved is None else saved.status,
+        )
+
+    async def _run_graph(
+        self, run: StartedRun, tracer: RunTracer | None
+    ) -> dict[str, Any] | None:
+        """그래프를 끝까지 돌리며 단계 전이를 하고 마지막 상태를 돌려준다."""
         step = AnalysisStep.VALIDATING
         final: dict[str, Any] | None = None
         async with self.open_session() as graph_db:
             try:
-                await set_rls_context(graph_db, user_id=None, company_id=company_id)
-                config = {
+                await set_rls_context(graph_db, user_id=None, company_id=run.company_id)
+                config: dict[str, Any] = {
                     "configurable": {
-                        RUNTIME_KEY: self.runtime_factory(graph_db, run),
+                        RUNTIME_KEY: self.runtime_factory(graph_db, run, tracer),
                         "run_status_reader": AnalysisRunStatusReader(
-                            lambda: _reuse(graph_db), company_id
+                            lambda: _reuse(graph_db), run.company_id
                         ),
                     }
                 }
+                if tracer is not None:
+                    config["callbacks"] = [tracer.callback_handler()]
                 async for state in self.graph.astream(
                     initial_state(run), config, stream_mode="values"
                 ):
@@ -222,18 +256,34 @@ class AnalysisRunner:
             finally:
                 # 그래프 세션은 읽기만 한다. 실패한 트랜잭션이어도 되돌리고 닫는다(저장은 새 세션)
                 await graph_db.rollback()
-        async with self.open_session() as db:
-            await set_rls_context(db, user_id=None, company_id=company_id)
-            saved = await self.save_outcome(
-                db, run, final or {}, now=self.save_time(run)
+        return final
+
+    def _open_tracer(self, run: StartedRun) -> RunTracer | None:
+        """추적기를 만든다. 만들다 예외가 나면 경고만 남기고 추적 없이 분석한다(agentflow 8.1 장애 영향)."""
+        if self.tracer_factory is None:
+            return None
+        try:
+            return self.tracer_factory(run)
+        except Exception:
+            logger.warning(
+                "분석 실행 %s 의 추적기를 만들지 못해 추적 없이 분석합니다",
+                run.analysis_run_id,
+                exc_info=True,
             )
-            await db.commit()
-        logger.info(
-            "분석 실행 %s 끝: %s (저장 %s)",
-            analysis_run_id,
-            (final or {}).get("outcome"),
-            None if saved is None else saved.status,
-        )
+            return None
+
+    async def _close_tracer(self, run: StartedRun, tracer: RunTracer | None) -> None:
+        """추적 쓰기를 기다리고 닫는다. 예외는 경고만(분석 결과·저장에 영향 없음)."""
+        if tracer is None:
+            return
+        try:
+            await tracer.aclose()
+        except Exception:
+            logger.warning(
+                "분석 실행 %s 의 추적기를 닫지 못했습니다(분석은 그대로)",
+                run.analysis_run_id,
+                exc_info=True,
+            )
 
     async def _fail_last(
         self, company_id: uuid.UUID, analysis_run_id: uuid.UUID

@@ -195,13 +195,19 @@ async def test_t5_lists_open_orders_and_allocation_state():
     lines = out.orders[1].lines
     assert [(ln.line_no, ln.sku_code, ln.line_status) for ln in lines] == [
         (1, "SKU-A", "ACTIVE"), (2, "SKU-B", "REMOVED_AT_SOURCE")]  # fmt: skip
-    state = out.allocation_state
+    state = [s.model_dump(mode="json") for s in out.allocation_state]
     assert [s["warehouse_code"] for s in state] == ["WH-EAST", "WH-WEST"]
+    # 엔진 carry 의 company_code·warehouse_code 는 빼고, 확보일은 계약 날짜 모양 그대로 되돌아온다
     assert state[1]["pending_dispatch"] == [
         {"order_code": "A-ORD-9", "secured_date": "2026-01-01", "lines": [{"line_no": 1, "sku_code": "SKU-A", "quantity": 1}]}]  # fmt: skip
+    assert out.allocation_state[1].pending_dispatch[0].secured_date == date(2026, 1, 1)
     assert state[1]["waiting_order_codes"] == ["A-ORD-2"]
     assert state[1]["blocked_order_protection"] == [
         {"sku_code": "SKU-A", "quantity": 2}, {"sku_code": "SKU-B", "quantity": 0}]  # fmt: skip
+    assert state[1]["secured_waiting_for_dispatch"] == [
+        {"sku_code": "SKU-A", "quantity": 1}
+    ]
+    assert state[1]["replay_result_sha256"] == "a" * 64
 
 
 async def test_t8_maps_lead_times_and_booleans():
