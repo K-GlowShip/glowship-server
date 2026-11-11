@@ -20,9 +20,9 @@
 ## 2. 하는 일
 
 1. **수동 수집:** API 25 와 같은 `ManualSyncService`로 시나리오의 그날 응답을 적재합니다(07-02 00:03:00Z). 수집이 지연을 판정해 에피소드를 엽니다. 시나리오 선적이 이미 있으면 건너뜁니다.
-2. **실행:** 열린 지연마다 현재 실행이 없으면 `create_analysis_run`(AUTO, `EPISODE_STARTED`, 원인 스냅샷 = 감지 스냅샷, 실행 시각 = 고객사 마지막 적재 수집 시작)으로 만들고 데이터 버전을 기록합니다. 진행 중 실행이 있으면 그것을 쓰고, 이미 결과가 있으면 건너뜁니다.
+2. **실행:** 열린 지연마다 현재 실행이 없으면 `create_analysis_run`(AUTO, `EPISODE_STARTED`, 원인 스냅샷 = 감지 스냅샷, 실행 시각 = 고객사 마지막 적재 수집 시작)으로 만듭니다. 진행 중 실행이 있으면 그것을 쓰고, 이미 결과가 있으면 건너뜁니다.
 3. **엔진 계산:** 엔진 입력 저장소(PR #36) → `check_input_seq` → `snapshot.build`(D = 고객사 최신 재고일 + 1) → `pipeline.analyze` → 설명(`generate_explanation`, PR #45, 결정적 mock 모델). 에이전트·LLM 을 부르지 않아 결과가 매번 같습니다.
-4. **저장(L2):** 결과 표 4개(`inventory_impact_results`·`at_risk_orders`·`response_options`·`option_order_outcomes`) 행은 엔진 `storage.rows_for`로 만듭니다(확정 DB overlay 를 만든 함수, 행 모양이 같음). 실행에는 상태·결과 분류·의존 범위·판정 서명·설명과 완료 시각(실행 시작 + 1초, 결과 저장과 같은 규칙)을 씁니다.
+4. **저장(L2):** 결과 표 4개(`inventory_impact_results`·`at_risk_orders`·`response_options`·`option_order_outcomes`) 행은 엔진 `storage.rows_for`로 만듭니다(확정 DB overlay 를 만든 함수, 행 모양이 같음). 실행에는 상태·결과 분류·의존 범위·판정 서명·설명과 완료 시각(실행 시작 + 1초, 결과 저장과 같은 규칙)을 쓰고, 데이터 버전을 기록합니다(서버 결과 저장과 같이 저장 때, 2026-11-11. 데모 실행 3건 모두 5건).
 
 - **서버 결과 저장(`save_analysis_result`)을 쓰지 않는 이유:** 그 함수는 에이전트 도구 출력(T6·T7·T10·T11)을 받는데, 엔진 결과를 그 모양으로 바꾸는 코드가 아직 없습니다(에이전트 도구 범위). 분석 자동 시작(#51)이 들어오면 시드도 그 경로로 바꿀 수 있습니다.
 - 엔진 보류(`Hold`)나 설명 실패가 나면 아무것도 남기지 않고 멈춥니다(데모에 쓸 수 없음).

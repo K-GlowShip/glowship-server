@@ -101,7 +101,7 @@ await db.commit()  # 커밋도 호출하는 쪽이 한다
 - **규칙:** 수집 도메인(PRODUCT·WAREHOUSE·ORDER·SHIPMENT·INVENTORY)마다, **적용 순번(`applied_seq`)이 실행의 입력 순번(`input_seq`) 이하인 가장 최근 수집 1건**을 기록한다. 적용 순번이 없는(실패·진행 중) 수집은 고르지 않는다.
 - **왜 순번인가:** serviceflow 5.2 "왜 시각이 아니라 순번인가"와 STALE 판정이 순번을 기준으로 쓴다. 시작 시각으로 자르면 늦게 시작한 수집이 먼저 커밋되는 경우 등에서 입력 확정 뒤 변경이 섞이거나 빠질 수 있다(PR #19 리뷰에서 같은 기준을 조회 도구 계약에도 적용).
 - **엔진과의 관계:** 엔진 `snapshot.build`는 같은 뜻을 시작 시각(`confirm_t`)으로 고른다. overlay의 검증 통과 실행 20건(100행)은 두 규칙 모두 저장값과 같다(DB 조회와 시험으로 확인).
-- **부르는 시점:** overlay에서 입력 검증에 실패한 ON_HOLD 실행 1건은 데이터 버전이 0건이다. 그래서 `create_analysis_run`이 기록하지 않는다. 입력 검증(GLOW-100)을 통과한 뒤 부른다.
+- **부르는 시점:** overlay에서 입력 검증에 실패한 ON_HOLD 실행 1건은 데이터 버전이 0건이다. 그래서 `create_analysis_run`이 기록하지 않는다. 입력 검증(GLOW-100)을 통과한 실행의 결과를 저장할 때 부른다(`outcome_save.save_graph_outcome`, 그래프 밖 `FAILED`는 `transitions`, 데모 시드는 결과를 넣을 때). 자동 실행을 만들 때(`auto_run_service`)도 부르지 않는다(2026-11-11, serviceflow 5.2 처리 단계 1).
 - **여러 번 불러도 같다:** 이미 기록된 수집 ID는 다시 넣지 않는다(`analysis_run_data_versions_uk2`).
 - **serviceflow와 맞춤(11-05 해소):** 처음에는 serviceflow 5.2 308줄이 "실제로 읽은 행의 수집 ID만 기록, 도메인별 최신 수집이라는 이유만으로 기록하지 않는다"고 적어 서버(정답 데이터·엔진과 같은 도메인별 최신, 단 순번 기준)와 달랐다. 설계 문서 `1ea280b`(glowship-plan)가 serviceflow 5.2를 "수집 도메인마다 적용 순번이 입력 순번 이하인 가장 최근 수집 1건"(309·331·379·398줄, 개정 표)으로 고쳐 지금은 서버 구현과 같다.
 
