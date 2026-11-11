@@ -3,7 +3,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +70,20 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
 logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+# 실제 시각으로 이만큼 넘게 RUNNING 인 수집은 죽은 것으로 보고 다음 동기화 요청에서 FAILED 로 닫는다(이슈 #94).
+# 버튼 한 번은 약 0.3초, 다음 날로는 30~45초라 정상 작업을 닫지 않는다.
+STALE_RUNNING_AFTER = timedelta(minutes=10)
+
+
+def run_created_at(data_sync_run_id: uuid.UUID) -> datetime | None:
+    """수집 실행 ID(UUIDv7, ingest_repository.start_run)에 든 실제 생성 시각. 가상 시각의 started_at 과 달리 실제 시각이다.
+    UUIDv7 이 아니면 None (정리하지 않음)."""
+    if data_sync_run_id.version != 7:
+        return None
+    return datetime.fromtimestamp((data_sync_run_id.int >> 80) / 1000, UTC)
+
+
 # 커밋된 수집이 만든 분석 실행을 넘겨받는다(고객사, 실행 ID 들). 분석 실행기 start_many 와 같은 모양
 RunStarter = Callable[[uuid.UUID, Sequence[uuid.UUID]], object]
 
@@ -174,6 +188,7 @@ class ManualSyncService:
         """
         다음 tick 을 정하고 다섯 원천 수집을 RUNNING 으로 남긴다(요청 안). L1 안에서 tick 을 정해 같은 tick 을 두 번
         받지 않는다. 그 고객사에 RUNNING 수집이 하나라도 있으면 아무것도 시작하지 않고 409 SYNC_IN_PROGRESS.
+        다만 실제 시각으로 10분 넘게 남은 RUNNING 은 죽은 작업(서버 재시작·배포 등)으로 보고 먼저 FAILED 로 닫는다(이슈 #94).
         """
         company_id = tenant.company_id
         async with self.open_session() as db:
@@ -181,6 +196,11 @@ class ManualSyncService:
             await lock_company(db, company_id)
             runs = DataSyncRunRepository(db)
             ingest_repo = IngestRepository(db)
+            if await self._close_stale_running(ingest_repo, company_id):
+                # 닫은 것을 남기고(뒤에서 409 로 되돌려도 유지) 잠금·문맥을 다시 잡는다
+                await db.commit()
+                await set_rls_context(db, user_id=None, company_id=company_id)
+                await lock_company(db, company_id)
             for domain in TICK_ORDER:
                 if await ingest_repo.has_running_run(company_id, domain):
                     await db.rollback()
@@ -207,6 +227,35 @@ class ManualSyncService:
         return TickTicket(
             plan=plan, started=tuple(started), company_code=company_code or ""
         )
+
+    async def _close_stale_running(
+        self, ingest_repo: IngestRepository, company_id: uuid.UUID
+    ) -> int:
+        """실제 시각으로 STALE_RUNNING_AFTER 넘게 RUNNING 인 수집을 FAILED 로 닫는다(L1 안). 닫은 수."""
+        cutoff = self.now() - STALE_RUNNING_AFTER
+        closed = 0
+        for run_id, source_domain, started_at in await ingest_repo.find_running_runs(
+            company_id
+        ):
+            created = run_created_at(run_id)
+            if created is None or created > cutoff:
+                continue
+            # 완료 시각 규칙(완료 > 시작, 이슈 #39 규칙 3): 가상 시각이면 시작 + 30초, 실제 시각이면 지금
+            finished = (
+                started_at + VIRTUAL_FINISH_AFTER
+                if self.virtual_start is not None
+                else max(self.now(), started_at + timedelta(seconds=1))
+            )
+            await ingest_repo.fail_run(company_id, run_id, finished)
+            logger.warning(
+                "수동 동기화: 실제 시각으로 %s 넘게 RUNNING 인 수집 %s(%s, 생성 %s)을 FAILED 로 닫음",
+                STALE_RUNNING_AFTER,
+                run_id,
+                source_domain,
+                created.isoformat(),
+            )
+            closed += 1
+        return closed
 
     async def run_tick(self, ticket: TickTicket) -> list[IngestResult | None]:
         """

@@ -1,5 +1,6 @@
+import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -8,7 +9,10 @@ from app.core.security.tenant import TenantContext
 from app.modules.data_sync.application.exception.data_sync_exceptions import (
     SyncInProgressException,
 )
-from app.modules.data_sync.application.manual_sync_service import ManualSyncService
+from app.modules.data_sync.application.manual_sync_service import (
+    ManualSyncService,
+    run_created_at,
+)
 from app.modules.data_sync.infrastructure.virtual_sources import VirtualSourceScenario
 from tests.modules.data_sync.test_manual_sync_sql import _a_beauty
 
@@ -191,3 +195,119 @@ async def test_start_error_midway_closes_started_sources_as_failed(
         ("PRODUCT", "FAILED"),
         ("WAREHOUSE", "FAILED"),
     ]
+
+
+# --- 오래 남은 RUNNING 정리 (이슈 #94) -------------------------------------------------------
+
+REAL_NOW = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)  # 실제 시각(가상 시각 7월과 따로)
+
+
+def _uuid7_at(at: datetime) -> uuid.UUID:
+    """at 에 만든 것 같은 UUIDv7 (앞 48비트 = 실제 생성 시각 ms)."""
+    ms = int(at.timestamp() * 1000)
+    value = (ms << 80) | (0x7 << 76) | (uuid.uuid4().int & ((1 << 76) - 1))
+    value = (value & ~(0x3 << 62)) | (0x2 << 62)  # RFC 9562 variant
+    return uuid.UUID(int=value)
+
+
+async def _insert_running(db, company_id, run_id, started_at):
+    await db.execute(
+        text(
+            "INSERT INTO data_sync_runs (data_sync_run_id, company_id, source_domain, connection_method,"
+            " started_at, status) VALUES (:r, :c, 'ORDER', 'API', :s, 'RUNNING')"
+        ),
+        {"r": run_id, "c": company_id, "s": started_at},
+    )
+    await db.commit()  # 실제로는 이미 커밋된 RUNNING 이다(409 경로의 되돌림이 지우지 않게). 시험 세션은 끝에서 모두 되돌림
+
+
+def test_run_created_at_reads_real_time_from_uuid7():
+    assert run_created_at(_uuid7_at(REAL_NOW)) == REAL_NOW
+    assert run_created_at(uuid.uuid4()) is None  # UUIDv7 이 아니면 정리하지 않음
+
+
+async def test_running_older_than_ten_real_minutes_is_closed_and_tick_proceeds(
+    db_write_session,
+):
+    """서버 재시작·배포로 죽어 남은 RUNNING 이 있어도, 실제로 10분이 넘었으면 FAILED 로 닫고 동기화한다."""
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    stale = _uuid7_at(REAL_NOW - timedelta(minutes=11))
+    await _insert_running(
+        db, company_id, stale, datetime(2026, 7, 1, 23, 59, tzinfo=UTC)
+    )
+    service = _service(db, await _order_payload(db, company_id))
+    service.now = lambda: REAL_NOW
+
+    ticket = await service.request_tick(
+        TenantContext(user_id=None, company_id=company_id)
+    )
+
+    row = (
+        await db.execute(
+            text(
+                "SELECT status, finished_at FROM data_sync_runs WHERE data_sync_run_id = :r"
+            ),
+            {"r": stale},
+        )
+    ).one()
+    assert row.status == "FAILED"
+    assert row.finished_at == datetime(
+        2026, 7, 1, 23, 59, 30, tzinfo=UTC
+    )  # 가상 시각: 시작 + 30초
+    assert len(ticket.started) == 5
+
+
+async def test_running_younger_than_ten_real_minutes_still_blocks(db_write_session):
+    """실제로 10분이 안 된 RUNNING 은 진행 중으로 보고 지금처럼 409, 그대로 남긴다."""
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    young = _uuid7_at(REAL_NOW - timedelta(minutes=1))
+    await _insert_running(
+        db, company_id, young, datetime(2026, 7, 1, 23, 59, tzinfo=UTC)
+    )
+    service = _service(db, await _order_payload(db, company_id))
+    service.now = lambda: REAL_NOW
+
+    with pytest.raises(SyncInProgressException):
+        await service.request_tick(TenantContext(user_id=None, company_id=company_id))
+
+    status = await db.scalar(
+        text("SELECT status FROM data_sync_runs WHERE data_sync_run_id = :r"),
+        {"r": young},
+    )
+    assert status == "RUNNING"
+
+
+async def test_closed_stale_run_cannot_apply_later(db_write_session):
+    """fencing: 느리게 살아 있던 작업의 실행이 정리로 FAILED 가 되면, 그 작업이 나중에 적용하려 해도 아무것도 들어가지 않는다.
+    적용은 L1 안 한 트랜잭션이고 마지막 완료 기록이 RUNNING 인 실행만 바꾸므로(_finish) 통째로 되돌아간다."""
+    db = db_write_session
+    company_id = await _a_beauty(db)
+    service = _service(db, await _order_payload(db, company_id))
+    tenant = TenantContext(user_id=None, company_id=company_id)
+    first = await service.request_tick(
+        tenant
+    )  # 다섯 원천 RUNNING (지금 실제 시각에 만든 ID)
+    service.now = lambda: datetime.now(UTC) + timedelta(minutes=11)
+    second = await service.request_tick(
+        tenant
+    )  # 11분 뒤 요청: 첫 tick 을 FAILED 로 닫고 진행
+
+    late = await service.run_tick(first)  # 죽은 줄 알았던 첫 작업이 뒤늦게 적용 시도
+
+    assert late == [None] * 5
+    statuses = (
+        (
+            await db.execute(
+                text(
+                    "SELECT status FROM data_sync_runs WHERE data_sync_run_id = ANY(:ids)"
+                ),
+                {"ids": [r.data_sync_run_id for r in first.started]},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert set(statuses) == {"FAILED"}
+    assert len(second.started) == 5
