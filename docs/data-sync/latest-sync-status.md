@@ -107,7 +107,7 @@ HTTP/1.1 200 OK
 | --- | --- |
 | 칸 3개 | 주문 데이터(SAP ERP) = `ORDER` + `PRODUCT`, 재고 데이터(WMS) = `INVENTORY` + `WAREHOUSE`, 선적 데이터(TMS) = `SHIPMENT` |
 | 칸 부제("SAP ERP") | `sourceSystemName` |
-| 원천별 상태 배지 | 원천마다 하나. `status: "RUNNING"` → 수집 중, `isSynced: false`이고 `lastSyncedAt` 있음 → 수집 오류(마지막 수집 실패 또는 수집 멈춤), `lastSyncedAt: null` → 미연동, `PARTIAL_SUCCESS` → 일부 오류, 그 밖 → 정상. 둘 이상에 해당하면 앞에 적은 것 |
+| 원천별 상태 배지 | 원천마다 하나. `status: "RUNNING"` → 수집 중, `isSynced: false`이고 `lastSyncedAt` 있음 → 수집 오류(마지막 수집 실패 또는 수집 멈춤), `lastSyncedAt: null` → 미연동, `status: "PARTIAL_SUCCESS"` → 일부 오류, 그 밖 → 정상. 둘 이상에 해당하면 앞에 적은 것 |
 | "마지막 수집" (카드에 하나) | 고객사 전체 값이라 `GET /dashboard/summary`의 `lastSyncedAt`(명세 C34). 이 API 의 원천별 `lastSyncedAt`에서 고르지 않음 |
 | "10분마다 자동 수집" | `syncIntervalMinutes`(항상 10). 서버에 10분마다 도는 수집기는 없고, 데모에서는 동기화 버튼 한 번이 10분 한 번을 대신함 |
 | 동기화 버튼 (카드에 하나) | `POST /data-sync-runs` 본문 `{}`. 한 번에 다섯 원천을 함께 수집(명세 C40, [manual-sync.md](manual-sync.md)). 누른 뒤 이 API 를 다시 조회 |
