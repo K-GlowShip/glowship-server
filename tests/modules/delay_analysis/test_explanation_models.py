@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -14,10 +15,12 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app import main as app_main
+from app.core import llm_usage as U
 from app.core.config import MOCK_EXPLANATION_MODEL, Settings, get_settings
 from app.core.llm import (
     REASON_RATE_LIMIT,
     REASON_TIMEOUT,
+    REASON_TRUNCATED,
     LlmCallError,
     LlmResult,
     LlmTimeoutError,
@@ -45,6 +48,8 @@ from tests.modules.delay_analysis.engine_test_modules import (
       3. 고르기·서버 시작 확인(엔진 없이): mock 은 아무것도 안 함, 실제 모델은 엔진 경로·제공자·키가 있어야 함
       4. 엔진과 함께: 등록된 모델이면 엔진 3시도 경로가 통과·실패·예산 소진으로 이어지고, 등록 안 된 모델은 호출 전에 멈춤
       5. 설명 한 건마다 새 어댑터(동시 실행이 예산·사용량을 섞지 않음), mock 서버는 모델 호출 라이브러리를 불러오지 않음
+      6. 모델 사용량 기록(NFR-008): 설명 한 건의 모델명·호출 수·토큰 수·예상 비용이 추적 사건 하나와 서버 로그 한 줄로 남는다.
+         mock 도 남고, 기록이 망가져도 설명 결과는 같으며, 저장되는 설명에는 사용량이 섞이지 않는다
 """
 
 API_KEY = "sk-test-KEEP-THIS-SECRET-0123456789"
@@ -238,7 +243,12 @@ def test_adapter_calls_model_with_prompt_only(engine_errors):
     # 입력 문서·canary 가 든 request 는 넘기지 않는다
     assert "CNRY-abc" not in repr(call)
     assert adapter.attempt_usage == [
-        {"input_tokens": 1200, "output_tokens": 900, "elapsed_ms": 0}
+        {
+            "input_tokens": 1200,
+            "output_tokens": 900,
+            "elapsed_ms": 0,
+            "response_model": "answered-model",
+        }
     ]
 
 
@@ -296,6 +306,70 @@ def test_adapter_stops_calling_when_budget_is_spent(engine_errors):
         REASON_TIMEOUT,
         A.BUDGET_EXHAUSTED,
         A.BUDGET_EXHAUSTED,
+    ]
+
+
+def test_adapter_marks_attempts_that_never_reached_the_provider(engine_errors):
+    """시간 예산이 떨어져 부르지 않은 시도는 requested=False 다(호출 수·비용에 넣지 않음)."""
+    clock = Clock()
+    timeout = LlmTimeoutError(REASON_TIMEOUT, model="openai/gpt-x")
+    adapter = _adapter(FakeLlm([timeout], clock, took=20.0), clock, budget=20.0)
+
+    for _ in range(2):
+        with pytest.raises(_EngineTimeout):
+            adapter.complete("PROMPT", REQUEST)
+
+    assert adapter.attempt_usage == [
+        {"error": REASON_TIMEOUT, "elapsed_ms": 20000},
+        {"error": A.BUDGET_EXHAUSTED, "elapsed_ms": 0, "requested": False},
+    ]
+
+
+def test_adapter_records_cached_tokens_when_reported(engine_errors):
+    def answer(**kwargs):
+        return LlmResult(
+            text="{}",
+            model=kwargs["model"],
+            response_model=None,
+            usage=LlmUsage(
+                input_tokens=2000, output_tokens=300, cached_input_tokens=1536
+            ),
+            elapsed_ms=7,
+        )
+
+    adapter = _adapter(answer)
+    adapter.complete("PROMPT", REQUEST)
+
+    assert adapter.attempt_usage == [
+        {
+            "input_tokens": 2000,
+            "output_tokens": 300,
+            "cached_input_tokens": 1536,
+            "elapsed_ms": 7,
+        }
+    ]
+
+
+def test_adapter_keeps_token_counts_of_billed_failures(engine_errors):
+    """잘린 응답은 엔진에는 호출 실패지만 제공자가 청구한다. 토큰 수가 사용량에 남는다."""
+    clock = Clock()
+    truncated = LlmCallError(
+        REASON_TRUNCATED,
+        model="openai/gpt-x",
+        usage=LlmUsage(input_tokens=2000, output_tokens=4096),
+    )
+    adapter = _adapter(FakeLlm([truncated], clock, took=3.0), clock)
+
+    with pytest.raises(_EngineCallError):
+        adapter.complete("PROMPT", REQUEST)
+
+    assert adapter.attempt_usage == [
+        {
+            "error": REASON_TRUNCATED,
+            "input_tokens": 2000,
+            "output_tokens": 4096,
+            "elapsed_ms": 3000,
+        }
     ]
 
 
@@ -537,9 +611,13 @@ def _use_settings(monkeypatch, settings):
 class FakeTracer:
     def __init__(self):
         self.calls: list[tuple[list[dict], list]] = []
+        self.usage_calls: list[tuple[str, dict]] = []
 
     def explanation_attempts(self, attempts, usage=()):
         self.calls.append(([dict(a) for a in attempts], list(usage)))
+
+    def model_usage(self, feature, usage):
+        self.usage_calls.append((feature, dict(usage)))
 
 
 def _explain(gs05, tracer=None):
@@ -742,3 +820,161 @@ def test_engine_errors_are_the_classes_the_generator_catches(engine):
 
     assert engine["adapter"].ModelTimeout is generator.ModelTimeout
     assert engine["adapter"].ModelCallError is generator.ModelCallError
+
+
+# --- 6. 모델 사용량 기록 (NFR-008, 엔진과 함께) ------------------------------------------------
+
+
+def _usage_lines(capsys) -> list[dict]:
+    """표준 출력에 남은 사용량 로그 줄(JSON)"""
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    return [json.loads(line) for line in lines if '"model_usage"' in line]
+
+
+def test_real_model_usage_goes_to_tracer_and_server_log(
+    engine, gs05, registered_model, monkeypatch, capsys
+):
+    """설명 한 건의 모델명·호출 수·토큰 수·예상 비용이 추적 사건 하나와 서버 로그 한 줄로 남는다."""
+    ScriptedModels(engine, monkeypatch, ["ok"], took=2.0)
+    _use_settings(monkeypatch, _real_settings())
+    # 시험용 모델에 단가를 준다(실제 표는 그대로). 입력 0.75 · 출력 4.50 USD / 100만 토큰
+    prices = {**U.MODEL_PRICES, TEST_MODEL: U.MODEL_PRICES["openai/gpt-5.4-mini"]}
+    monkeypatch.setattr(U, "MODEL_PRICES", prices)
+    tracer = FakeTracer()
+
+    result = asyncio.run(_explain(gs05, tracer))
+
+    assert isinstance(result, X.ExplanationPassed)
+    ((feature, summary),) = tracer.usage_calls
+    assert feature == "explain"
+    assert summary["model"] == TEST_MODEL
+    assert (summary["calls"], summary["calls_failed"]) == (1, 0)
+    assert (summary["input_tokens"], summary["output_tokens"]) == (1200, 900)
+    assert summary["estimated_cost_usd"] == "0.004950"  # 1200*0.75 + 900*4.50 = 4950
+    assert summary["cost_complete"] is True
+    assert summary["price"]["source"] == U.PRICE_SOURCE
+    (line,) = _usage_lines(capsys)
+    assert line["analysis_run_id"] == RUN_ID
+    assert line["feature"] == "explain"
+    assert {k: line[k] for k in summary} == summary
+
+
+def test_usage_counts_failed_calls_and_skips_unsent_attempts(
+    engine, gs05, registered_model, monkeypatch
+):
+    """실패한 호출도 호출 수에 들어가고, 시간 예산이 떨어져 부르지 않은 시도는 들어가지 않는다."""
+    ScriptedModels(engine, monkeypatch, [_timeout()], took=20.0)
+    _use_settings(monkeypatch, _real_settings())
+    tracer = FakeTracer()
+
+    result = asyncio.run(_explain(gs05, tracer))
+
+    assert isinstance(result, X.ExplanationFailed)
+    assert len(result.attempts) == 3  # 엔진 시도 기록은 3번 그대로
+    ((_, summary),) = tracer.usage_calls
+    assert (summary["calls"], summary["calls_failed"]) == (1, 1)
+    assert summary["calls_without_usage"] == 1
+    assert summary["input_tokens"] is None
+    assert summary["cost_complete"] is False
+
+
+def test_unpriced_model_records_tokens_without_cost(
+    engine, gs05, registered_model, monkeypatch
+):
+    ScriptedModels(engine, monkeypatch, [_rate_limited(), "ok"])
+    _use_settings(monkeypatch, _real_settings())
+    tracer = FakeTracer()
+
+    asyncio.run(_explain(gs05, tracer))
+
+    ((_, summary),) = tracer.usage_calls
+    assert (summary["calls"], summary["calls_failed"]) == (2, 1)
+    assert (summary["input_tokens"], summary["output_tokens"]) == (1200, 900)
+    assert summary["estimated_cost_usd"] is None
+    assert summary["price"]["source"] == U.PRICE_SOURCE_UNKNOWN
+
+
+def test_mock_usage_is_recorded_with_zero_cost(engine, gs05, capsys):
+    """기본(mock)도 남긴다: 호출 수 = 시도 수, 토큰 수 없음, 금액 0, 출처 mock."""
+    tracer = FakeTracer()
+
+    result = asyncio.run(_explain(gs05, tracer))
+
+    assert isinstance(result, X.ExplanationPassed)
+    ((_, summary),) = tracer.usage_calls
+    assert summary["model"] == MOCK_EXPLANATION_MODEL
+    assert (summary["calls"], summary["calls_failed"]) == (1, 0)
+    assert summary["input_tokens"] is None
+    assert summary["estimated_cost_usd"] == "0.000000"
+    assert summary["price"]["source"] == U.PRICE_SOURCE_MOCK
+    (line,) = _usage_lines(capsys)
+    assert line["analysis_run_id"] == RUN_ID
+
+
+class AttemptsBrokenTracer(FakeTracer):
+    def explanation_attempts(self, attempts, usage=()):
+        raise RuntimeError("attempts down")
+
+
+class UsageBrokenTracer(FakeTracer):
+    def model_usage(self, feature, usage):
+        raise RuntimeError("usage down")
+
+
+def test_usage_is_recorded_even_when_attempt_tracing_fails(engine, gs05):
+    """시도 기록과 사용량 기록은 따로 감싼다. 시도 기록이 실패해도 사용량은 남는다."""
+    tracer = AttemptsBrokenTracer()
+
+    result = asyncio.run(_explain(gs05, tracer))
+
+    assert isinstance(result, X.ExplanationPassed)
+    assert tracer.calls == []
+    assert len(tracer.usage_calls) == 1
+
+
+def test_broken_usage_recording_does_not_change_the_explanation(
+    engine, gs05, monkeypatch, caplog
+):
+    """추적기·서버 로그·합계가 각각 망가져도 설명 결과는 사용량 기록이 없을 때와 같다."""
+    baseline = asyncio.run(_explain(gs05))
+
+    with caplog.at_level("WARNING"):
+        traced = asyncio.run(_explain(gs05, UsageBrokenTracer()))
+        monkeypatch.setattr(X, "log_model_usage", _raise)
+        logged = asyncio.run(_explain(gs05, FakeTracer()))
+        monkeypatch.setattr(X, "summarize_usage", _raise)
+        summed = asyncio.run(_explain(gs05, FakeTracer()))
+
+    assert traced == logged == summed == baseline
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("모델 사용량 추적 기록 실패" in m for m in messages) == 1
+    assert sum("모델 사용량 로그 기록 실패" in m for m in messages) == 1
+    assert sum("모델 사용량 합계 실패" in m for m in messages) == 1
+
+
+def _raise(*args, **kwargs):
+    raise RuntimeError("usage recording down")
+
+
+def test_usage_never_reaches_the_saved_explanation(
+    engine, gs05, registered_model, monkeypatch
+):
+    """사용량은 추적·로그로만 간다. 저장되는 설명·시도 기록(판정 서명 해시가 든 것)에는 토큰·비용 칸이 없다."""
+    ScriptedModels(engine, monkeypatch, ["ok"])
+    _use_settings(monkeypatch, _real_settings())
+
+    result = asyncio.run(_explain(gs05, FakeTracer()))
+
+    saved = json.dumps(
+        [result.final_explanation_json, result.attempts], ensure_ascii=False
+    )
+    for key in ("input_tokens", "output_tokens", "estimated_cost_usd", "calls"):
+        assert f'"{key}"' not in saved
+    assert {field.name for field in dataclasses.fields(result)} == {
+        "model_name",
+        "prompt_version",
+        "final_explanation_json",
+        "generated_at",
+        "input_document",
+        "attempts",
+    }
