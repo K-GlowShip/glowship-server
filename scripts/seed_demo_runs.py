@@ -262,6 +262,11 @@ async def load_supplement(
     if (
         latest is not None and latest >= day
     ):  # 재고가 하나도 없는 고객사면 None (PR #80 리뷰)
+        # 이미 넣었거나 파일 날짜가 맞지 않는 경우. CLI 출력만으로 알 수 있게 남긴다(이슈 #103)
+        print(
+            f"보완 하루 건너뜀: 최신 재고일 {latest} 이 보완 날짜 {day} 이상"
+            "(이미 넣었거나 보완 파일 날짜가 맞지 않음)"
+        )
         return False
     observed = datetime.combine(
         date.fromisoformat(supplement["observed_at"]), datetime.min.time(), UTC
