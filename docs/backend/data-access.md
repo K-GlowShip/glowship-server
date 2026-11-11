@@ -18,6 +18,8 @@
 
 어느 방식이든 DB 접근은 각 모듈의 `infrastructure/repository/`에서만 합니다. 서비스와 라우터는 SQL이나 ORM 쿼리를 직접 만들지 않습니다(잠금·RLS 헬퍼 호출은 예외, 5절).
 
+**다른 모듈의 데이터를 읽을 때(2026-11-10, 이슈 #101):** 다른 모듈의 저장소에 있는 **조회 함수 하나**(모듈 수준 함수)는 불러 써도 됩니다. 같은 값을 여러 모듈이 써야 할 때 조회를 한 곳에 두기 위해서입니다. **저장소 클래스**는 자기 모듈 것만 씁니다(다른 모듈의 저장소 클래스를 만들어 쓰지 않음). 예: `delay_analysis`의 `RunCreationRepository`가 `data_sync`의 `last_applied_sync_started_at`을 부르고(PR #85), 세 경로가 같은 값을 내는지는 `tests/modules/data_sync/test_last_applied_sync_boundary_sql.py`가 확인합니다. 두 모듈이 서로를 부르는 모양(`data_sync` 수집 → `delay_analysis` 에피소드·STALE)이 되지만 순환 import 오류는 없습니다(새 프로세스 4가지로 확인, rouiv 님).
+
 ## 2. ORM 엔터티
 
 **언제:** 한 행(또는 몇 행)을 키로 읽어 그 객체의 값을 바꾸거나, 한 행을 새로 만들 때.
