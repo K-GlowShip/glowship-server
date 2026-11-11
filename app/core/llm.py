@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
         제공자 오류 문구에는 키·프롬프트 일부가 섞일 수 있어 버리고, 사유 코드·상태 코드만 남긴다.
       - 키·프롬프트·모델 출력은 로그에 남기지 않는다. LiteLLM 의 콜백(외부 기록)이 켜져 있으면 호출하지 않는다.
       - 키는 제공자마다 하나(설정의 SecretStr)이고 호출할 때 직접 넘긴다. 모델은 기능마다 자기 설정으로 고른다.
+      - 사용량(토큰 수)은 제공자가 준 값이라 그대로 믿지 않는다. 범위를 벗어난 수가 하나라도 있으면 그 호출은 "사용량 없음"이다.
+        제공자가 답한 모델 이름도 허용한 글자만 받는다(로그·추적 기록에 그대로 쓰이는 값). 합계·예상 비용은 app/core/llm_usage.py.
 """
 
 logger = logging.getLogger(__name__)
@@ -46,19 +49,47 @@ REASON_TRUNCATED = "TRUNCATED"
 REASON_EMPTY = "EMPTY"
 REASON_UNEXPECTED = "UNEXPECTED"
 
+# 토큰 수 상한. 이보다 크면 제공자 값이 잘못된 것으로 보고 버린다(가장 큰 문맥 창의 수백 배)
+MAX_TOKEN_COUNT = 1_000_000_000
+# 기록에 남겨도 되는 모델 이름: 영문·숫자와 . _ : / - 만, 80자까지. 줄바꿈·공백이 든 이름은 로그 줄을 위조할 수 있다
+INVALID_MODEL_NAME = "INVALID"
+_MODEL_NAME = re.compile(r"[A-Za-z0-9._:/-]{1,80}")
+
 
 class LlmConfigError(RuntimeError):
     """모델을 부를 수 없는 설정(모르는 제공자, 키 없음, 라이브러리 없음, 외부 기록 콜백 켜짐). 호출 실패가 아니다."""
 
 
-class LlmError(Exception):
-    """모델 호출 실패. 문구에는 사유 코드·모델 이름·상태 코드만 있다(제공자 원문·키·프롬프트 없음)."""
+@dataclass(frozen=True)
+class LlmUsage:
+    """제공자가 알려 준 토큰 수. 알려 주지 않았거나 값이 범위를 벗어나면 None"""
 
-    def __init__(self, reason: str, *, model: str, status_code: int | None = None):
+    input_tokens: int | None
+    output_tokens: int | None
+    # 입력 토큰 가운데 제공자 캐시에서 읽은 수(할인 단가). input_tokens 에 들어 있는 수다
+    cached_input_tokens: int | None = None
+
+
+class LlmError(Exception):
+    """모델 호출 실패. 문구에는 사유 코드·모델 이름·상태 코드만 있다(제공자 원문·키·프롬프트 없음).
+
+    usage: 응답은 받았지만 결과로 쓰지 못한 호출(거부·잘림·빈 응답)의 토큰 수. 제공자가 청구하는 호출이라 남긴다.
+    숫자만 들고 간다(응답 객체·글은 붙이지 않는다). 응답을 받지 못한 실패는 None.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        model: str,
+        status_code: int | None = None,
+        usage: LlmUsage | None = None,
+    ):
         super().__init__(f"모델 호출 실패 {reason} (모델 {model}, 상태 {status_code})")
         self.reason = reason
         self.model = model
         self.status_code = status_code
+        self.usage = usage
 
 
 class LlmTimeoutError(LlmError):
@@ -70,18 +101,11 @@ class LlmCallError(LlmError):
 
 
 @dataclass(frozen=True)
-class LlmUsage:
-    """제공자가 알려 준 토큰 수. 알려 주지 않으면 None"""
-
-    input_tokens: int | None
-    output_tokens: int | None
-
-
-@dataclass(frozen=True)
 class LlmResult:
     text: str  # 모델이 쓴 글 전체(잘리거나 거부된 응답은 결과가 아니라 LlmCallError)
     model: str  # 요청한 "제공자/모델 ID"
-    response_model: str | None  # 제공자가 답한 모델 이름(날짜가 붙은 판 이름일 수 있음)
+    # 제공자가 답한 모델 이름(날짜가 붙은 판 이름일 수 있음). 허용한 글자가 아니면 "INVALID"
+    response_model: str | None
     usage: LlmUsage
     elapsed_ms: int
 
@@ -289,6 +313,9 @@ def complete_text(
 
     if failure is None:
         failure, text = _read_text(response, model)
+        if failure is not None:
+            # 거부·잘림·빈 응답도 제공자가 청구한다
+            failure.usage = _read_usage(response)
     if failure is not None:
         logger.warning(
             "모델 호출 실패: %s (모델 %s, 상태 %s, %dms)",
@@ -299,16 +326,13 @@ def complete_text(
         )
         raise failure
 
-    usage = getattr(response, "usage", None)
     logger.info("모델 호출 완료: 모델 %s, %dms", model, elapsed_ms)
+    response_model = getattr(response, "model", None)
     return LlmResult(
         text=text,
         model=model,
-        response_model=_optional_str(getattr(response, "model", None)),
-        usage=LlmUsage(
-            input_tokens=_optional_int(getattr(usage, "prompt_tokens", None)),
-            output_tokens=_optional_int(getattr(usage, "completion_tokens", None)),
-        ),
+        response_model=safe_model_name(response_model) if response_model else None,
+        usage=_read_usage(response),
         elapsed_ms=elapsed_ms,
     )
 
@@ -332,9 +356,44 @@ def _read_text(response: Any, model: str) -> tuple[LlmError | None, str]:
     return None, text
 
 
-def _optional_int(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+def safe_model_name(value: Any) -> str:
+    """기록(로그·추적)에 남길 모델 이름. 허용한 글자·길이가 아니면 "INVALID"."""
+    if isinstance(value, str) and _MODEL_NAME.fullmatch(value):
+        return value
+    return INVALID_MODEL_NAME
 
 
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
+_NO_USAGE = LlmUsage(input_tokens=None, output_tokens=None)
+
+
+def _read_usage(response: Any) -> LlmUsage:
+    """응답의 토큰 수. LiteLLM 은 세 제공자 모두 캐시에서 읽은 입력 토큰을 prompt_tokens_details.cached_tokens 에 둔다.
+
+    준 값 가운데 하나라도 정수가 아니거나 범위를 벗어나면(음수, 상한 초과, 캐시 > 입력) 전부 버린다.
+    일부만 믿으면 예상 비용이 음수이거나 엉뚱해진다.
+    """
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    raw = (
+        getattr(usage, "prompt_tokens", None),
+        getattr(usage, "completion_tokens", None),
+        getattr(details, "cached_tokens", None),
+    )
+    if not all(value is None or _is_token_count(value) for value in raw):
+        return _NO_USAGE
+    input_tokens, output_tokens, cached = raw
+    if cached is not None and (input_tokens is None or cached > input_tokens):
+        return _NO_USAGE
+    return LlmUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached,
+    )
+
+
+def _is_token_count(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= MAX_TOKEN_COUNT
+    )

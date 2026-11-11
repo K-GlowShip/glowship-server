@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 import os
@@ -5,6 +6,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,9 @@ from app.core import llm
       2. 실패는 두 가지로만 올라온다: 시간 초과 / 그 밖(한도·인증·서버·거부·잘림·빈 응답·연결). 재시도는 없다(요청 1번)
       3. 키·프롬프트·제공자 원문은 예외 문구·로그·표준 출력 어디에도 없다
       4. LiteLLM 콜백(외부 기록)이 켜져 있으면 부르지 않는다. 가격표는 묶음에 든 것만 쓴다(원격 조회 없음)
+      5. 사용량: 캐시에서 읽은 입력 토큰을 읽고, 거부·잘림·빈 응답의 토큰 수도 오류에 숫자로만 싣는다.
+         제공자가 준 수·모델 이름은 그대로 믿지 않는다(범위를 벗어난 수 → 사용량 없음, 이상한 이름 → INVALID)
+      6. LiteLLM 은 로더(load_llm_library) 안에서만 import 한다(다른 곳에서 import 하면 원격 가격표 조회가 켜진다)
 """
 
 API_KEY = "sk-test-KEEP-THIS-SECRET-0123456789"
@@ -478,3 +483,200 @@ def test_library_uses_bundled_price_table_and_stays_quiet():
 
 def test_library_is_loaded_once():
     assert llm.load_llm_library() is llm.load_llm_library()
+
+
+# --- 5. 사용량: 캐시 토큰·실패 응답·믿을 수 없는 값 -------------------------------------------
+
+
+def _cached_body(model):
+    """제공자마다 "캐시에서 읽은 입력 토큰"을 알리는 모양. 입력 1000 가운데 800이 캐시."""
+    if model == OPENAI:
+        body = _openai_body()
+        body["usage"] = {
+            "prompt_tokens": 1000,
+            "completion_tokens": 7,
+            "total_tokens": 1007,
+            "prompt_tokens_details": {"cached_tokens": 800},
+        }
+    elif model == ANTHROPIC:
+        body = _anthropic_body()
+        body["usage"] = {
+            "input_tokens": 200,  # Claude 는 캐시에서 읽은 수를 입력 수와 따로 준다
+            "output_tokens": 7,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 0,
+        }
+    else:
+        body = _gemini_body()
+        body["usageMetadata"] = {
+            "promptTokenCount": 1000,
+            "candidatesTokenCount": 7,
+            "totalTokenCount": 1007,
+            "cachedContentTokenCount": 800,
+        }
+    return body
+
+
+@pytest.mark.parametrize("model", [OPENAI, ANTHROPIC, GEMINI])
+def test_reads_cached_input_tokens_from_each_provider(provider, model):
+    provider.answer(_cached_body(model))
+
+    usage = _call(model).usage
+
+    # 캐시에서 읽은 수는 입력 수 안에 들어 있다(세 제공자 같은 뜻으로 맞춰진다)
+    assert (usage.input_tokens, usage.cached_input_tokens, usage.output_tokens) == (
+        1000,
+        800,
+        7,
+    )
+
+
+def test_cached_input_tokens_are_none_when_provider_does_not_report(provider):
+    provider.answer(_openai_body())
+
+    assert _call(OPENAI).usage == llm.LlmUsage(input_tokens=11, output_tokens=7)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": -5, "completion_tokens": 7},
+        {"prompt_tokens": 11, "completion_tokens": -1},
+        {"prompt_tokens": llm.MAX_TOKEN_COUNT + 1, "completion_tokens": 7},
+        {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": 12},  # 캐시 > 입력
+        },
+        {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": -7},
+        },
+    ],
+)
+def test_untrusted_token_counts_become_no_usage(provider, usage):
+    body = _openai_body()
+    body["usage"] = {**usage, "total_tokens": 1}
+    provider.answer(body)
+
+    result = _call(OPENAI)
+
+    assert result.text == ANSWER  # 답은 그대로 쓴다. 사용량만 버린다
+    assert result.usage == llm.LlmUsage(input_tokens=None, output_tokens=None)
+
+
+@pytest.mark.parametrize(
+    ("finish", "text", "reason"),
+    [
+        ("length", 'SECRET-ANSWER {"answer": "o', llm.REASON_TRUNCATED),
+        ("content_filter", "SECRET-ANSWER 도와드릴 수 없습니다", llm.REASON_REFUSAL),
+        ("stop", "   ", llm.REASON_EMPTY),
+    ],
+)
+def test_billed_failures_carry_token_counts_only(provider, finish, text, reason):
+    """거부·잘림·빈 응답은 실패지만 제공자가 청구한다. 오류는 토큰 수만 들고, 응답 글은 들지 않는다."""
+    provider.answer(_openai_body(text, finish))
+
+    with pytest.raises(llm.LlmCallError) as caught:
+        _call(OPENAI)
+
+    error = caught.value
+    assert error.reason == reason
+    assert error.usage == llm.LlmUsage(input_tokens=11, output_tokens=7)
+    assert "SECRET-ANSWER" not in repr(vars(error)) + str(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_failures_without_an_answer_have_no_usage(provider):
+    provider.answer(_error_body(), status=429)
+
+    with pytest.raises(llm.LlmCallError) as caught:
+        _call(OPENAI)
+
+    assert caught.value.usage is None
+
+
+FORGED_LINE = "gpt-x" + chr(10) + "2026-11-12 00:00:00 INFO forged line"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [FORGED_LINE, "gpt x", "모델", "a" * 81, "gpt-x" + chr(13), "gpt-x" + chr(9)],
+)
+def test_strange_response_model_name_is_replaced(provider, name):
+    body = _openai_body()
+    body["model"] = name
+    provider.answer(body)
+
+    assert _call(OPENAI).response_model == llm.INVALID_MODEL_NAME
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["gpt-5.4-mini-2026-03-17", "anthropic.claude-3:0", "models/gemini_1.5", "a" * 80],
+)
+def test_safe_model_name_keeps_ordinary_names(name):
+    assert llm.safe_model_name(name) == name
+
+
+@pytest.mark.parametrize("value", [None, "", 7, "a b", FORGED_LINE, "a" * 81, "한글"])
+def test_safe_model_name_rejects_everything_else(value):
+    assert llm.safe_model_name(value) == llm.INVALID_MODEL_NAME
+
+
+# --- 6. LiteLLM import 는 로더 안에서만 ------------------------------------------------------
+
+APP_DIR = Path(__file__).resolve().parents[2] / "app"
+LOADER = ("core/llm.py", "load_llm_library")
+
+
+def _litellm_imports(tree: ast.AST, inside: str | None = None):
+    """(가져오는 모듈 이름, 그 import 가 든 함수 이름) 목록"""
+    for node in ast.iter_child_nodes(tree):
+        scope = (
+            node.name
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            else inside
+        )
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            names = []
+        for name in names:
+            if name.split(".")[0] == "litellm":
+                yield name, inside
+        yield from _litellm_imports(node, scope)
+
+
+def test_model_library_is_imported_only_inside_the_loader():
+    """로더 밖에서 import 하면 가격표 원격 조회를 끄는 설정 없이 불려, 서버가 뜰 때 외부 주소로 나간다."""
+    found = []
+    for path in sorted(APP_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        relative = path.relative_to(APP_DIR).as_posix()
+        found += [(relative, scope) for _, scope in _litellm_imports(tree)]
+
+    assert found == [LOADER]
+
+
+def test_import_scan_catches_a_direct_import():
+    """위 검사가 실제로 잡는지: 파일 맨 위·다른 함수 안·from 형태를 모두 찾아낸다."""
+    code = chr(10).join(
+        [
+            "import litellm",
+            "from litellm.utils import x",
+            "def other():",
+            "    import litellm.cost",
+            "def load_llm_library():",
+            "    import litellm",
+            "import litellmx",
+        ]
+    )
+
+    found = [scope for _, scope in _litellm_imports(ast.parse(code))]
+
+    assert found == [None, None, "other", "load_llm_library"]
