@@ -8,9 +8,6 @@ from real_path_support import fix_explanation_canary
 from test_evaluation_t9_t11 import ANSWERS
 
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
-from app.modules.delay_analysis.application.agent.retry import (
-    EXPLANATION_GENERATION_FAILED,
-)
 from app.modules.delay_analysis.application.agent.runtime import RUNTIME_KEY
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
@@ -45,9 +42,10 @@ from app.modules.delay_analysis.infrastructure.engine.engine_input import (
         실제 조회 도구는 정답 실행 실제 경로 시험(test_evaluation_real_path)이 본다.
       - 견주는 것: 재고 영향 완료 상태, T10 출력 = 엔진 대응안, T11 순위·추천 = 정답표, 판정 서명 = 엔진,
         종료 상태, 그래프 상태 → 저장 행 변환.
-      - GS-05 만 설명까지 통과한다. 나머지 8건은 엔진 설명 검증기가 구분자 없는 SKU 코드(CREAM20 등) 안의 숫자를
-        수치로 세어 3회 모두 실패한다(1단계 문서 4.1절). 그 8건의 READY 기대는 strict xfail 로 두어 엔진이 고쳐지면
-        알 수 있게 하고, 지금 동작(설명 실패 FAILED·계산 결과 남음)도 고정한다.
+      - 9건 모두 설명·T12 까지 지나 READY_FOR_REVIEW 다. 엔진 설명 검증기 수정판(#114) 전에는 GS-05 만 통과했고
+        나머지 8건은 구분자 없는 SKU 코드(CREAM20 등) 안의 숫자를 수치로 세어 설명에서 3회 실패했다(1단계 문서 4.1절).
+        그 8건은 strict xfail 로 두었다가 수정판이 들어온 뒤 READY 기대로 합쳤다. 설명 실패 갈래(FAILED·계산 결과 남음)는
+        정답 실행 RT-2(test_evaluation_real_path)와 T13·T20 통합 시험이 본다.
 """
 
 KEYS = [
@@ -61,8 +59,6 @@ KEYS = [
     "GS-10",
     "GS-11",
 ]
-EXPLAINED = ["GS-05"]
-NOT_EXPLAINED = [key for key in KEYS if key not in EXPLAINED]
 
 RUN_ID = uuid.UUID(int=0x58)
 COMPANY_ID = uuid.UUID(int=1)
@@ -178,7 +174,7 @@ async def test_graph_computes_scenario_like_engine_and_answer_sheet(scenario, ke
     assert "explain" in state["visited_nodes"]  # 비교 노드(엔진 판정 서명 대조)를 통과
 
 
-@pytest.mark.parametrize("key", EXPLAINED)
+@pytest.mark.parametrize("key", KEYS)
 async def test_graph_reaches_ready_with_real_explanation(scenario, key):
     """C2: 실제 설명·T12 까지 지나 READY_FOR_REVIEW."""
     state = await _state(scenario, key)
@@ -191,48 +187,17 @@ async def test_graph_reaches_ready_with_real_explanation(scenario, key):
     assert explanation["decision_signature_hash"] == scenario(key)[2]["sha"]
 
 
-@pytest.mark.parametrize("key", NOT_EXPLAINED)
-@pytest.mark.xfail(
-    strict=True,
-    reason="엔진 설명 검증기가 구분자 없는 SKU 코드 안의 숫자를 수치로 셈(evaluation-scenarios.md 4.1절)",
-)
-async def test_graph_should_reach_ready_when_engine_validator_is_fixed(scenario, key):
-    """C3: 엔진이 고쳐지면 READY 가 되어 XPASS 로 알려 준다."""
-    state = await _state(scenario, key)
-
-    assert state["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
-
-
-@pytest.mark.parametrize("key", NOT_EXPLAINED)
-async def test_graph_ends_failed_at_explanation_and_keeps_computed_result(
-    scenario, key
-):
-    """C3: 지금 동작. 설명 3회 실패로 FAILED 이고, 계산 결과와 모델·프롬프트 판은 상태에 남는다."""
-    state = await _state(scenario, key)
-    failure = state["failure"]
-
-    assert state["outcome"] == AnalysisOutcome.FAILED
-    assert state["visited_nodes"][-1] == "explain"
-    assert (failure.failed_step, failure.failure_code) == (
-        AnalysisStep.VALIDATING_OUTPUT,
-        EXPLANATION_GENERATION_FAILED,
-    )
-    assert (failure.attempt_count, failure.retry_exhausted) == (3, True)
-    assert state["explanation_failed"].model_name
-    assert "explanation" not in state and state["option_ranking"].options
-
-
 @pytest.mark.parametrize("key", KEYS)
 async def test_graph_state_converts_to_result_rows(scenario, key):
-    """C4: 그래프 상태 → 저장 입력 → 저장 행. 시나리오 ID 가 DB 에 없어 저장은 하지 않는다."""
+    """C3: 그래프 상태 → 저장 입력 → 저장 행. 시나리오 ID 가 DB 에 없어 저장은 하지 않는다."""
     _snap, _replay, analysis = scenario(key)
     state = await _state(scenario, key)
-    ready = state["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    assert state["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
 
-    result = analysis_result_from_state(state, with_explanation=ready)
+    result = analysis_result_from_state(state)
     rows = build_result_rows(result, company_id=COMPANY_ID, analysis_run_id=RUN_ID)
 
-    assert (result.explanation is not None) == ready
+    assert result.explanation is not None
     assert rows.run_values["decision_signature_sha256"] == analysis["sha"]
     assert len(rows.response_options) == len(analysis["options"])
     risks = state[

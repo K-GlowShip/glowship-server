@@ -40,6 +40,9 @@ from app.modules.delay_analysis.application.run_start.transitions import (
 from app.modules.delay_analysis.application.stale.stale_service import (
     StaleJudgmentService,
 )
+from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
+    recalculator_or_none,
+)
 from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
     StaleChangeRepository,
 )
@@ -249,11 +252,14 @@ async def test_run_made_stale_while_running_stops_and_is_not_saved(db_write_sess
 
 
 async def _ingest(db, at, company_id, shipments):
-    """실제 STALE 판정·실제 자동 실행 생성을 쓰는 수집(수집 시험의 보조는 STALE 판정을 대역으로 바꿔 넣는다)."""
+    """
+    실제 STALE 판정·실제 자동 실행 생성을 쓰는 수집(수집 시험의 보조는 STALE 판정을 대역으로 바꿔 넣는다).
+    STALE 2차(판정 서명 재계산)는 수동 동기화(manual_sync_service._ingest)와 같게 recalculator_or_none 을 넘긴다(#116).
+    """
     service = DataIngestService(
         db,
         IngestRepository(db),
-        StaleJudgmentService(db, StaleChangeRepository(db)),
+        StaleJudgmentService(db, StaleChangeRepository(db), recalculator_or_none(db)),
         now=lambda: at,
     )
     result = await service.ingest(
