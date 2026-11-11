@@ -2,6 +2,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,8 +24,16 @@ from app.modules.delay_analysis.application.result_save.result_save_service impo
 from app.modules.delay_analysis.application.run_creation.run_creation_service import (
     record_input_data_versions,
 )
-from app.modules.delay_analysis.infrastructure.analysis_enums import AnalysisRunStatus
+from app.modules.delay_analysis.application.stale.stale_service import mark_stale
+from app.modules.delay_analysis.infrastructure.analysis_enums import (
+    AnalysisRunStatus,
+    StaleReasonCode,
+    TriggerReason,
+)
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
+)
 
 """
     실행 상태 전이와 서버 시작 정리 조회 (GLOW-128, docs/analysis/auto-start.md 3절)
@@ -51,6 +60,16 @@ from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
     서버 시작 정리 조회 find_unfinished_runs
       - 고객사 문맥 없이 모든 고객사의 끝나지 않은 실행을 찾는다. 앱·워커 역할은 문맥 없이 행을 볼 수 없어
         DB 함수 app_worker_find_unfinished_runs(리비전 0009, SECURITY DEFINER)를 쓴다(사용자 결정 11-09).
+
+    닫힌 지연의 시작 전 실행 끝내기 retire_unstarted_run_of_closed_episode (이슈 #51, 사용자 결정 11-11)
+      - 시작 정리가 DETECTED 실행을 다시 시작하기 전에 부른다. 지연이 닫혔고(입고 종료, 운영 기준 없는 날 회복 건너뜀)
+        회복 실행(DELAY_RECOVERED)이 아니면 시작하지 않고 STALE 로 끝낸다. 닫힌 지연의 실행은 초안·최종 선택·재분석이
+        모두 EPISODE_CLOSED 로 거부되므로 분석해도 쓸 수 없다(serviceflow 4절).
+      - begin_analysis 는 그대로 둔다. 확정 데이터는 지연이 모두 닫혀 있어 정답 대조가 닫힌 지연의 실행을 실행기로
+        돌리고, 회복 실행은 닫힌 에피소드에서 시작해 NO_DELAY 로 끝나야 하기 때문이다.
+      - 사유는 정상 후속 판정과 같게: 회복으로 닫힘 DELAY_SCHEDULE_CHANGED, 입고로 닫힘 DELAY_STAGE_CHANGED(단계 RECEIVED).
+        감지 순번·시각 = 닫은 SHIPMENT 수집의 적용 순번·완료 시각(delay-detection.md 5절 규칙).
+      - 닫은 수집을 하나로 찾지 못하면 바꾸지 않고 시작하지도 않는다(DETECTED 로 남아 다음 시작 정리가 다시 본다).
 """
 
 logger = logging.getLogger(__name__)
@@ -67,6 +86,12 @@ IN_PROGRESS_STEPS = (
 RESTART_FAILURE_MESSAGE = (
     "서버가 다시 시작돼 분석이 중단되었습니다. 재분석을 요청하세요."
 )
+
+# 닫힌 지연의 시작 전 실행을 끝낼 때의 STALE 사유(종료 사유별, 정상 후속 판정의 사유와 같은 뜻)
+_CLOSE_STALE_REASON = {
+    "RECOVERED": StaleReasonCode.DELAY_SCHEDULE_CHANGED,
+    "RECEIVED": StaleReasonCode.DELAY_STAGE_CHANGED,
+}
 
 _FIND_UNFINISHED_SQL = text(
     "SELECT company_id, analysis_run_id, status FROM app_worker_find_unfinished_runs()"
@@ -101,6 +126,17 @@ class StartedRun:
             trigger_shipment_schedule_snapshot_id=run.trigger_shipment_schedule_snapshot_id,
             is_latest=run.is_latest,
         )
+
+
+class RetireOutcome(StrEnum):
+    """시작 정리에서 닫힌 지연의 실행을 끝냈는지"""
+
+    # 열린 지연·회복 실행·DETECTED 아님 → 평소대로(DETECTED 면 시작)
+    NOT_TARGET = "NOT_TARGET"
+    # STALE 로 끝냄 → 시작하지 않음
+    RETIRED = "RETIRED"
+    # 닫힌 지연인데 닫은 수집을 못 찾음 → 바꾸지도 시작하지도 않음
+    CLOSE_SYNC_UNKNOWN = "CLOSE_SYNC_UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -166,6 +202,42 @@ async def advance_status(
     run.status = to
     await db.flush()
     return True
+
+
+async def retire_unstarted_run_of_closed_episode(
+    db: AsyncSession, *, company_id: uuid.UUID, analysis_run_id: uuid.UUID
+) -> RetireOutcome:
+    """닫힌 지연의 회복 실행이 아닌 DETECTED 실행을 STALE 로 끝낸다(모듈 설명). 커밋은 부르는 쪽."""
+    run = await _lock_in_company(db, company_id, analysis_run_id)
+    if (
+        run is None
+        or run.status != AnalysisRunStatus.DETECTED
+        or run.trigger_reason == TriggerReason.DELAY_RECOVERED
+    ):
+        return RetireOutcome.NOT_TARGET
+    close = await StaleChangeRepository(db).find_episode_close(
+        company_id, analysis_run_id
+    )
+    if close is None:
+        return RetireOutcome.NOT_TARGET
+    if close.applied_seq is None or close.sync_finished_at is None:
+        logger.warning(
+            "닫힌 지연(%s)의 분석 실행 %s: 닫은 수집을 하나로 찾지 못해 시작하지도 끝내지도 않습니다(DETECTED 로 남음)",
+            close.close_reason,
+            analysis_run_id,
+        )
+        return RetireOutcome.CLOSE_SYNC_UNKNOWN
+    reason = _CLOSE_STALE_REASON[close.close_reason]
+    mark_stale(run, [reason], close.applied_seq, close.sync_finished_at)
+    await db.flush()
+    logger.info(
+        "닫힌 지연(%s)의 분석 실행 %s 를 시작하지 않고 STALE(%s, 순번 %s)로 끝냈습니다",
+        close.close_reason,
+        analysis_run_id,
+        reason,
+        close.applied_seq,
+    )
+    return RetireOutcome.RETIRED
 
 
 async def find_unfinished_runs(db: AsyncSession) -> list[UnfinishedRun]:

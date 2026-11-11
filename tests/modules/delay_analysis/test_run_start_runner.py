@@ -22,6 +22,7 @@ from app.modules.delay_analysis.application.run_start import runner as R
 from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
 from app.modules.delay_analysis.application.run_start.transitions import (
     RESTART_FAILURE_MESSAGE,
+    RetireOutcome,
     UnfinishedRun,
 )
 
@@ -73,6 +74,9 @@ class _Db:
         self.unfinished: list[UnfinishedRun] = []
         self.fail_raises = False
         self.fail_raises_for: set[uuid.UUID] = set()
+        # 시작 정리의 닫힌 지연 처리 결과(없으면 NOT_TARGET = 평소대로 시작), 예외를 낼 실행
+        self.retire_outcome: dict[uuid.UUID, RetireOutcome] = {}
+        self.retire_raises_for: set[uuid.UUID] = set()
 
     def detected(self, n=1):
         ids = [uuid.uuid4() for _ in range(n)]
@@ -103,6 +107,14 @@ class _Db:
     async def find(self, db):
         return self.unfinished
 
+    async def retire(self, db, *, company_id, analysis_run_id):
+        if analysis_run_id in self.retire_raises_for:
+            raise RuntimeError("지연 종료 확인 실패(시험)")
+        outcome = self.retire_outcome.get(analysis_run_id, RetireOutcome.NOT_TARGET)
+        if outcome == RetireOutcome.RETIRED:
+            self.status[analysis_run_id] = "STALE"
+        return outcome
+
     async def save(self, db, run, state, *, now=None):
         self.saved[run.analysis_run_id] = {
             "outcome": state.get("outcome"),
@@ -130,6 +142,7 @@ def db(monkeypatch):
     monkeypatch.setattr(R, "advance_status", fake.advance)
     monkeypatch.setattr(R, "fail_unfinished", fake.fail)
     monkeypatch.setattr(R, "find_unfinished_runs", fake.find)
+    monkeypatch.setattr(R, "retire_unstarted_run_of_closed_episode", fake.retire)
     monkeypatch.setattr(R, "set_rls_context", _noop_rls)
     monkeypatch.setattr(R, "AnalysisRunStatusReader", _Reader)
     return fake
@@ -518,3 +531,64 @@ async def test_tracer_close_error_keeps_saved_result(db, caplog):
     assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
     assert run_id not in db.failed
     assert "추적기를 닫지 못했습니다" in caplog.text
+
+
+async def test_sweep_does_not_start_retired_or_unresolved_runs(db):
+    """닫힌 지연이라 STALE 로 끝낸 실행·닫은 수집을 못 찾은 실행은 시작하지 않고, 나머지 DETECTED 는 시작한다."""
+    retired, unknown, normal = db.detected(3)
+    db.retire_outcome = {
+        retired: RetireOutcome.RETIRED,
+        unknown: RetireOutcome.CLOSE_SYNC_UNKNOWN,
+    }
+    db.unfinished = [
+        UnfinishedRun(COMPANY, r, "DETECTED") for r in (retired, unknown, normal)
+    ]
+    runner = _runner(db)
+
+    result = await runner.sweep_on_startup()
+    await runner.wait_idle()
+
+    assert (result.retired, result.left_detected, result.restarted) == (
+        [retired],
+        [unknown],
+        [normal],
+    )
+    assert retired not in db.saved and unknown not in db.saved
+    assert (db.status[retired], db.status[unknown]) == ("STALE", "DETECTED")
+    assert db.saved[normal]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+
+
+async def test_sweep_commits_only_when_retired(db):
+    """끝냈을 때만 커밋하고, 대상이 아니거나 못 찾았으면 되돌린다(잠금만 잡은 트랜잭션)."""
+    retired, unknown = db.detected(2)
+    db.retire_outcome = {
+        retired: RetireOutcome.RETIRED,
+        unknown: RetireOutcome.CLOSE_SYNC_UNKNOWN,
+    }
+    runner = _runner(db, enabled=True)
+
+    db.session_log.clear()
+    assert await runner._retire_if_closed(
+        UnfinishedRun(COMPANY, retired, "DETECTED")
+    ) == (RetireOutcome.RETIRED)
+    assert db.session_log == ["commit"]
+    db.session_log.clear()
+    await runner._retire_if_closed(UnfinishedRun(COMPANY, unknown, "DETECTED"))
+    assert db.session_log == ["rollback"]
+
+
+async def test_sweep_continues_when_closed_check_raises(db):
+    """지연 종료 확인이 예외를 내도 서버 시작을 멈추지 않고, 그 실행은 시작하지 않으며 다음 실행을 정리한다."""
+    broken, ok = db.detected(2)
+    db.retire_raises_for = {broken}
+    db.unfinished = [
+        UnfinishedRun(COMPANY, broken, "DETECTED"),
+        UnfinishedRun(COMPANY, ok, "DETECTED"),
+    ]
+    runner = _runner(db)
+
+    result = await runner.sweep_on_startup()
+    await runner.wait_idle()
+
+    assert result.errors == [broken] and result.restarted == [ok]
+    assert db.status[broken] == "DETECTED" and broken not in db.saved

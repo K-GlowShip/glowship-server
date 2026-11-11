@@ -100,6 +100,29 @@ _CLOSED_EPISODE_RUN_IDS = text(
     """
 ).bindparams(bindparam("analysis_run_ids", type_=ARRAY(UUID(as_uuid=True))))
 
+# 시작 정리용(이슈 #51): 실행의 지연 에피소드가 닫혔으면 닫은 사유와 닫은 SHIPMENT 수집.
+# 닫은 수집 = 그 선적의 스냅샷 중 관측 시각이 closed_at 과 같은 것을 남긴 수집(close_episodes 가 판정 스냅샷의
+# 관측 시각으로 닫음). 열린 에피소드면 행이 없고, 닫은 수집을 못 찾으면 수집 열이 빈 행이 나온다.
+_EPISODE_CLOSE = text(
+    """
+    SELECT e.close_reason, d.applied_seq, d.finished_at
+      FROM analysis_runs a
+      JOIN delay_events e
+        ON e.company_id = a.company_id AND e.delay_event_id = a.delay_event_id
+      LEFT JOIN shipment_schedule_snapshots s
+        ON s.company_id = e.company_id AND s.shipment_id = e.shipment_id
+       AND s.observed_at = e.closed_at
+      LEFT JOIN data_sync_runs d
+        ON d.company_id = s.company_id AND d.data_sync_run_id = s.data_sync_run_id
+       AND d.source_domain = 'SHIPMENT' AND d.applied_seq IS NOT NULL
+     WHERE a.company_id = :company_id AND a.analysis_run_id = :analysis_run_id
+       AND e.closed_at IS NOT NULL
+    """
+).bindparams(
+    bindparam("company_id", type_=UUID(as_uuid=True)),
+    bindparam("analysis_run_id", type_=UUID(as_uuid=True)),
+)
+
 # 진행 중 실행의 보수 판정용: 지연 선적과 그 선적 상세의 SKU 전체(K_SHIPMENT)
 _DELAYED_SHIPMENT_SKUS = text(
     """
@@ -141,6 +164,15 @@ class ScopedChange:
         return self.sync_started_at.astimezone(UTC).date()
 
 
+@dataclass(frozen=True)
+class EpisodeClose:
+    """닫힌 지연 에피소드의 종료 사유와 닫은 SHIPMENT 수집. 수집을 하나로 정하지 못하면 순번·시각이 None"""
+
+    close_reason: str
+    applied_seq: int | None
+    sync_finished_at: datetime | None
+
+
 class StaleChangeRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -170,6 +202,26 @@ class StaleChangeRepository:
             _CLOSED_EPISODE_RUN_IDS, {"analysis_run_ids": ids}
         )
         return set(result)
+
+    async def find_episode_close(
+        self, company_id: uuid.UUID, analysis_run_id: uuid.UUID
+    ) -> EpisodeClose | None:
+        """실행의 지연 에피소드가 닫혔으면 종료 사유와 닫은 수집, 열려 있으면(또는 실행이 없으면) None"""
+        rows = (
+            await self.db.execute(
+                _EPISODE_CLOSE,
+                {"company_id": company_id, "analysis_run_id": analysis_run_id},
+            )
+        ).all()
+        if not rows:
+            return None
+        syncs = {
+            (r.applied_seq, r.finished_at)
+            for r in rows
+            if r.applied_seq is not None and r.finished_at is not None
+        }
+        seq, finished_at = next(iter(syncs)) if len(syncs) == 1 else (None, None)
+        return EpisodeClose(rows[0].close_reason, seq, finished_at)
 
     async def find_delayed_shipment_skus(
         self, company_id: uuid.UUID, delay_event_id: uuid.UUID
