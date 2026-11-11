@@ -101,14 +101,16 @@ HTTP/1.1 200 OK
 
 ### 프론트의 해석
 
+화면은 **카드 하나**에 원천 시스템별 칸을 둡니다(명세 v6.2 4.3절, C39·C40, glowship-plan `b42c488`). 서버는 원천 유형별로만 내려주고 묶는 계산은 화면이 합니다. 그래서 이 규칙으로 서버 응답은 바뀌지 않습니다.
+
 | 화면 | 값 |
 | --- | --- |
-| 카드 3장(주문·재고·선적) | `sourceDomain`이 `ORDER`·`INVENTORY`·`SHIPMENT`인 항목 |
-| 카드 부제("SAP ERP") | `sourceSystemName` |
-| 카드 배지 | `isSynced: true` → 정상, `false`이고 `lastSyncedAt` 있음 → 수집 오류(마지막 수집 실패 또는 수집 멈춤), `false`이고 `null` → 미연동 |
-| "마지막 수집 10.21 09:30" | `lastSyncedAt` |
-| "10분마다 자동 수집" | `syncIntervalMinutes` |
-| 수집 중 표시 | `status: "RUNNING"` |
+| 칸 3개 | 주문 데이터(SAP ERP) = `ORDER` + `PRODUCT`, 재고 데이터(WMS) = `INVENTORY` + `WAREHOUSE`, 선적 데이터(TMS) = `SHIPMENT` |
+| 칸 부제("SAP ERP") | `sourceSystemName` |
+| 원천별 상태 배지 | 원천마다 하나. `status: "RUNNING"` → 수집 중, `isSynced: false`이고 `lastSyncedAt` 있음 → 수집 오류(마지막 수집 실패 또는 수집 멈춤), `lastSyncedAt: null` → 미연동, `PARTIAL_SUCCESS` → 일부 오류, 그 밖 → 정상. 둘 이상에 해당하면 앞에 적은 것 |
+| "마지막 수집" (카드에 하나) | 고객사 전체 값이라 `GET /dashboard/summary`의 `lastSyncedAt`(명세 C34). 이 API 의 원천별 `lastSyncedAt`에서 고르지 않음 |
+| "10분마다 자동 수집" | `syncIntervalMinutes`(항상 10). 서버에 10분마다 도는 수집기는 없고, 데모에서는 동기화 버튼 한 번이 10분 한 번을 대신함 |
+| 동기화 버튼 (카드에 하나) | `POST /data-sync-runs` 본문 `{}`. 한 번에 다섯 원천을 함께 수집(명세 C40, [manual-sync.md](manual-sync.md)). 누른 뒤 이 API 를 다시 조회 |
 | 탭 옆 오류 건수(상품·주문·선적·재고) | 각 원천의 `openIssueCount`. 상품 탭은 `PRODUCT` |
 
 ### 실패 응답
@@ -197,8 +199,8 @@ async def list_orders(
 | `PRODUCT` | SAP ERP | 10 |
 | `WAREHOUSE` | WMS | 10 |
 
-- 배열 순서가 곧 응답 순서입니다. 화면 카드 3장을 앞에, 마스터 데이터 2종을 뒤에 둡니다.
-- 상품 마스터는 ERP, 창고 마스터는 WMS에서 온다고 봅니다. 명세에 명시가 없어 둔 가정입니다.
+- 배열 순서가 곧 응답 순서입니다. 화면의 대표 원천(주문·재고·선적)을 앞에, 마스터 데이터 2종을 뒤에 둡니다.
+- 상품 마스터는 ERP, 창고 마스터는 WMS에서 옵니다. 처음에는 명세에 없어 둔 가정이었고, 명세 v6.2 4.3절 카드 묶음(C39)으로 정해졌습니다.
 - 고객사별 연동 설정(시스템 이름·주기·사용 여부)이 필요해지면 `data_source_connections` 같은 테이블로 옮깁니다(7절).
 
 ## 6. 테스트
