@@ -8,6 +8,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     "fastapi[standard]>=0.162.0",
     "langgraph>=1.2.18",
+    "litellm==1.106.6",
     "pydantic-settings>=2.16.1",
     "pyjwt>=2.15.1",
     "sqlalchemy[asyncio]>=2.1.6",
@@ -28,6 +29,8 @@ asyncio_mode = "auto"
 filterwarnings = [
     # langsmith 내부의 asyncio.iscoroutinefunction 사용 (Python 3.16 제거 예정, 동작 영향 없음)
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:langsmith.*",
+    # litellm 의 형 정의(TypedDict ReadOnly)를 pydantic 이 읽을 때 내는 안내 (동작 영향 없음)
+    "ignore:Item '.*' on TypedDict class '.*' is using the `ReadOnly` qualifier:UserWarning:pydantic.*",
 ]
 
 [tool.ruff.lint.flake8-bugbear]
