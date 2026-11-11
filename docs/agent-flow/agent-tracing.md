@@ -46,7 +46,7 @@ finally:
 ## 3. 기본 꺼짐과 내부 로그
 - **LangSmith 전송기는 두지 않았습니다.** 업무 데이터 외부 전송 승인(8.1 운영 확인 항목) 전이기 때문입니다. 승인되면 같은 `TraceSink` 모양(`write(event)`)으로 전송기를 더하고, 실패분은 내부 로그에서 다시 보냅니다.
 - **자동 추적 차단:** `LANGSMITH_TRACING`·`LANGSMITH_TRACING_V2`·`LANGCHAIN_TRACING_V2`·`LANGCHAIN_TRACING` 중 하나라도 켜져 있으면 LangChain이 그래프 상태를 **마스킹 없이** 보냅니다. 그래서 `build_run_tracer`가 `TraceConfigError`로 멈춥니다.
-- **내부 로그:** `<base>/agent_trace_outbox/<company_id>/<YYYY-MM-DD>.jsonl`(UTC 날짜). 사건 하나가 JSON 한 줄이고, 여러 실행이 동시에 써도 줄이 섞이지 않습니다(잠금). `base`는 부르는 쪽(실행기)이 넘깁니다. 설정 값을 둘지는 실행기 연결 때 정합니다(공용 파일 `config.py`를 이번에 바꾸지 않으려는 것).
+- **내부 로그:** `<base>/agent_trace_outbox/<company_id>/<YYYY-MM-DD>.jsonl`(UTC 날짜). 사건 하나가 JSON 한 줄이고, 여러 실행이 동시에 써도 줄이 섞이지 않습니다(잠금). `base`는 앱 실행기가 설정 `AGENT_TRACE_DIR`로 넘깁니다(이슈 #51, `run_start/app_runner.py` `build_tracer_factory`). 비우면(기본) 추적하지 않습니다. 배포 컨테이너에 쓸 수 있는 폴더가 정해지기 전이라 기본을 비워 둔 것이고, 이때는 agentflow 8.1 "외부 전송 불허 시 내부 서버 로그에 전량 저장"과 다릅니다(폴더를 넣으면 같음). 싱크 하나를 모든 실행이 같이 씁니다(줄 잠금이 싱크마다). 파일 날짜는 사건의 서버 시각(UTC)이고 가상 시각을 쓰지 않습니다. 자동 시작을 켰을 때 폴더를 넣었는데 쓸 수 없으면 서버 시작이 멈춥니다(`docs/analysis/auto-start.md` 7절).
 
 ## 4. 추적 장애 독립성
 - 분석 쪽(콜백·훅)은 사건을 만들어 줄에 넣기만 합니다. 쓰기는 실행마다 하나인 쓰기 스레드가 합니다. 그래서 기록이 느려도 분석이 기다리지 않습니다.
@@ -81,7 +81,7 @@ finally:
 ## 6. 아직 안 한 것
 - **재시도 기록 연결(완료):** #28이 머지되어(develop `634ff99`) 실제 `call_with_retry`로 시험했습니다. 도구를 노드에 붙일 때 `on_attempt=tracer.tool_attempt`를 넘기면 됩니다.
 - **실패 갈래의 장애 독립성(완료):** 5절의 장애 독립성 시험은 정상 갈래와 쓰기 장애만 봅니다. 실패 갈래(재시도 소진·권한·설명 3회 실패·보류·STALE)에서 추적기·콜백 자체가 예외를 내는 경우까지 본 통합 시험 T20은 `docs/agent-flow/integration-tests-t13-t20.md` 4절에 있습니다.
-- **그래프에 끼우기(실행기 쪽 완료, GLOW-128 실행 묶음 채우기):** 자동 시작 실행기(`run_start/runner.py`)가 `tracer_factory`로 실행마다 추적기를 만들어 실행 도구 묶음과 그래프 콜백(`callback_handler()`)에 같이 넘기고, 끝나면 `aclose()`로 닫습니다. 만들기·닫기 예외는 경고만 남깁니다. **남은 것:** 앱 실행기(`run_start/app_runner.py`)에 `tracer_factory`(`build_run_tracer` + `TraceOutboxSink`)를 넣고 내부 로그 폴더 설정을 정하는 일 — 자동 시작을 켜는 작업에서 합니다(`docs/analysis/auto-start.md` 7절).
+- **그래프에 끼우기(실행기 쪽 완료, GLOW-128 실행 묶음 채우기):** 자동 시작 실행기(`run_start/runner.py`)가 `tracer_factory`로 실행마다 추적기를 만들어 실행 도구 묶음과 그래프 콜백(`callback_handler()`)에 같이 넘기고, 끝나면 `aclose()`로 닫습니다. 만들기·닫기 예외는 경고만 남깁니다. **앱 실행기 연결(완료, 이슈 #51):** 앱 실행기(`run_start/app_runner.py`)가 `AGENT_TRACE_DIR`가 있으면 `build_run_tracer` + `TraceOutboxSink`로 `tracer_factory`를 만듭니다(3절). 실제 묶음으로 재분석 실행을 끝까지 돌려 내부 로그에 그 실행의 처음부터 끝까지가 남는 것을 시험합니다(`test_run_start_reanalysis_end_to_end_sql.py`, 실행 1건 사건 43건·약 20KB). 남은 것은 서버에 쓸 수 있는 폴더를 정해 넣는 배포 일입니다.
 - **운영 확인 항목(8.1):** 보존 기간(제안 400일), 외부 전송 승인, 마스킹 범위, 서버 로그의 운영 주체·회전·암호화. 정해지기 전에는 내부 로그만 쓰고 지우지 않습니다.
 
 ## 7. 작업 중 실패와 결정
