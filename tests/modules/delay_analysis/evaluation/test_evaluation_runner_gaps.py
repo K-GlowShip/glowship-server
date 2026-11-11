@@ -100,6 +100,15 @@ _CHAIN_RUNS = text(
 END_STATES = {"READY_FOR_REVIEW", "NO_RISK", "ON_HOLD", "NO_DELAY"}
 
 
+def _versions_after_save(row) -> int:
+    """
+    결과를 저장한 뒤의 입력 데이터 버전 수: 도메인 5개, 보류는 0건(save_graph_outcome 이 기록).
+    실행을 만들 때의 건수는 단정하지 않는다. 자동 실행을 만들 때 기록하던 것을 저장 때로 옮기는 변경(PR #120)
+    전에는 만들 때 5건, 뒤에는 0건이고, 저장 뒤는 두 경우 모두 같다.
+    """
+    return 0 if row.status == "ON_HOLD" else 5
+
+
 async def _versions(db, run):
     return (await db.scalars(_DATA_VERSIONS, {"id": run.analysis_run_id})).all()
 
@@ -301,8 +310,9 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
         "EPISODE_STARTED",
         "DETECTED",
     )
-    assert v1_created.input_seq == first.applied_seq and v1_created.versions == 5
+    assert v1_created.input_seq == first.applied_seq
     assert v1_done.status in END_STATES and v1_done.status == v1_done.completed_status
+    assert v1_done.versions == _versions_after_save(v1_done)
 
     # ② 같은 선적의 예상 입고일을 늦춰 다시 수집 → v1 STALE, v2 자동 실행
     later = replace(
@@ -321,7 +331,7 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
     assert v1_stale.stale_detected_seq == second.applied_seq
     assert v1_stale.completed_status == v1_done.completed_status  # 결과는 보존
     assert v1_stale.impacts == v1_done.impacts
-    # ③ v2: 일정 악화 사유, 부모 = v1, 입력 순번 = 그 수집, 데이터 버전 5건
+    # ③ v2: 일정 악화 사유, 부모 = v1, 입력 순번 = 그 수집
     assert second.created_run_ids == (v2_created.analysis_run_id,)
     assert (v2_created.trigger_type, v2_created.trigger_reason, v2_created.status) == (
         "AUTO",
@@ -330,13 +340,14 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
     )
     assert v2_created.parent_analysis_run_id == v1_stale.analysis_run_id
     assert v2_created.version_no == 2 and v2_created.is_latest
-    assert v2_created.input_seq == second.applied_seq and v2_created.versions == 5
+    assert v2_created.input_seq == second.applied_seq
 
     # ④ v2 실제 경로 → 끝 상태 저장, v1 은 그대로 STALE
     await _analyze(db, company_id, v2_created.analysis_run_id)
     v1_after, v2_done = await _chain(db, company_id, shipment.shipment_code)
 
     assert v2_done.status in END_STATES and v2_done.status == v2_done.completed_status
+    assert v2_done.versions == _versions_after_save(v2_done)
     assert (v1_after.status, v1_after.stale_detected_seq) == (
         "STALE",
         second.applied_seq,
