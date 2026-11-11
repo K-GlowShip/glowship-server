@@ -24,21 +24,13 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 """
     READY 시나리오 9건의 AI 설명 생성(GLOW-127 generate_explanation, mock 모델)과 T12 재검증
       - 기대(정답표 흐름): 설명이 첫 시도에 통과하고, 추천 대응안·대응안 집합이 정답표와 같으며, T12 로 다시 검증해도 PASSED.
-      - 11-06 발견(엔진 몫): 엔진 explain/textcheck.tokens 가 구분자 없는 SKU 코드 안의 숫자를 수치로 센다(CREAM20 → 20).
-        모의 모델이 쓰는 "SKU별 지연 증분은 CREAM20 100개입니다" 문장은 인용 값 [100] 과 토큰 [20, 100] 이 달라
-        VALUE_MISMATCH@risk_summary#s2 로 3번 모두 실패한다. 코드에 숫자가 없는 GS-05(X·Y)만 통과.
-        SKU-001 처럼 '-'·'_' 가 있는 코드(실제 DB 모양)는 코드 토큰으로 빠져 맞게 센다(11-07 범위 바로잡음).
-        → 통과 기대 시험은 strict xfail 로 두고(엔진이 고쳐지면 XPASS 로 실패해 표시를 지우라고 알림),
-          지금 동작(3번 실패 → #28 explanation_failure 모양)은 따로 고정한다.
+      - 11-06 발견: 엔진 explain/textcheck.tokens 가 구분자 없는 SKU 코드 안의 숫자를 수치로 세어(CREAM20 → 20)
+        9건 중 8건이 VALUE_MISMATCH@risk_summary#s2 로 실패했다. 엔진 수정판(glowship-plan f18f86d, 11-11)은 이런 코드도
+        코드 토큰으로 빼내므로 9건 모두 통과한다. 수정판이 아닌 엔진은 해시 목록 대조에서 먼저 막힌다.
 """
 
 RUN_ID = "5e05f1a0-2026-4c00-9b00-00000000058a"
 NOW = datetime(2026, 3, 10, 0, 5, tzinfo=UTC)
-ENGINE_TOKENIZER_NOTE = (
-    "엔진 textcheck.tokens 가 구분자 없는 SKU 코드 안의 숫자를 수치로 세어 모의 설명이 risk_summary#s2 에서 "
-    "VALUE_MISMATCH 로 실패함(11-06, 엔진 몫). 고쳐지면 이 표시를 지운다"
-)
-DIGIT_CODE_KEYS = [k for k in KEYS if k != "GS-05"]
 
 
 @pytest.fixture(scope="module")
@@ -66,17 +58,7 @@ def _generate(key, snap, analysis):
     )
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        pytest.param(
-            k, marks=pytest.mark.xfail(strict=True, reason=ENGINE_TOKENIZER_NOTE)
-        )
-        if k in DIGIT_CODE_KEYS
-        else k
-        for k in KEYS
-    ],
-)
+@pytest.mark.parametrize("key", KEYS)
 def test_ready_scenario_gets_passed_explanation(scenario, fixed_canary, key):
     snap, _replay, analysis = scenario(key)
     result = _generate(key, snap, analysis)
@@ -105,30 +87,19 @@ def test_ready_scenario_gets_passed_explanation(scenario, fixed_canary, key):
     assert check.errors == []
 
 
-def test_engine_tokenizer_counts_digits_inside_sku_codes(glow50):
-    """원인 고정. 이 시험이 실패하면 엔진이 고쳐진 것이니 위 xfail 과 아래 실패 고정 시험을 지운다.
+def test_engine_tokenizer_takes_codes_without_separator_as_code_tokens(glow50):
+    """엔진 수정판 고정(11-11): 구분자 없는 코드(CREAM20) 안의 숫자는 정수로 세지 않고 코드 토큰으로 뺀다.
     glow50 을 받아 엔진 경로(GLOWSHIP_ENGINE_DIR)가 없으면 이 폴더의 다른 시험처럼 건너뛴다(#66 리뷰)."""
     tokens = load_engine_module("explain.textcheck").tokens
-    assert tokens("SKU별 지연 증분은 CREAM20 100개입니다")["numbers"] == [20, 100]
+    assert tokens("SKU별 지연 증분은 CREAM20 100개입니다") == {
+        "codes": ["CREAM20"],
+        "dates": [],
+        "numbers": [100],
+    }
     assert tokens("SKU별 지연 증분은 X 120개, Y 0개입니다")["numbers"] == [120, 0]
-    # 범위: '-'·'_' 로 이어진 코드(실제 DB 모양)는 코드 토큰으로 빠져 숫자로 세지 않는다(11-07 바로잡음)
-    assert tokens("SKU별 지연 증분은 SKU-005 31개입니다")["numbers"] == [31]
-
-
-@pytest.mark.parametrize("key", DIGIT_CODE_KEYS)
-def test_digit_code_scenarios_end_as_explanation_failure(scenario, fixed_canary, key):
-    """지금 엔진: 3번 모두 VALUE_MISMATCH@risk_summary#s2 → 서버는 #28 explanation_failure 모양으로 끝낸다."""
-    snap, _replay, analysis = scenario(key)
-    result = _generate(key, snap, analysis)
-    assert isinstance(result, ExplanationFailed)
-    assert [a["codes"] for a in result.attempts] == [
-        [["VALUE_MISMATCH", "risk_summary#s2"]]
-    ] * 3
-    summary = result.failure_summary()
-    assert (
-        summary.status.value,
-        summary.failed_step.value,
-        summary.failure_code,
-        summary.attempt_count,
-        summary.retry_exhausted,
-    ) == ("FAILED", "VALIDATING_OUTPUT", "EXPLANATION_GENERATION_FAILED", 3, True)
+    # '-'·'_' 로 이어진 코드(실제 DB 모양)는 수정 전과 같이 코드 토큰
+    assert tokens("SKU별 지연 증분은 SKU-005 31개입니다") == {
+        "codes": ["SKU-005"],
+        "dates": [],
+        "numbers": [31],
+    }

@@ -19,17 +19,18 @@
 
 ## 2. 처음 한 번 준비하기
 1. 공유 묶음 `00_필수_최신DB_전체재적재\04_적재검증도구\`에 `glowship_engine\`이 있는지 확인합니다.
-2. glowship-plan 저장소를 최신으로 받고(`git pull`), 두 가지를 묶음에 넣습니다.
+2. glowship-plan 저장소를 최신으로 받고(`git pull`), 세 가지를 묶음에 넣습니다.
    - `tools\synth2025_v5\` 폴더를 통째로 `04_적재검증도구\synth2025_v5\`로 복사합니다(README "묶음에서 빠진 엔진 의존 파일").
    - **엔진 수정판(Q9):** `tools\glowship_engine\options.py`로 묶음의 `glowship_engine\options.py`를 바꾸고, `tools\glowship_engine\tests\test_q9_donor_reason.py`를 묶음의 `glowship_engine\tests\`에 넣습니다(README "엔진 수정 버전"). 바꾸기 전 파일은 엔진 폴더 밖에 백업해 둡니다.
+   - **엔진 수정판(설명 검증기 코드 토큰, 11-11):** `tools\glowship_engine\explain\textcheck.py`로 묶음의 `glowship_engine\explain\textcheck.py`를 바꿉니다(README "엔진 수정 버전"). 새 시험 `tools\glowship_engine\tests\test_code_digit_tokens.py`는 서버 목록에 없어 넣지 않아도 됩니다. **이미 엔진을 준비한 PC도 이 파일을 바꿔야** 서버가 뜹니다(바꾸지 않으면 `EngineIntegrityError`에 `explain/textcheck.py`가 다른 파일로 나옴).
    ```
    04_적재검증도구\
-   ├── glowship_engine\      (공유 묶음 + options.py·tests\test_q9_donor_reason.py 수정판)
+   ├── glowship_engine\      (공유 묶음 + options.py·explain\textcheck.py·tests\test_q9_donor_reason.py 수정판)
    └── synth2025_v5\         (glowship-plan tools 에서 복사)
        ├── allocation_core.py
        └── tests\
    ```
-   묶음 `SHA256SUMS.tsv`의 `options.py`(`974577bc…`)는 수정 전 값이라 그 한 줄은 다릅니다. 서버는 `engine_manifest.json`의 수정판(`f66e319c…`)으로 대조합니다.
+   묶음 `SHA256SUMS.tsv`의 `options.py`(`974577bc…`)·`explain/textcheck.py`(`b13ca9e6…`)는 수정 전 값이라 그 두 줄은 다릅니다. 서버는 `engine_manifest.json`의 수정판(`f66e319c…`·`d0f34465…`)으로 대조합니다.
 3. `.env`에 경로를 넣습니다(`.env.example` 끝 참고).
    ```
    GLOWSHIP_ENGINE_DIR=C:/…/00_필수_최신DB_전체재적재/04_적재검증도구

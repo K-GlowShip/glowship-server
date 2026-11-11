@@ -29,9 +29,9 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | `test_evaluation_gs09_signature.py` | GS-09 변경 A(STALE·RELEVANT_ORDER_CHANGED)·B(유지), 서명 다름/같음, R1 = GS-03 |
 | `test_evaluation_gs10_followup.py` | GS-10 트리거 2개, AUTO/SCHEDULE_WORSENED, D' 03-11·E' 04-06, R1 STALE DELAY_SCHEDULE_CHANGED, 재생 예약 50 |
 | `test_evaluation_engine_selfcheck.py` | 엔진 자체 검사 31건(결과 파일은 임시 폴더), DB 저장 검사 52건(ROLLBACK, 거부 0, 행 수 그대로), 음성(CHECK 위반 행 거부) |
-| `test_evaluation_explanation.py` | READY 9건 설명 생성 → T12 재검증 PASSED 기대(8건 strict xfail, 4.1절), 원인 고정, 지금 동작(#28 explanation_failure 모양) |
+| `test_evaluation_explanation.py` | READY 9건 설명 생성 → T12 재검증 PASSED(9건 모두, 4.1절 엔진 수정판), 수정판 토크나이저 고정 |
 
-실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail).
+실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움).
 
 ## 3. 정답표 대조 결과 (11-06)
 
@@ -47,18 +47,19 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | GS-09 서명 | A: RELEVANT_ORDER_CHANGED·서명 다름·STALE, 재계산 110.7143/221.4286/110.7143·111·111·222·110·회복 2; B: RELEVANT_INVENTORY_CHANGED·서명 같음·유지 | 모두 일치(엔진 1차 필터·서명. 서버 `StaleJudgmentService` 는 2단계) |
 | GS-10 후속 실행 | 트리거·AUTO/SCHEDULE_WORSENED·D' 03-11·E' 04-06·R1 STALE DELAY_SCHEDULE_CHANGED, 새 실행 소진일 03-11·90/260/170·KR 260/170/03-21 | 모두 일치 |
 | GS-11 기존 위험 + OTHER | O2 PRE_EXISTING·O1 DELAY_INDUCED, T11 KR 1★·OTHER 2·KEEP 3, KR·OTHER 전체 회복 2, OTHER 180/70/잔여 30/03-16, 탐침(공여 200) O2 만 회복·지연 증분 0 | 모두 일치 |
-| AI 설명(READY 9건) | 설명 통과 + T12 PASSED | **GS-05 만 통과.** 나머지 8건은 엔진 검증기 문제로 3번 모두 실패(4.1절) |
+| AI 설명(READY 9건) | 설명 통과 + T12 PASSED | 11-06 에는 GS-05 만 통과(8건 엔진 검증기 문제, 4.1절). **11-11 엔진 수정판으로 9건 모두 일치** |
 
 ## 4. 발견 (엔진·다른 담당 몫, 결정 대기)
 
-### 4.1 설명 검증기가 구분자 없는 SKU 코드 안의 숫자를 수치로 센다 — 평가 fixture 설명이 실패 (11-07 범위 바로잡음)
+### 4.1 설명 검증기가 구분자 없는 SKU 코드 안의 숫자를 수치로 센다 — 평가 fixture 설명이 실패 (11-07 범위 바로잡음, 11-11 해결)
 
 - **현상:** 엔진을 직접 불러도(서버 감싸기 없이) GS-02·03·07·08·09A·09B·10·11 의 mock 설명이 3번 모두 `VALUE_MISMATCH@risk_summary#s2` 로 실패합니다. GS-05(SKU `X`·`Y`)만 통과합니다.
 - **원인:** `explain/textcheck.tokens` 가 "SKU별 지연 증분은 CREAM20 100개입니다" 에서 숫자를 `[20, 100]` 으로 셉니다. 문장이 인용한 값은 `[100]` 하나라 다중집합이 달라집니다(`validator.py` 의 1:1 대응 규칙). `CREAM20` 은 코드 토큰으로도 잡히지 않습니다. 코드 토큰 규칙(`textcheck.py` 12행 `CODE`)은 `-`·`_` 로 이어진 대문자 코드만 코드로 빼내므로, `SKU-005 31개` 는 `[31]` 로 맞게 셉니다. 숫자를 잘못 세는 것은 `CREAM20`·`SKU005` 처럼 구분자 없이 영문 뒤에 숫자가 붙은 코드뿐입니다.
 - **영향:** 엔진 평가 fixture(GLOW-50)의 SKU 코드(`CREAM20`·`TONER50` …)로 만든 설명이 엔진 자기 검증기에 걸려, 평가 시나리오에서 설명 통과를 확인할 수 없습니다. 실제 DB 의 SKU 코드(`SKU-001` 모양, 구분자 있음)는 해당하지 않습니다 — overlay 실행 13건이 `SKU-005`·`SKU-026` 같은 코드로 설명 PASSED 로 저장돼 있습니다. 운영 SKU 코드가 구분자 없는 모양이면 같은 실패가 납니다.
 - **바로잡음(11-07):** 11-06 판은 "실제 DB SKU 코드도 해당, 운영에서 설명이 항상 실패"라고 적었습니다. `CREAM20` 만 토크나이저에 넣어 보고 `SKU-001` 모양은 넣어 보지 않은 채 미루어 적은 것이었습니다. GLOW-127 후속(overlay 회귀) 준비 중에 저장된 PASSED 설명을 보고 확인했습니다.
-- **서버 쪽 처리:** 설명 실패 흐름(#28 `explanation_failure`: FAILED·VALIDATING_OUTPUT·시도 3·소진)은 맞게 돕니다. 통과 기대 시험은 `strict xfail` 로 두어, 엔진이 고쳐지면 XPASS 로 실패해 표시를 지우라고 알립니다. 원인을 고정하는 시험(`test_engine_tokenizer_counts_digits_inside_sku_codes`)도 그때 지웁니다.
+- **서버 쪽 처리(11-06~11-10):** 설명 실패 흐름(#28 `explanation_failure`: FAILED·VALIDATING_OUTPUT·시도 3·소진)은 맞게 돌았습니다. 통과 기대 시험을 `strict xfail` 로, 원인과 실패 모양을 따로 고정해 두었습니다.
 - **제안(엔진 담당 결정):** 토크나이저가 구분자 없이 영문·숫자가 붙은 코드 토큰(`CREAM20`) 안의 숫자는 수치로 세지 않거나, 코드 토큰으로 인식해 인용 경로 식별자와 맞추게 합니다. mock 템플릿만 바꾸는 것은 실제 모델에 도움이 되지 않습니다.
+- **해결(11-11):** 데이터 팀 엔진 수정판(glowship-plan `f18f86d` `tools/glowship_engine/explain/textcheck.py`)이 `CODE` 정규식에 "영문 뒤에 숫자가 붙은 코드"를 더해 `CREAM20`·`SKU005`·`O1` 을 코드 토큰으로 뺍니다. 검증기는 코드 토큰을 인용 값·인용 경로 식별자(`/sku/CREAM20/…`)와 대조하므로 잘못 쓴 코드는 지금처럼 잡힙니다. 서버 해시 목록(`engine_manifest.json`)을 수정판으로 바꾸고, xfail 8개·원인 고정 시험·실패 모양 시험 8개를 지운 뒤 수정판 토크나이저 고정 시험(`test_engine_tokenizer_takes_codes_without_separator_as_code_tokens`)을 두었습니다. 9건 모두 설명 통과·T12 PASSED. 실제 DB 코드(`SKU-001` 모양)는 수정 전과 같게 셉니다.
 
 ### 4.2 엔진 저장기는 서버 DB 의 `analysis_runs.run_code`(0006) 를 모른다
 
@@ -85,7 +86,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 
 ## 6. 남은 일
 
-1. **4.1 엔진 수정 뒤:** `test_evaluation_explanation.py` 의 xfail 표시와 원인 고정 시험·실패 고정 시험을 지우고 9건 모두 통과를 확인합니다.
+1. ~~**4.1 엔진 수정 뒤:** xfail 표시와 원인·실패 고정 시험을 지우고 9건 모두 통과 확인~~ — 11-11 끝남(엔진 수정판).
 2. **2단계:** GLOW-125 2부(머지됨)·GLOW-126·T10·GLOW-129 위에서 10건을 DB 입력(`EngineInput`)으로 돌려 T1~T12 전체와 저장 결과를 정답표와 견줍니다. GS-09 는 서버 `StaleJudgmentService`·서명 재계산, GS-10 은 지연 감지·후속 실행 생성까지 잇습니다.
 3. **T13·T20 통합 시험**은 가짜 도구 묶음 위에서 따로 끝냈습니다(`docs/agent-flow/integration-tests-t13-t20.md`). 실제 도구 묶음으로 같은 갈래를 돌리는 일은 2단계 뒤입니다.
 4. 4.2·4.3 은 사용자가 정답표 검토자·A 에게 알릴지 결정합니다.
