@@ -29,7 +29,7 @@
 
 **목록 API 공통:** 요청 `page`(1부터, 기본 1)·`size`(기본 20, 최대 100). 응답 `items`·`page`·`size`·`totalCount`·`totalPages` (`app/core/pagination.py`)
 
-**NUL 문자 (2026-11-09, 이슈 #49):** 목록 검색어 `q`(`/decisions`·`/delay-events`·`/inventory`·`/skus`·`/orders`·`/shipments`)와 판단 자유 입력(`opinionText`·`reasonText`·`requestReason`)에 NUL 문자(` `)가 있으면 422 `VALIDATION_ERROR`입니다(지우지 않고 거부, `app/core/text_input.py`). 전에는 DB 가 거부해 500 이었습니다.
+**NUL 문자 (2026-11-09, 이슈 #49):** 목록 검색어 `q`(`/decisions`·`/delay-events`·`/inventory`·`/skus`·`/orders`·`/shipments`)와 판단 자유 입력(`opinionText`·`reasonText`·`requestReason`)·계정 만들기 `displayName`(`POST /admin/users`, 이슈 #100)에 NUL 문자(`U+0000`)가 있으면 422 `VALIDATION_ERROR`입니다(지우지 않고 거부, `app/core/text_input.py`). 전에는 DB 가 거부해 500 이었습니다.
 
 **연관 대상 요약 객체** (`app/core/summary_schemas.py`, 어느 API에서든 같은 모양)
 

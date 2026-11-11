@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from app.core.schemas import CamelModel
+from app.core.text_input import reject_nul
 from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
 
 
@@ -42,6 +43,12 @@ class ClientUserCreateRequest(CamelModel):
     def normalize_email(cls, v: str) -> str:
         """대소문자만 정규화한다. 공백은 허용하지 않으며, 위 pattern 검사가 먼저 실행되어 422 로 거절된다."""
         return v.lower()
+
+    @field_validator("display_name")
+    @classmethod
+    def reject_nul_in_display_name(cls, v: str | None) -> str | None:
+        """NUL 문자는 DB text 에 못 넣어 500 이 나므로 422 로 거부한다(이슈 #100, core/text_input.py)."""
+        return None if v is None else reject_nul(v, "표시 이름")
 
 
 class ClientUserCreateResponse(CamelModel):

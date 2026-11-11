@@ -120,6 +120,17 @@ async def test_displayName은_50자까지_허용하고_51자는_422를_반환한
     assert too_long.json()["code"] == "VALIDATION_ERROR"
 
 
+async def test_displayName에_NUL_문자가_있으면_422를_반환한다(fake_service):
+    """DB text 에 NUL 을 못 넣어 500 이던 것(이슈 #100). 서비스까지 가지 않아 행이 생기지 않는다."""
+    response = await _post(
+        _body(displayName="홍\x00길동"), cookies=_access_cookie("ADMIN")
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert fake_service.calls == []
+
+
 async def test_성공하면_201과_camelCase_응답을_반환한다(fake_service):
     response = await _post(_body(), cookies=_access_cookie("ADMIN"))
 
