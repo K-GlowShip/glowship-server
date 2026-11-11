@@ -5,11 +5,18 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import text
 
+from app.core.security.auth import CurrentUser
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
     fake_runtime,
 )
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
+from app.modules.delay_analysis.application.analysis_run_detail_service import (
+    AnalysisRunDetailService,
+)
+from app.modules.delay_analysis.application.delay_event_query_service import (
+    DelayEventQueryService,
+)
 from app.modules.delay_analysis.application.result_save.result_rows import (
     ResultSaveInputError,
 )
@@ -26,6 +33,19 @@ from app.modules.delay_analysis.application.run_start.transitions import (
     find_unfinished_runs,
     retire_unstarted_run_of_closed_episode,
 )
+from app.modules.delay_analysis.infrastructure.repository.analysis_run_detail_repository import (
+    AnalysisRunDetailRepository,
+)
+from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repository import (
+    DelayEventReadRepository,
+)
+from app.modules.delay_analysis.presentation.analysis_run_schemas import (
+    AnalysisRunDetailResponse,
+)
+from app.modules.delay_analysis.presentation.delay_event_schemas import (
+    DelayEventDetailResponse,
+    DelayEventListResponse,
+)
 
 """
     분석 자동 시작의 DB 쪽 (GLOW-128) — 실제 DB(확정 overlay 실행 21건), 끝나면 롤백
@@ -35,6 +55,7 @@ from app.modules.delay_analysis.application.run_start.transitions import (
       - 확인: 시작 전이(DETECTED 만, 닫힌 에피소드·현재 실행 아님도 시작), 단계 전이(앞으로만, STALE 안 덮음),
         정리 FAILED(그때 단계), save_no_delay 왕복(확정 행과 열 단위로 같음), 실행기 끝까지(가짜 묶음 보류 → 실제 저장),
         시작 정리의 닫힌 지연 처리(이슈 #51: 비회복 실행은 STALE, 회복 실행·열린 지연은 시작, 닫은 수집 못 찾으면 그대로).
+      - 시작 정리는 DB 의 DETECTED 를 모두 가져오므로 결과 목록은 포함 여부로 비교한다(개발 DB 에 다른 DETECTED 가 있어도).
       - 닫힌 지연 시험의 기대 순번·시각은 구현과 다른 길로 구한다: 회복은 회복 실행 원인 스냅샷의 수집,
         입고는 그 선적이 처음 RECEIVED 로 관측된 스냅샷의 수집.
       - DB 가 없거나 해당 실행이 없으면 건너뛴다(tests/conftest.py 픽스처).
@@ -449,7 +470,8 @@ async def test_sweep_retires_unstarted_run_of_received_episode(db_write_session)
     await runner.wait_idle()
     row = (await db.execute(_STALE_ROW, {"id": case.run_id})).one()
 
-    assert (result.retired, result.restarted, result.errors) == ([case.run_id], [], [])
+    assert case.run_id in result.retired
+    assert case.run_id not in result.restarted + result.errors
     assert (row.status, row.completed_status, row.finished_at) == ("STALE", None, None)
     assert (row.stale_primary_reason, row.stale_reason_codes) == (
         "DELAY_STAGE_CHANGED",
@@ -472,7 +494,7 @@ async def test_sweep_retires_unstarted_run_of_recovered_episode(db_write_session
     await runner.wait_idle()
     row = (await db.execute(_STALE_ROW, {"id": case.run_id})).one()
 
-    assert result.retired == [case.run_id] and result.restarted == []
+    assert case.run_id in result.retired and case.run_id not in result.restarted
     assert (row.status, row.stale_primary_reason) == ("STALE", "DELAY_SCHEDULE_CHANGED")
     assert (row.stale_detected_seq, row.stale_detected_at) == (
         case.applied_seq,
@@ -490,7 +512,8 @@ async def test_sweep_still_starts_recovery_run_of_closed_episode(db_write_sessio
     result = await runner.sweep_on_startup()
     await runner.wait_idle()
 
-    assert result.restarted == [case.recovery_id] and result.retired == []
+    assert case.recovery_id in result.restarted
+    assert case.recovery_id not in result.retired
     assert (
         await _row(db, case.recovery_id)
     ).status == "ON_HOLD"  # 가짜 묶음(보류)까지 돎
@@ -514,7 +537,7 @@ async def test_sweep_starts_detected_run_of_open_episode(db_write_session):
     result = await runner.sweep_on_startup()
     await runner.wait_idle()
 
-    assert result.restarted == [case.run_id] and result.retired == []
+    assert case.run_id in result.restarted and case.run_id not in result.retired
     assert (await _row(db, case.run_id)).status == "ON_HOLD"
 
 
@@ -536,8 +559,8 @@ async def test_sweep_leaves_run_when_closing_sync_is_unknown(db_write_session):
     result = await runner.sweep_on_startup()
     await runner.wait_idle()
 
-    assert result.left_detected == [case.run_id]
-    assert result.restarted == [] and result.retired == []
+    assert case.run_id in result.left_detected
+    assert case.run_id not in result.restarted + result.retired
     assert (await _row(db, case.run_id)).status == "DETECTED"
 
 
@@ -558,3 +581,66 @@ async def test_retire_under_worker_role_and_rls(db_write_session):
 
     assert outcome == RetireOutcome.RETIRED and other == RetireOutcome.NOT_TARGET
     assert (row.status, row.stale_detected_seq) == ("STALE", case.applied_seq)
+
+
+# 입고로 닫힌 지연의 현재 실행(회복 실행 아님)
+_RECEIVED_LATEST = text(
+    "SELECT r.analysis_run_id AS run_id, r.company_id, r.delay_event_id FROM analysis_runs r"
+    " JOIN delay_events e ON e.delay_event_id = r.delay_event_id AND e.close_reason = 'RECEIVED'"
+    " WHERE r.is_latest AND r.trigger_reason <> 'DELAY_RECOVERED'"
+    " ORDER BY r.analysis_run_id LIMIT 1"
+)
+
+
+async def _counts(db, actor):
+    service = DelayEventQueryService(db, DelayEventReadRepository(db))
+    listed = await service.list_delay_events(actor=actor)
+    return DelayEventListResponse.from_result(listed).model_dump(
+        mode="json", by_alias=True
+    )["counts"]
+
+
+async def test_retired_current_run_shows_in_detail_and_list(db_write_session):
+    """닫힌 지연의 현재 실행이 완료 상태 없는 STALE 이 돼도 실행 상세·지연 상세·목록이 만들어지고,
+    목록 탭 건수는 분석 중 → 재분석 필요로 옮긴다(닫힌 지연의 재분석은 EPISODE_CLOSED 로 따로 거부)."""
+    db = db_write_session
+    case = await _case(db, _RECEIVED_LATEST)
+    await _detected(db, case.run_id)
+    actor = CurrentUser(
+        user_id=uuid.uuid7(), role_code="CLIENT_MEMBER", company_id=case.company_id
+    )
+    before = await _counts(db, actor)
+
+    outcome = await retire_unstarted_run_of_closed_episode(
+        db, company_id=case.company_id, analysis_run_id=case.run_id
+    )
+    after = await _counts(db, actor)
+    run = AnalysisRunDetailResponse.of(
+        await AnalysisRunDetailService(
+            db=db,
+            repo=AnalysisRunDetailRepository(db),
+            delay_repo=DelayEventReadRepository(db),
+        ).get_analysis_run(actor=actor, run_id=case.run_id)
+    ).model_dump(mode="json", by_alias=True)
+    delay = DelayEventDetailResponse.of(
+        await DelayEventQueryService(db, DelayEventReadRepository(db)).get_delay_event(
+            actor=actor, delay_event_id=case.delay_event_id
+        )
+    ).model_dump(mode="json", by_alias=True)
+    history = next(r for r in delay["runs"] if r["runId"] == str(case.run_id))
+
+    assert outcome == RetireOutcome.RETIRED
+    assert (run["status"], run["completedStatus"], run["isLatest"]) == (
+        "STALE",
+        None,
+        True,
+    )
+    assert (history["status"], history["completedStatus"], history["isLatest"]) == (
+        "STALE",
+        None,
+        True,
+    )
+    assert history["stalePrimaryReason"] == "DELAY_STAGE_CHANGED"
+    assert delay["closeReason"] == "RECEIVED"
+    assert after["analyzing"] == before["analyzing"] - 1
+    assert after["needsReanalysis"] == before["needsReanalysis"] + 1
