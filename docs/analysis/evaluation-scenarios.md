@@ -102,7 +102,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 
 ## 8. 2단계 — 실제 실행 경로 (11-11)
 
-분석 자동 시작(`docs/analysis/auto-start.md`)이 켜졌을 때 도는 길 — 실제 도구 12개 묶음(`build_engine_runtime`) → 실행기(`AnalysisRunner`) → 저장(`save_graph_outcome`) — 을 끝까지 돌려 정답과 견준 기록입니다. 기준은 develop `9eb078c`(실제 묶음 채우기 #108·엔진 해시 목록 분리 #110 머지 뒤)이고, 운영 코드는 바꾸지 않았습니다.
+분석 자동 시작(`docs/analysis/auto-start.md`)이 켜졌을 때 도는 길 — 실제 도구 12개 묶음(`build_engine_runtime`) → 실행기(`AnalysisRunner`) → 저장(`save_graph_outcome`) — 을 끝까지 돌려 정답과 견준 기록입니다. 기준은 develop `9eb078c`(실제 묶음 채우기 #108·엔진 해시 목록 분리 #110 머지 뒤)이고, `74665d9`(시작 정리 변경 #115)를 병합한 뒤에도 그대로 통과합니다. 운영 코드는 바꾸지 않았습니다.
 
 ### 8.1 범위
 
@@ -132,7 +132,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 
 실행: `uv run pytest tests/modules/delay_analysis/evaluation`(약 2분). 전체 21건 대조는 `GLOWSHIP_ENGINE_GOLDEN=1`(약 2분 더). 확정 DB(정답 overlay)와 엔진 경로가 없으면 건너뜁니다(CI 는 둘 다 없어 건너뜀).
 
-11-11 결과: 이 폴더 **148 통과·1 건너뜀·25 xfail**(1단계 79 통과·8 xfail → 새 시험 69 통과·17 xfail·스위치 1건). `GLOWSHIP_ENGINE_GOLDEN=1` 이면 전체 21건 시험이 돌고 대표 6건 시험이 건너뜁니다.
+11-11 결과: 이 폴더 **148 통과·1 건너뜀·25 xfail**(1단계 79 통과·8 xfail → 새 시험 69 통과·17 xfail·스위치 1건). `GLOWSHIP_ENGINE_GOLDEN=1` 이면 전체 21건 시험이 돌고 대표 6건 시험이 건너뜁니다. 저장소 전체는 2778 통과·10 건너뜀·25 xfail, 엔진 없이는 2479 통과·326 건너뜀·8 xfail(STALE 대조는 엔진 없이도 돎)입니다.
 
 ### 8.3 결과
 
