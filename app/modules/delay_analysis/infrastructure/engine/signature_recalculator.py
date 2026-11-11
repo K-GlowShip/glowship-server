@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from collections.abc import Sequence
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.engine.engine_input import (
     _calendar,
@@ -40,7 +43,18 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
         다른 내용으로 다시 쓰일 수 있다. 대신 이 재계산기 하나(트랜잭션 하나) 안에서는 순번별로 한 번만 읽는다.
         실행의 입력 순번 저장소는 이미 커밋된 순번이라 캐시(#60)를 쓴다.
       - 세션은 그 트랜잭션의 세션(워커 역할)이다. 읽기만 하고 커밋하지 않는다.
+      - 엔진 경로가 없는 환경(CI·엔진 없이 띄운 서버)에서는 recalculator_or_none 이 None 을 돌려 지금처럼 1차 판정만 쓴다.
+        재계산 중 엔진 쪽 오류는 경고를 남기고 다름으로 본다(수집·결과 저장을 멈추지 않음). DB 오류는 트랜잭션이 깨졌으므로 그대로 올린다.
 """
+
+logger = logging.getLogger(__name__)
+
+
+def recalculator_or_none(session: AsyncSession) -> EngineSignatureRecalculator | None:
+    """엔진 경로(GLOWSHIP_ENGINE_DIR)가 있으면 재계산기, 없으면 None(1차 판정만, 선택 전 놓치지 않는 쪽)"""
+    if get_settings().glowship_engine_dir is None:
+        return None
+    return EngineSignatureRecalculator(session)
 
 
 class EngineSignatureRecalculator:
@@ -56,6 +70,19 @@ class EngineSignatureRecalculator:
         last = max(changes, key=lambda c: c.applied_seq)
         if last.sync_finished_at is None:
             return True
+        try:
+            return await self._recalculate(run, last)
+        except SQLAlchemyError:
+            raise
+        except Exception:
+            logger.warning(
+                "판정 서명 재계산 실패 — 실행 %s 를 서명이 바뀐 것으로 봅니다(놓치지 않는 쪽)",
+                run.analysis_run_id,
+                exc_info=True,
+            )
+            return True
+
+    async def _recalculate(self, run: AnalysisRun, last: ScopedChange) -> bool:
         ri = await _run_input(self.session, run)
         base_store = await get_company_engine_store(
             self.session, run.company_id, run.input_seq

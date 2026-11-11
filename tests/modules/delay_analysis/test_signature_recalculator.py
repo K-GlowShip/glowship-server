@@ -1,7 +1,9 @@
 import uuid
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.engine import signature_recalculator
@@ -139,3 +141,44 @@ async def test_new_store_is_read_once_per_seq_within_one_recalculator(fake_engin
 
     assert calls["new"] == [924, 925]
     assert calls["base"] == [921, 921, 921]  # 실행 입력 순번은 캐시 함수가 맡는다
+
+
+async def test_engine_error_counts_as_changed(fake_engine, monkeypatch, caplog):
+    """엔진 쪽 오류는 수집·결과 저장을 멈추지 않고 다름(놓치지 않는 쪽)으로 본다"""
+
+    def broken(*args):
+        raise RuntimeError("엔진 계산 오류")
+
+    monkeypatch.setattr(signature_recalculator, "_recalculated_sha", broken)
+
+    assert await EngineSignatureRecalculator(None).signature_changed(
+        _run(), [_change(924, FINISHED)]
+    )
+    assert "판정 서명 재계산 실패" in caplog.text
+
+
+async def test_db_error_is_raised(fake_engine, monkeypatch):
+    """DB 오류는 트랜잭션이 깨졌으므로 그대로 올린다"""
+
+    async def broken(session, company_id, input_seq):
+        raise SQLAlchemyError("DB 오류")
+
+    monkeypatch.setattr(signature_recalculator, "load_company_engine_store", broken)
+
+    with pytest.raises(SQLAlchemyError):
+        await EngineSignatureRecalculator(None).signature_changed(
+            _run(), [_change(924, FINISHED)]
+        )
+
+
+@pytest.mark.parametrize(("engine_dir", "expected"), [(None, False), ("C:/e", True)])
+def test_recalculator_only_when_engine_is_configured(monkeypatch, engine_dir, expected):
+    monkeypatch.setattr(
+        signature_recalculator,
+        "get_settings",
+        lambda: SimpleNamespace(glowship_engine_dir=engine_dir),
+    )
+
+    made = signature_recalculator.recalculator_or_none(None)
+
+    assert isinstance(made, EngineSignatureRecalculator) is expected
