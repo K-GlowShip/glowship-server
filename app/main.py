@@ -31,6 +31,9 @@ from app.modules.delay_analysis.application.run_start.app_runner import (
 from app.modules.delay_analysis.infrastructure.engine.engine_startup import (
     verify_engine_on_startup,
 )
+from app.modules.delay_analysis.infrastructure.explanation_models.selection import (
+    check_explanation_model_ready,
+)
 from app.modules.delay_analysis.presentation.agent_dev_api_router import (
     router as agent_dev_router,
 )
@@ -63,6 +66,8 @@ from app.modules.user.presentation.signup_api_router import router as signup_rou
 async def lifespan(_: FastAPI):
     # 엔진 경로가 설정돼 있으면 시작할 때 해시 대조를 한 번 한다(원본이 없거나 다르면 서버가 뜨지 않음)
     verify_engine_on_startup()
+    # AI 설명 모델(GLOW-150): 실제 모델을 골랐는데 엔진 등록부에 그 모델 설정이 없거나 키가 없으면 멈춘다(기본 mock 은 아무것도 안 함)
+    check_explanation_model_ready(get_settings())
     # 분석 자동 시작(GLOW-128): 켰는데 도구가 덜 등록됐으면 멈추고, 켜져 있으면 남은 실행을 정리한다(꺼져 있으면 아무것도 안 함)
     check_auto_start_ready(get_settings())
     runner = get_analysis_runner()
