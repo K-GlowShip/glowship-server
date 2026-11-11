@@ -10,6 +10,7 @@ from app.modules.data_sync.application.manual_sync_service import ManualSyncServ
 from app.modules.data_sync.infrastructure.repository.data_sync_run_repository import (
     DataSyncRunRepository,
 )
+from app.modules.data_sync.infrastructure.virtual_sources import VirtualSourceScenario
 from app.modules.data_sync.infrastructure.virtual_tms import VirtualTmsScenario
 from app.modules.delay_analysis.application.run_start.app_runner import (
     get_analysis_runner,
@@ -42,16 +43,24 @@ def get_data_sync_status_service(
 def get_manual_sync_service(
     settings: Settings = Depends(get_settings),
 ) -> ManualSyncService:
-    """수동 수집(API 25). 워커 전용 세션을 스스로 엽니다(요청 세션 get_db 를 쓰지 않음)."""
+    """수동 동기화(API 25). 워커 전용 세션을 스스로 엽니다(요청 세션 get_db 를 쓰지 않음). load_scenario 는 시드 스크립트의 선적 하루 수집용"""
     path = settings.virtual_tms_scenario_path
+    source_paths = [
+        p for p in (path, settings.virtual_erp_wms_scenario_path) if p is not None
+    ]
 
     def load_scenario() -> VirtualTmsScenario | None:
         return VirtualTmsScenario.from_file(path) if path is not None else None
+
+    def load_sources() -> VirtualSourceScenario | None:
+        # 요청마다 다시 읽는다(파일을 고쳐도 재시작이 필요 없음)
+        return VirtualSourceScenario.from_files(source_paths) if source_paths else None
 
     return ManualSyncService(
         open_session=open_worker_session,
         virtual_start=settings.virtual_clock_start,
         load_scenario=load_scenario,
+        load_sources=load_sources,
         # 커밋된 수집이 만든 AUTO 분석 실행을 분석 실행기에 넘긴다(GLOW-128, 자동 시작이 꺼져 있으면 아무것도 안 함)
         start_runs=get_analysis_runner().start_many,
     )

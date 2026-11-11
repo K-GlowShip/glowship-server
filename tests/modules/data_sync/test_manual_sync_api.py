@@ -11,22 +11,21 @@ from app.core.security.cookies import ACCESS_TOKEN_COOKIE
 from app.core.security.jwt import create_access_token
 from app.main import app
 from app.modules.data_sync.application.exception.data_sync_exceptions import (
-    SourceNotSupportedException,
     SyncInProgressException,
 )
 from app.modules.data_sync.application.ingest.ingest_service import StartedRun
-from app.modules.data_sync.application.manual_sync_service import ManualSyncTicket
-from app.modules.data_sync.application.virtual_clock import SyncWindow
+from app.modules.data_sync.application.manual_sync_service import TickTicket
+from app.modules.data_sync.application.virtual_clock import TICK_ORDER, TickPlan
 from app.modules.data_sync.dependencies import get_manual_sync_service
-from app.modules.data_sync.infrastructure.data_sync_enums import SourceDomain
 
 """
-    수동 수집 API 25 라우터 테스트 (POST /data-sync-runs). 서비스는 SQL 시험이 검증하므로
-    여기서는 역할, 요청 형식, 202 응답, 백그라운드 실행 등록, 오류 코드 전달을 본다.
+    수동 동기화 API 25 라우터 테스트 (POST /data-sync-runs, 2026-11-09 결정). 서비스는 SQL 시험이 검증하므로
+    여기서는 역할, 요청 형식(본문 선택, sourceSystem·sourceDomain 선택·함께 금지, advance), 202 응답 배열,
+    백그라운드 실행 등록, 오류 코드 전달을 본다.
 """
 
 COMPANY_ID = uuid.uuid7()
-RUN_ID = uuid.uuid7()
+RUN_IDS = {domain: uuid.uuid7() for domain in TICK_ORDER}
 URL = "/api/v1/data-sync-runs"
 AT = datetime(2026, 7, 2, tzinfo=UTC)
 
@@ -58,23 +57,30 @@ class FakeSession:
 
 
 class FakeService:
-    def __init__(self):
+    def __init__(self, virtual_start=AT):
+        self.virtual_start = virtual_start
         self.requests: list = []
-        self.runs: list = []
+        self.ticks: list = []
+        self.days: list = []
         self.error: Exception | None = None
 
-    async def request(self, tenant, source_domain):
-        self.requests.append((tenant, source_domain))
+    async def request_tick(self, tenant):
+        self.requests.append(tenant)
         if self.error is not None:
             raise self.error
-        return ManualSyncTicket(
-            started=StartedRun(tenant.company_id, RUN_ID, source_domain, AT),
-            window=SyncWindow(after=None, at=AT),
+        return TickTicket(
+            plan=TickPlan(at=AT, windows={}),
+            started=tuple(
+                StartedRun(tenant.company_id, RUN_IDS[d], d, AT) for d in TICK_ORDER
+            ),
             company_code="A_BEAUTY",
         )
 
-    async def run(self, ticket):
-        self.runs.append(ticket)
+    async def run_tick(self, ticket):
+        self.ticks.append(ticket)
+
+    async def run_until_midnight(self, tenant, ticket):
+        self.days.append((tenant, ticket))
 
 
 @pytest.fixture
@@ -92,21 +98,62 @@ def fake_service():
     app.dependency_overrides.pop(get_manual_sync_service, None)
 
 
+EXPECTED = [
+    {"sourceDomain": d.value, "dataSyncRunId": str(RUN_IDS[d]), "status": "RUNNING"}
+    for d in TICK_ORDER
+]
+
+
 @pytest.mark.parametrize("role", ["CLIENT_MEMBER", "CLIENT_LEAD"])
-async def test_client_starts_sync_and_gets_202_running(fake_service, role):
-    response = await _post({"sourceDomain": "SHIPMENT"}, role=role)
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,  # 본문 없음 (동기화 버튼 하나, 2026-11-09)
+        {},
+        {"advance": "TICK"},
+        {"sourceDomain": None},
+        {"sourceSystem": "ERP"},  # 이전 카드별 버튼 모양(하위 호환)
+        {"sourceSystem": "WMS", "advance": "TICK"},
+        {"sourceDomain": "SHIPMENT"},
+    ],
+)
+async def test_sync_button_syncs_all_five_sources_and_gets_202_array(
+    fake_service, role, body
+):
+    response = await _post(body, role=role)
 
     assert response.status_code == 202
-    assert response.json() == {"dataSyncRunId": str(RUN_ID), "status": "RUNNING"}
-    [(tenant, domain)] = fake_service.requests
-    assert (tenant.company_id, domain) == (COMPANY_ID, SourceDomain.SHIPMENT)
-    # 응답 뒤 백그라운드로 적용을 한 번 실행한다
-    [ticket] = fake_service.runs
-    assert ticket.started.data_sync_run_id == RUN_ID
+    assert response.json() == EXPECTED  # 상품 → 창고 → 주문 → 선적 → 재고
+    [tenant] = fake_service.requests
+    assert tenant.company_id == COMPANY_ID
+    # 응답 뒤 백그라운드로 tick 한 번을 적용한다
+    [ticket] = fake_service.ticks
+    assert fake_service.days == []
+    assert len(ticket.started) == 5
+
+
+async def test_next_day_runs_until_midnight_in_background(fake_service):
+    response = await _post({"advance": "NEXT_DAY"})
+
+    assert response.status_code == 202
+    assert response.json() == EXPECTED  # 첫 tick 의 다섯 수집
+    assert fake_service.ticks == []
+    [(tenant, ticket)] = fake_service.days
+    assert tenant.company_id == COMPANY_ID and len(ticket.started) == 5
+
+
+async def test_next_day_without_virtual_clock_returns_422(fake_service):
+    fake_service.virtual_start = None
+
+    response = await _post({"advance": "NEXT_DAY"})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert fake_service.requests == []
 
 
 async def test_without_cookie_returns_401(fake_service):
-    response = await _post({"sourceDomain": "SHIPMENT"}, role=None)
+    response = await _post({"sourceSystem": "TMS"}, role=None)
 
     assert response.status_code == 401
     assert fake_service.requests == []
@@ -114,13 +161,22 @@ async def test_without_cookie_returns_401(fake_service):
 
 @pytest.mark.parametrize("role", ["ADMIN", "OWNER"])
 async def test_non_client_returns_403(fake_service, role):
-    response = await _post({"sourceDomain": "SHIPMENT"}, role=role)
+    response = await _post({"sourceSystem": "TMS"}, role=role)
 
     assert response.status_code == 403
     assert fake_service.requests == []
 
 
-@pytest.mark.parametrize("body", [{}, {"sourceDomain": "RAIL"}, {"sourceDomain": None}])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"sourceDomain": "RAIL"},
+        {"sourceSystem": "SAP"},
+        {"sourceSystem": "ERP", "sourceDomain": "ORDER"},  # 함께 보냄
+        {"advance": "NEXT_WEEK"},
+        {"advance": None},
+    ],
+)
 async def test_invalid_body_returns_422(fake_service, body):
     response = await _post(body)
 
@@ -129,20 +185,11 @@ async def test_invalid_body_returns_422(fake_service, body):
     assert fake_service.requests == []
 
 
-@pytest.mark.parametrize(
-    ("error", "status_code", "code"),
-    [
-        (SyncInProgressException(), 409, "SYNC_IN_PROGRESS"),
-        (SourceNotSupportedException(), 422, "VALIDATION_ERROR"),
-    ],
-)
-async def test_service_rejection_is_returned_without_background_run(
-    fake_service, error, status_code, code
-):
-    fake_service.error = error
+async def test_sync_in_progress_is_409_without_background_run(fake_service):
+    fake_service.error = SyncInProgressException()
 
-    response = await _post({"sourceDomain": "ORDER"})
+    response = await _post({"sourceSystem": "WMS"})
 
-    assert response.status_code == status_code
-    assert response.json()["code"] == code
-    assert fake_service.runs == []
+    assert response.status_code == 409
+    assert response.json()["code"] == "SYNC_IN_PROGRESS"
+    assert fake_service.ticks == [] and fake_service.days == []

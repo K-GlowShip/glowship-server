@@ -1,6 +1,23 @@
 from enum import Enum
 
 
+class SourceSystem(str, Enum):
+    """수동 동기화 요청의 원천 시스템(연동 화면의 카드). 어느 값이든 같은 전체 수집이다 (2026-11-09 결정)."""
+
+    ERP = "ERP"
+    WMS = "WMS"
+    TMS = "TMS"
+
+
+class SyncAdvance(str, Enum):
+    """수동 동기화 한 번에 가상 시각을 얼마나 진행할지 (2026-11-09 결정)"""
+
+    TICK = "TICK"  # 가상 10분 (tick 1번)
+    NEXT_DAY = (
+        "NEXT_DAY"  # 다음 자정 tick 까지 이어서 (데모의 "다음 날로", 가상 시각일 때만)
+    )
+
+
 class SourceDomain(str, Enum):
     """외부 데이터 수집 도메인. data_sync_runs.source_domain CHECK 제약(data_sync_runs_ck1)과 같은 값이다."""
 

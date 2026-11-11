@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.core.schemas import CamelModel
 from app.modules.data_sync.infrastructure.data_sync_enums import (
     ConnectionMethod,
     DataSyncRunStatus,
     SourceDomain,
+    SourceSystem,
+    SyncAdvance,
 )
 
 
@@ -89,17 +93,43 @@ class LatestDataSyncRunsResponse(CamelModel):
 
 
 class DataSyncRunCreateRequest(CamelModel):
-    """수동 수집 요청 (명세 v6.2 4.3 POST /data-sync-runs)"""
+    """
+    수동 동기화 요청 (API 25 POST /data-sync-runs, 2026-11-09 결정)
+      - 연동 데이터 화면의 동기화 버튼 한 번에 다섯 원천을 상품 → 창고 → 주문 → 선적 → 재고 순서로 함께 수집한다.
+      - 원천을 보내지 않아도 된다(본문 {} 또는 생략). sourceSystem·sourceDomain 은 선택이며 보내도 동작은 같다
+        (이전 요청 모양 하위 호환). 둘을 함께 보내면 422.
+    """
 
-    source_domain: SourceDomain = Field(
-        description="수집할 원천 유형. 지금은 SHIPMENT(가상 TMS)만 실행하고 나머지는 422",
-        examples=["SHIPMENT"],
+    source_system: SourceSystem | None = Field(
+        default=None,
+        description="선택. 원천 시스템(ERP·WMS·TMS). 보내도 같은 전체 수집(이전 카드별 버튼 하위 호환)",
+        examples=["ERP"],
+    )
+    source_domain: SourceDomain | None = Field(
+        default=None,
+        description="선택. 이전 요청 모양(하위 호환). 보내도 같은 전체 수집",
+        examples=[None],
+    )
+    advance: SyncAdvance = Field(
+        default=SyncAdvance.TICK,
+        description=(
+            "TICK: 가상 10분 한 번(기본). NEXT_DAY: 다음 자정 tick 까지 이어서 수집(데모의 '다음 날로', "
+            "가상 시각일 때만, 아니면 422)"
+        ),
+        examples=["TICK"],
     )
 
+    @model_validator(mode="after")
+    def _at_most_one_source(self) -> DataSyncRunCreateRequest:
+        if self.source_system is not None and self.source_domain is not None:
+            raise ValueError("sourceSystem 과 sourceDomain 은 함께 보낼 수 없습니다")
+        return self
 
-class DataSyncRunCreateResponse(CamelModel):
-    """수동 수집 시작 응답 (202). 결과는 GET /data-sync-runs/latest 로 다시 조회한다."""
 
+class DataSyncRunStartedResponse(CamelModel):
+    """수동 동기화가 시작한 원천 수집 하나 (202 응답 배열의 항목). 결과는 GET /data-sync-runs/latest 로 다시 조회한다."""
+
+    source_domain: SourceDomain = Field(examples=["PRODUCT"])
     data_sync_run_id: uuid.UUID
     status: DataSyncRunStatus = Field(
         description="항상 RUNNING (백그라운드에서 적용)", examples=["RUNNING"]

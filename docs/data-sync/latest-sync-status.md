@@ -3,7 +3,7 @@
 고객사 사용자가 "연동 데이터 조회" 화면과 대시보드에서 보는 원천 유형별 마지막 수집 상태 API가 **현재 어떻게 동작하는지** 설명합니다.
 응답 모양은 API 명세 v6.2 4.3 `GET /data-sync-runs/latest`를 따르고, 카드 표시에 편한 서버 판정값(`isSynced`·`lastSyncedAt`)을 더했습니다.
 이 API는 이 저장소의 첫 번째 Client(고객사 사용자)용 조회 API이며, 이후 상품·주문·선적·재고 조회 API가 같은 고객사 범위 의존성(4절)을 재사용합니다.
-"동기화"·"다시 수집" 버튼이 호출할 수집 실행 API(`POST /data-sync-runs`)는 아직 없습니다(7절).
+동기화 버튼이 부르는 수동 동기화(API 25 `POST /data-sync-runs`)는 [manual-sync.md](manual-sync.md)에 있습니다. 버튼 한 번에 다섯 원천을 함께 수집하므로, 누른 뒤 이 API 를 다시 조회하면 다섯 항목이 함께 바뀝니다(2026-11-09 결정).
 
 ## 1. 전체 흐름
 
@@ -93,7 +93,7 @@ HTTP/1.1 200 OK
 | `receivedCount`, `loadedCount`, `rejectedCount` | 정수 · `null` | 가장 최근 실행 | 받은 수 = 적재 + 거절. `RUNNING`·`FAILED`면 `null`일 수 있음 |
 | `openIssueCount` | 정수 | `data_validation_issues` | 이 원천의 **모든** 실행에 걸린 `status = OPEN` 이슈 수. 연동 데이터 탭의 오류 건수 배지(예: "상품 2") |
 | `sourceSystemName` | 문자열 | 카탈로그 | 원천 시스템 이름(운영 설정 값). 카드 부제 |
-| `syncIntervalMinutes` | 정수 | 카탈로그 | 자동 수집 주기(분). 현재 10 |
+| `syncIntervalMinutes` | 정수 | 카탈로그 | 자동 수집 주기(분). 현재 10. 화면 문구 "10분마다 자동 수집"에 쓰는 설정 값이며, 서버에 10분마다 도는 수집기는 없습니다(수집은 동기화 버튼으로, `manual-sync.md`) |
 | `isSynced` | 불리언 | 서버 판정 | 명세에 더한 값. 판정 규칙은 3절 |
 | `lastSyncedAt` | UTC ISO 8601 · `null` | 마지막 성공 실행의 `finished_at` | 명세에 더한 값. 응답 규칙 2.3의 "마지막 수집 시각"과 같은 뜻(데이터가 실제로 반영된 마지막 시각). 최근 실행이 실패해도 그 전 성공 시각이 유지됨. 성공한 적이 없으면 `null` |
 
@@ -156,7 +156,7 @@ HTTP/1.1 200 OK
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `SYNC_STALE_MULTIPLIER` | `2` | 수집 멈춤 판정 배수. `0`이면 조건 2를 끔. 합성데이터(2025년 이력)로 화면을 확인할 때는 `0`으로 두어야 `isSynced: true`가 보임 |
-| `VIRTUAL_CLOCK_START` | `2026-07-02T00:00:00Z` | 값이 있으면(데모) **조건 2(수집 멈춤)를 보지 않고 조건 1만 봅니다.** 가상 시각에는 "지금"이 없습니다. 데이터가 7월 초에 멈춰 있어 서버 시각(11월)으로 보면 모든 원천이 멈춘 것으로 보이고, 가장 최근 수집 시각을 지금으로 보면 수동 수집이 있는 선적만 하루씩 나아가 나머지 원천 카드 4개가 "수집 오류"가 되며 데모 중 되돌릴 방법이 없습니다(PR #40 리뷰). 그래서 데모에서는 수집기 전체가 멈춰도 `true`로 보입니다. **실제 원천을 붙이는 환경에서는 `VIRTUAL_CLOCK_START=`로 비워야** 서버 시각으로 멈춤을 판정합니다(수동 수집 가상 시각과 같은 설정, `docs/data-sync/ingest.md`) |
+| `VIRTUAL_CLOCK_START` | `2026-07-02T00:00:00Z` | 값이 있으면(데모) **조건 2(수집 멈춤)를 보지 않고 조건 1만 봅니다.** 가상 시각에는 "지금"이 없습니다. 데이터가 7월 초에 멈춰 있어 서버 시각(11월)으로 보면 모든 원천이 멈춘 것으로 보이고, 가장 최근 수집 시각을 지금으로 보면 데모 중 버튼을 누르지 않은 동안 카드가 "수집 오류"로 바뀌고 되돌릴 방법이 없습니다(PR #40 리뷰). 그래서 데모에서는 수집기 전체가 멈춰도 `true`로 보입니다. **실제 원천을 붙이는 환경에서는 `VIRTUAL_CLOCK_START=`로 비워야** 서버 시각으로 멈춤을 판정합니다(수동 수집 가상 시각과 같은 설정, `docs/data-sync/ingest.md`) |
 
 ## 4. 고객사 범위 의존성
 
@@ -219,7 +219,6 @@ A사는 다섯 원천 모두 `SUCCEEDED`·이슈 0건, B사는 `ORDER`·`INVENTO
 
 | 기능 | 비워 둔 자리 |
 | --- | --- |
-| 수집 실행 ("동기화"·"다시 수집" 버튼) | 명세 4.3 `POST /data-sync-runs` (`202`, `409 SYNC_IN_PROGRESS`). 수집 워커가 필요하며, 중복 실행 방지는 L1 고객사 잠금(`app/core/locks.py`)으로 |
 | 검증 이슈 목록·하단 배너 | 명세 4.3 `GET /validation-issues` (`affectedDelayEvents[]`로 "영향: … 분석 보류" 문구) |
 | 고객사별 연동 설정 | `data_source_connections` 테이블(시스템 이름·주기·사용 여부). 마이그레이션·RLS 정책·합성데이터 적재 예외가 필요 |
 | ADMIN·OWNER의 고객사 선택 | 명세 D7 `X-Company-Id`. `get_tenant_context`에서 헤더를 읽어 배정을 검사하는 방식으로 확장 |
@@ -238,4 +237,4 @@ A사는 다섯 원천 모두 `SUCCEEDED`·이슈 0건, B사는 `ORDER`·`INVENTO
 | `app/modules/data_sync/dependencies.py` | `get_data_sync_status_service` 조립 |
 | `app/core/security/tenant.py` | `TenantContext`, `get_tenant_context` |
 | `app/core/rls_context.py` | `set_rls_context` |
-| `app/core/config.py` | `SYNC_STALE_MULTIPLIER` |
+| `app/core/config.py` | `SYNC_STALE_MULTIPLIER`, `VIRTUAL_CLOCK_START` |
