@@ -14,7 +14,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
         엔진 explain.assets.load 가 등록부(registry_v2.json)의 SHA-256 과 파일을 하나씩 대조한다.
       - 자산이 없거나 해시가 다르면 엔진은 SystemConfigError 를 낸다. 이것은 모델 호출 전 시스템 구성 오류라
         설명 시도로 세지 않고 실행 상태도 바꾸지 않는다(엔진 generator 머리말). 서버는 ExplanationAssetError 로 바꿔 올린다.
-      - 모델 설정은 mock(mock-template-v1)만 쓴다. 실제 외부 모델 호출은 아직 승인되지 않았다(엔진 adapter.py).
+      - 여기서 확인하는 모델 설정은 mock(mock-template-v1)이다. 실제 모델을 고르면 그 모델의 설정은
+        explanation_models.selection.check_explanation_model_ready 가 시작 단계에서 확인한다(GLOW-150).
 """
 
 logger = logging.getLogger(__name__)
