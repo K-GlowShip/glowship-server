@@ -112,7 +112,8 @@ async def test_timeout_three_times_is_exhausted_failure():
 )
 async def test_failure_message_shows_screen_name_not_function_name(name, errors):
     """화면이 그대로 보이는 세 코드(docs/frontend-api.md 실패 코드 표)는 도구의 화면 이름 + 조사로 쓴다"""
-    assert name.value in TOOL_LABELS  # 도구마다 화면 이름이 있어야 함(없으면 "분석 도구")
+    # 도구마다 화면 이름이 있어야 함(없으면 "분석 도구")
+    assert name.value in TOOL_LABELS
     summary, _ = await _fail(FakeTool(*errors), name=name.value)
 
     assert summary.failure_message.startswith(tool_label(name.value) + " ")
