@@ -46,7 +46,9 @@ from tests.modules.delay_analysis.test_demo_seed_sql import (
       - 실행기는 앱 조립(build_app_runner: 가상 시각·저장 시각·추적기)을 그대로 쓰고 세션만 시험 세션으로 바꾼다.
       - 확인: ① 재분석 직후 멈춤(새 실행 DETECTED·초안 RUN_NOT_READY·재분석 RUN_IN_PROGRESS, 이전 실행 NOT_CURRENT_RUN)
         ② 실행기가 꺼져 있으면 그대로 ③ 분석 뒤 READY_FOR_REVIEW·설명 PASSED·데이터 버전 0 → 5·대응안 = 시드
-        ④ 그 실행에서 초안·최종 선택 → FINALIZED ⑤ 추적 내부 로그에 그 실행의 처음부터 끝까지(원래 주문 코드 없음).
+        ④ 그 실행에서 초안·최종 선택 → FINALIZED ⑤ 추적 내부 로그에 그 실행의 처음부터 끝까지, 그 지연의 선적·고객사·SKU 코드와
+        주문 코드 없음. 추적기는 두 겹으로 막는다: 단계·결과 코드만 값으로 남기고(안전 키), 객체 값은 이름만 남긴다.
+        둘 중 하나만 풀리면 그대로 안 새고, 둘 다 풀려 객체까지 펼쳐 남기게 되면 SKU 코드 등이 새어 이 확인이 잡는다.
       - 재분석 실행의 입력 순번이 최신이라 저장 직후 재판정에 걸릴 변경이 없다(판정 서명 재계산이 돌지 않음).
         최종 선택 뒤 동기화 → STALE 판정은 이 시험 범위 밖이다(사용자 결정 11-11).
       - GLOWSHIP_ENGINE_DIR 이 없거나 확정 데이터(마지막 SHIPMENT 수집 07-01)가 아니면 건너뛴다(데모 시드 시험과 같은 조건).
@@ -76,6 +78,14 @@ _OPTIONS = text(
 )
 _DATA_VERSIONS = text(
     "SELECT count(*) FROM analysis_run_data_versions WHERE analysis_run_id = :r"
+)
+# 이 지연의 업무 값(선적·고객사·SKU 코드): 추적에는 키 이름과 단계·결과 코드만 남아야 한다
+_BUSINESS_CODES = text(
+    "SELECT s.shipment_code, c.company_code, k.sku_code FROM shipments s"
+    " JOIN companies c ON c.company_id = s.company_id"
+    " JOIN shipment_lines l ON l.shipment_id = s.shipment_id"
+    " JOIN skus k ON k.sku_id = l.sku_id"
+    " WHERE s.shipment_code = 'DEMO-0702-PORT'"
 )
 _FEASIBLE = text(
     "SELECT response_option_id FROM response_options WHERE analysis_run_id = :r"
@@ -195,11 +205,15 @@ async def test_reanalysis_is_analyzed_and_then_drafted_and_decided(
     )
     assert (await db.execute(_RUN, {"r": v2.run_id})).one().status == "FINALIZED"
 
-    # ⑤ 추적 내부 로그: 그 실행의 처음부터 끝까지, 원래 주문 코드 없음
+    # ⑤ 추적 내부 로그: 그 실행의 처음부터 끝까지, 이 지연의 업무 값·주문 코드 없음
     events = _events(tmp_path, v2.run_id)
     kinds = [e["kind"] for e in events]
     assert kinds[0] == "RUN_START" and kinds[-1] == "RUN_END"
     assert events[-1]["summary"]["outcome"] == "READY_FOR_REVIEW"
     assert "TOOL_ATTEMPT" in kinds and "EXPLANATION_ATTEMPT" in kinds
     assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
-    assert all("-ORD-" not in json.dumps(e, ensure_ascii=False) for e in events)
+    codes = (await db.execute(_BUSINESS_CODES)).all()
+    business = {v for row in codes for v in row} | {"-ORD-"}
+    assert len(business) >= 4  # 선적·고객사·SKU 1개 이상·주문 코드 표지
+    blob = "\n".join(json.dumps(e, ensure_ascii=False) for e in events)
+    assert [v for v in sorted(business) if v in blob] == []

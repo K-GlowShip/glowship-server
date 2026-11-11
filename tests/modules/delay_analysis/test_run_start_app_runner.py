@@ -31,7 +31,8 @@ from app.modules.delay_analysis.infrastructure.agent_trace_outbox import OUTBOX_
 
 
 def _settings(**changes):
-    return get_settings().model_copy(update=changes)
+    # 개발자 .env 의 AGENT_TRACE_DIR 에 좌우되지 않게 추적 폴더는 기본 없음(넘기면 그 값)
+    return get_settings().model_copy(update={"agent_trace_dir": None, **changes})
 
 
 def _run():
@@ -247,6 +248,33 @@ def test_enabling_without_trace_dir_only_warns(tmp_path, caplog):
     )
 
     assert "AGENT_TRACE_DIR" in caplog.text
+
+
+def _settings_from_env(**env):
+    return Settings(
+        _env_file=None,
+        postgres_host="h",
+        postgres_port=5432,
+        postgres_user="u",
+        postgres_password="p",
+        postgres_db="d",
+        jwt_secret_key="x" * 32,
+        **env,
+    )
+
+
+def test_relative_and_home_trace_dir_become_absolute(monkeypatch, tmp_path):
+    """엔진 경로처럼 절대 경로로 바꾼다. 그대로 두면 "~/trace" 가 실행 폴더 아래 "~" 폴더가 된다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    relative = _settings_from_env(agent_trace_dir="rel/trace").agent_trace_dir
+    home = _settings_from_env(agent_trace_dir="~/trace").agent_trace_dir
+
+    assert relative == (tmp_path / "rel" / "trace").resolve()
+    assert home == (tmp_path / "home" / "trace").resolve()
+    assert relative.is_absolute() and home.is_absolute()
 
 
 @pytest.mark.parametrize("raw", ["", "   "])

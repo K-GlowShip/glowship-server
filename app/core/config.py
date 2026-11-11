@@ -149,6 +149,13 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("agent_trace_dir")
+    @classmethod
+    def _trace_dir_is_absolute(cls, value: Path | None) -> Path | None:
+        # 엔진 경로(engine_loader)와 같게 ~ 와 상대 경로를 절대 경로로 바꾼다(상대 경로는 서버를 띄운 폴더 기준).
+        # 그대로 두면 "~/trace" 가 실행 폴더 아래 "~" 폴더가 된다.
+        return None if value is None else value.expanduser().resolve()
+
     @field_validator(
         "virtual_tms_scenario_path", "virtual_erp_wms_scenario_path", mode="before"
     )
