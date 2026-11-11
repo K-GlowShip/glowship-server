@@ -324,7 +324,6 @@ async def ensure_run(
         trigger_shipment_schedule_snapshot_id=event.detected_shipment_schedule_snapshot_id,
         started_at=started_at,
     )
-    await record_input_data_versions(db, creation.run)
     return creation.run
 
 
@@ -483,6 +482,8 @@ async def compute_and_save(
         run.explanation_validation_status = "PASSED"
         run.explanation_generated_at = explanation.generated_at
     run.finished_at = finished_at
+    # 데이터 버전은 결과를 저장할 때 기록한다(서버 outcome_save 와 같은 규칙, 보류는 위에서 멈춤)
+    await record_input_data_versions(db, run)
     await db.flush()
     return SeededRun(
         shipment_code=event.shipment_code,

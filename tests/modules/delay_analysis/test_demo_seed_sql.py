@@ -103,7 +103,8 @@ async def test_seed_creates_three_ready_runs_with_all_feasibility_kinds(
                        r.explanation_validation_status, r.final_explanation_json IS NOT NULL AS has_explanation,
                        e.closed_at,
                        (SELECT count(*) FROM inventory_impact_results i WHERE i.analysis_run_id = r.analysis_run_id) AS impacts,
-                       (SELECT count(*) FROM response_options o WHERE o.analysis_run_id = r.analysis_run_id) AS options
+                       (SELECT count(*) FROM response_options o WHERE o.analysis_run_id = r.analysis_run_id) AS options,
+                       (SELECT count(*) FROM analysis_run_data_versions v WHERE v.analysis_run_id = r.analysis_run_id) AS data_versions
                   FROM analysis_runs r
                   JOIN delay_events e USING (delay_event_id)
                   JOIN shipments s ON s.shipment_id = e.shipment_id
@@ -127,6 +128,7 @@ async def test_seed_creates_three_ready_runs_with_all_feasibility_kinds(
             True,
         )
         assert run.impacts > 0 and run.options > 0
+        assert run.data_versions == 5  # 결과를 넣을 때 기록(도메인 5개)
 
 
 async def test_seed_twice_does_not_create_again(db_write_session):
