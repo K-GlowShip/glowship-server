@@ -3,13 +3,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.security.jwt import JwtConfig
 
 # 앱 DB 역할 이름 (마이그레이션 0001·v6.2 DDL 과 같음). POSTGRES_ROLE 이 받을 수 있는 유일한 값
 APP_DB_ROLE = "glowship_v4_app"
+# AI 설명 기본 모델: 엔진의 결정적 mock (외부 호출 없음). 실제 모델은 "제공자/모델 ID" 로 적는다
+MOCK_EXPLANATION_MODEL = "mock/mock-template-v1"
 
 
 class Settings(BaseSettings):
@@ -94,11 +96,51 @@ class Settings(BaseSettings):
     # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
     analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
 
+    # Language model (GLOW-150, docs/agent-flow/explanation.md 8절)
+    # AI 설명을 만드는 모델. "제공자/모델 ID" 한 줄이다(예: openai/<모델 ID>). 기본은 엔진 mock 이라 외부 호출이 없다.
+    # 실제 모델은 엔진 등록부에 그 모델 설정이 있고 제공자 키가 있어야 한다. 아니면 서버가 시작 단계에서 멈춘다.
+    explanation_model: str = MOCK_EXPLANATION_MODEL
+    # 모델 호출 한 번의 시간 제한(초)과 설명 한 건(엔진 3시도 합)의 총 시간 예산(초). 모델별 측정 뒤 조정한다.
+    explanation_model_timeout_seconds: float = Field(default=12.0, gt=0)
+    explanation_total_budget_seconds: float = Field(default=20.0, gt=0)
+    # 제공자 API 키. 기능마다 따로 두지 않고 제공자마다 하나다(모델은 기능별 설정). 고른 제공자의 키만 있으면 된다.
+    openai_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
+
     @field_validator("glowship_engine_dir", mode="before")
     @classmethod
     def _blank_engine_dir_is_unset(cls, value: object) -> object:
         # `GLOWSHIP_ENGINE_DIR=` 처럼 값을 비워 두면 Path("") 가 현재 폴더(".")가 되어 설정된 것으로 보인다.
         # 빈 값·공백은 설정하지 않은 것(None)으로 본다.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("explanation_model", mode="before")
+    @classmethod
+    def _blank_explanation_model_is_mock(cls, value: object) -> object:
+        # `EXPLANATION_MODEL=` 처럼 비워 두면 기본(mock)으로 본다.
+        if isinstance(value, str):
+            return value.strip() or MOCK_EXPLANATION_MODEL
+        return value
+
+    @field_validator("explanation_model")
+    @classmethod
+    def _explanation_model_names_provider(cls, value: str) -> str:
+        provider, _, model_id = value.partition("/")
+        if not provider or not model_id or value != value.strip():
+            raise ValueError(
+                'EXPLANATION_MODEL 은 "제공자/모델 ID" 여야 합니다 (예: mock/mock-template-v1)'
+            )
+        return value
+
+    @field_validator(
+        "openai_api_key", "gemini_api_key", "anthropic_api_key", mode="before"
+    )
+    @classmethod
+    def _blank_api_key_is_unset(cls, value: object) -> object:
+        # `OPENAI_API_KEY=` 처럼 비워 두면 키가 없는 것으로 본다(빈 키로 호출하지 않게).
         if isinstance(value, str) and not value.strip():
             return None
         return value

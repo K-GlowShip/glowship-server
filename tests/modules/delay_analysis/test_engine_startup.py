@@ -23,6 +23,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 시작 단계는 분석 자동 시작(GLOW-128)의 켜기 확인·시작 정리·종료도 부른다. 시험에서는 기록만 하는 가짜로 바꾼다:
         진짜 실행기면 .env 에서 자동 시작을 켠 채 시험을 돌릴 때 개발 DB 의 진행 중 실행을 FAILED 로 커밋하고
         남은 실행을 시험 프로세스 안에서 분석하기 때문이다.
+      - 시작 단계는 AI 설명 모델 확인(GLOW-150)도 부른다. 여기서는 아무것도 안 하는 가짜로 바꾼다: .env 에서 실제 모델을
+        고른 PC 에서도 이 시험이 그 설정에 따라 달라지지 않게 한다(확인 자체는 test_explanation_models.py 가 본다).
 """
 
 
@@ -46,6 +48,9 @@ def runner_calls(monkeypatch):
         app_main, "check_auto_start_ready", lambda _settings: calls.append("check")
     )
     monkeypatch.setattr(app_main, "get_analysis_runner", lambda: runner)
+    monkeypatch.setattr(
+        app_main, "check_explanation_model_ready", lambda _settings: False
+    )
     return calls
 
 

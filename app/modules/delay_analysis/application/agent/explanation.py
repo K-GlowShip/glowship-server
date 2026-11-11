@@ -24,14 +24,18 @@ from app.modules.delay_analysis.infrastructure.engine.explanation_assets import 
     TEMPLATE_ID,
     TEMPLATE_VERSION,
     ExplanationAssetError,
-    load_explanation_assets,
+)
+from app.modules.delay_analysis.infrastructure.explanation_models.selection import (
+    new_explanation_adapter,
 )
 
 """
     AI 설명 생성 (GLOW-127, docs/agent-flow/explanation.md)
       - 엔진 explain.generator.generate 를 그대로 부른다. 생성기가 자산 사전 검사 → 최대 3시도(모델 호출 1회 + 검증 1회)
         → 시도 기록·실패 문구까지 만든다. 서버는 입력 문서를 만들어 넘기고, 결과를 저장 모양으로 바꾸고, 추적에 넘긴다.
-      - 모델은 엔진 MockAdapter(결정적 템플릿)가 기본이다. 실제 외부 모델 호출은 승인되지 않았다(엔진 adapter.py).
+      - 모델은 설정 EXPLANATION_MODEL 로 고른다(GLOW-150). 기본은 엔진 MockAdapter(결정적 템플릿)다. 실제 모델은
+        엔진 등록부에 모델 설정이 있어야 하고(지금은 mock 하나뿐), 켜는 것은 승인 뒤다(docs/agent-flow/explanation.md 8절).
+        어댑터는 설명 한 건마다 새로 만든다(시간 예산·시도별 사용량이 건별 상태).
       - 설명은 READY_FOR_REVIEW 실행만 만든다(엔진 input_doc.build 규칙). 그 밖의 상태면 모델을 부르지 않고 ValueError.
       - 자산 오류(ExplanationAssetError)는 시도로 세지 않고 실행 상태를 바꾸지 않는다. 호출자에게 그대로 올린다.
       - 실패 원문·canary 는 결과·추적 어디에도 남기지 않는다. 시도 기록 = 사유 코드·위치·모델·프롬프트 판뿐(엔진과 같음).
@@ -106,9 +110,8 @@ def utc_timestamp(value: datetime) -> str:
 
 
 def default_adapter() -> Any:
-    """엔진 결정적 mock 모델. 라벨은 해시를 대조한 자산에서 읽는다."""
-    mock = load_engine_module("explain.mock")
-    return mock.MockAdapter(load_explanation_assets()["labels"])
+    """설정이 고른 모델의 새 어댑터(기본 엔진 결정적 mock). 설명 한 건마다 부른다."""
+    return new_explanation_adapter()
 
 
 async def generate_explanation(
@@ -149,7 +152,8 @@ async def generate_explanation(
         raise ExplanationAssetError(error.code, error.detail) from error
 
     attempts = tuple(result["attempts"])
-    _trace(tracer, attempts)
+    # 실제 모델 어댑터는 시도별 토큰 수·걸린 시간을 모은다(mock 은 없음). 추적기의 사용량 칸으로 넘긴다(NFR-008)
+    _trace(tracer, attempts, tuple(getattr(model, "attempt_usage", ())))
     if result["status"] == "PASSED":
         return ExplanationPassed(
             model_name=result["model_name"],
@@ -170,13 +174,15 @@ async def generate_explanation(
 
 
 def _trace(
-    tracer: ExplanationTracer | None, attempts: tuple[dict[str, Any], ...]
+    tracer: ExplanationTracer | None,
+    attempts: tuple[dict[str, Any], ...],
+    usage: tuple[Any, ...] = (),
 ) -> None:
     """추적 장애가 분석 결과를 바꾸지 않게 한다(NFR, GLOW-124 추적 장애 독립)."""
     if tracer is None:
         return
     try:
-        tracer.explanation_attempts(attempts)
+        tracer.explanation_attempts(attempts, usage)
     except Exception:
         logger.warning("설명 시도 추적 기록 실패(분석은 계속)", exc_info=True)
 
@@ -219,7 +225,8 @@ def make_explainer(
     """
     그래프 설명 노드가 부르는 explain(ctx, now) (AnalysisRuntime.explain). 엔진 계산은 다시 하지 않고
     ctx.engine 의 snap·analysis 를 그대로 쓴다. 추적은 ctx.tracer 가 설명 시도 기록을 받을 때만(GLOW-124 RunTracer).
-    adapter 는 generate_explanation 과 같다(기본 엔진 MockAdapter).
+    adapter 는 generate_explanation 과 같다. 넘기지 않으면 설명 한 건마다 설정이 고른 모델의 새 어댑터를 만든다.
+    시험이 아니면 넘기지 않는다(넘긴 어댑터는 모든 실행이 같이 쓴다).
     """
 
     async def explain(ctx: ToolContext, now: datetime) -> ExplanationResult:
