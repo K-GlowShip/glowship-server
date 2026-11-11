@@ -21,7 +21,7 @@
 | 시간 초과 | `TimeoutError`(시도 시간 제한 포함) | 함 | FAILED / 그 단계 / `TOOL_TIMEOUT_EXHAUSTED` / 3 / true | API 명세 4.5 "FAILED(도구 실패, 예: `TOOL_TIMEOUT_EXHAUSTED`)", 정답 E3 v2, 엔진 `bundle_verify` rt1 |
 | 그 밖의 일시 오류 | 도구가 `TransientToolError` | 함 | FAILED / 그 단계 / `TOOL_TEMPORARY_ERROR_EXHAUSTED` / 3 / true | **제안**(아래 5절) |
 | 권한 오류 | `PermissionDeniedError` | 안 함 | FAILED / 그 단계 / `PERMISSION_DENIED` / 그 시도 / false | agentflow 7.1 |
-| 필수 자료 오류 | `RequiredDataError` | 안 함 | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID`·`MISSING_REQUIRED_DATA` / 그 시도(첫 시도면 1) / false | API 명세 4.5, 정답 E9 v1(첫 시도 보류라 1), agentflow 7.1 |
+| 필수 자료 오류 | `RequiredDataError` | 안 함 | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID`·`MISSING_REQUIRED_DATA` / 그 시도(첫 시도면 1) / false. **그래프 도구에서 나면 `call_tool`이 FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false로 바꿉니다**(결정 1: 보류는 엔진 입력 단계에서만, `agent-tool-interface.md` 4절) | API 명세 4.5, 정답 E9 v1(첫 시도 보류라 1), agentflow 7.1 |
 | 분류 안 된 예외 | 그 밖의 `Exception` | 안 함 | FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false | **제안**(아래 5절) |
 | 설명 3회 실패 | 엔진 생성기 결과 | 엔진이 함 | FAILED / `VALIDATING_OUTPUT` / `EXPLANATION_GENERATION_FAILED` / 3 / true | DDL ck26, 정답 E2 v1 |
 
@@ -57,7 +57,7 @@
 | `TOOL_TIMEOUT_EXHAUSTED`를 씀 | agentflow 7.1 표의 예시 코드는 `UPSTREAM_TIMEOUT`이지만, API 명세·정답 데이터·엔진 검증기는 모두 `TOOL_TIMEOUT_EXHAUSTED`입니다. 정답 데이터를 따랐습니다 |
 | `ON_HOLD`의 단계는 늘 `VALIDATING` | API 명세 4.5와 정답 E9 v1이 그렇습니다. 필수 자료 오류가 재고 영향 도구에서 나도 `VALIDATING`으로 남습니다 |
 | 분류 안 된 예외는 재시도하지 않음 | 코드 오류일 수 있어서입니다. 같은 입력이면 같은 오류가 나므로 재시도해도 소용없습니다 |
-| `failure_message` 문구는 한 함수에서 만듦 | 문서마다 형식이 다릅니다(5절). 바꿀 때 `_tool_message` 하나만 고치면 됩니다 |
+| `failure_message` 문구는 한 곳에서 만듦 | 문서마다 형식이 다릅니다(5절). 바꿀 때 `retry.py`의 `_tool_message`·`TOOL_LABELS`(도구의 화면 이름)·`UNEXPECTED_ERROR_MESSAGE`만 고치면 됩니다 |
 | 이번에 `state.py`는 고치지 않음 | 상태에 `FailureSummary`를 넣으면 `state.py` ↔ `retry.py`가 서로 import 합니다. LangGraph는 실행 때 상태의 타입 힌트를 읽으므로, 그래프에 끼우는 작업에서 함께 정합니다 |
 
 ## 5. 확인이 필요한 것
@@ -67,6 +67,10 @@
   - 정답 overlay는 기술 기록(예: "도구 시간 초과 3회(RT-1 주입)")입니다.
   - 정답 검증기(`bundle_verify` rt1)는 문구를 비교하지 않습니다.
   - 그래서 도구 실패는 agentflow 형식, 보류는 판정한 쪽 문구 그대로, 설명 실패는 agentflow 형식 + 엔진 시도 기록으로 정했습니다.
+  - **Client에게 내부 표기를 보이지 않음(이슈 #57 2번, 11-12):**
+    - 도구 이름은 내부 함수 이름(`get_sales_history`) 대신 화면 이름 + 조사로 씁니다("판매량 조회가 …"). agentflow 7.1 예와 같은 문장이 됩니다. 설계 문서에는 T4 예만 있어 나머지 11개는 같은 꼴로 정했습니다(`TOOL_LABELS`). 표에 없는 이름은 "분석 도구"로 씁니다.
+    - 예상하지 못한 오류(`UNEXPECTED_TOOL_ERROR`)는 원인과 상관없이 고정 문구 하나(`UNEXPECTED_ERROR_MESSAGE`, 도구 밖 예외 #68과 같은 문장)입니다. 대응안 대조 차이·최종 확인 오류 목록·도구 단계 보류의 원래 코드·등록 안 된 도구 이름은 `ToolFailure.detail`로 넘겨 서버 로그 경고 한 줄(`graph.with_failure_stop`, 실행 ID 포함)로만 남깁니다.
+    - 설명 실패의 엔진 시도 기록 "(시도: …)"은 정답 저장 문구와 대조하는 시험이 있어 그대로 둡니다. 화면은 이 코드에 고정 문구를 씁니다(`docs/frontend-api.md` 실패 코드 표).
 - **대기 시간(0.2초·0.5초):** 설계 문서에 값이 없습니다. NFR-001(30초 안에 결과)을 넘지 않게 짧게 잡았고, 호출하는 쪽이 바꿀 수 있습니다.
 
 ## 6. 시험
