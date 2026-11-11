@@ -15,6 +15,9 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
     load_verified_engine_dir,
 )
+from tests.modules.delay_analysis.engine_test_modules import (
+    load_engine_test_module,
+)
 
 """
     엔진 묶음의 GLOW-50 자체 검사(fixture_glow50.main)를 서버 시험 안에서 돌린다.
@@ -113,7 +116,7 @@ def storage_db(glow50, monkeypatch, tmp_path, engine_root):
         pytest.skip("시험용 run_code(AN-260310-9NN)가 이미 DB 에 있어 건너뜀")
 
     storage = load_engine_module("storage")
-    for module in (glow50, load_engine_module("tests.fixture_gs05"), storage):
+    for module in (glow50, load_engine_test_module("fixture_gs05"), storage):
         monkeypatch.setattr(module, "psql", psql)
     original_rows_for = storage.rows_for
     seq = iter(range(RUN_CODE_FIRST_SEQ, 1000))

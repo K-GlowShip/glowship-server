@@ -47,6 +47,9 @@ from app.modules.delay_analysis.infrastructure.engine.engine_input import (
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
+from tests.modules.delay_analysis.engine_test_modules import (
+    load_engine_test_module,
+)
 
 """
     설명 생성을 그래프 실행 묶음에 잇는 감싸기 (GLOW-127 후속, docs/agent-flow/explanation.md 2절)
@@ -73,7 +76,7 @@ def engine():
         "pipeline": load_engine_module("pipeline"),
         "generator": load_engine_module("explain.generator"),
         "mock": load_engine_module("explain.mock"),
-        "gs05": load_engine_module("tests.fixture_gs05"),
+        "gs05": load_engine_test_module("fixture_gs05"),
         "labels": XA.load_explanation_assets()["labels"],
     }
 

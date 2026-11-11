@@ -19,7 +19,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 
 | 파일 | 보는 것 |
 | --- | --- |
-| `conftest.py` | 엔진 fixture 불러오기(`GLOWSHIP_ENGINE_DIR` 없으면 전부 건너뜀), 시나리오 캐시(`scenario(key)`). GS-05 는 기존 `fixture_gs05` 세계, `GS-11-probe` 는 공여 보유 200 탐침 |
+| `conftest.py` | 엔진 fixture 불러오기(`GLOWSHIP_ENGINE_DIR` 없으면 전부 건너뜀. 엔진 시험 파일은 시험 목록을 대조하는 `engine_test_modules.load_engine_test_module`로 부름, `docs/analysis/engine-local-path.md` 3절), 시나리오 캐시(`scenario(key)`). GS-05 는 기존 `fixture_gs05` 세계, `GS-11-probe` 는 공여 보유 200 탐침 |
 | `evaluation_adapters.py` | 엔진 snap → `CheckOptionFeasibilityInput`(리드타임 키 7개 이름 바꿈, `next_inbound` 없는 SKU 는 `null`), 엔진 options → `CompareOptionsInput`(엔진 `supply_date` → `expected_delivery_date`), 행 모양 펴기 |
 | `test_evaluation_t9_t11.py` | 9건(GS-02·03·05·07·08·09A·09B·10·11) T9 후보 행·사전 판정·공급일·긴급 항공 SKU, T11 순위·추천, 엔진 대조(공급일·rank), ①~⑤·대응안 값, GS-11 탐침(O2 만 회복) |
 | `test_evaluation_gs03_options.py` | 음성: KR 재고 0 → T9 가 NO_SUPPLY, KR NOT_FEASIBLE → T11 이 KEEP 1위. 같은 입력 = 같은 서명 |

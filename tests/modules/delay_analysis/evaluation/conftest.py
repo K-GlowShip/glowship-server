@@ -4,6 +4,9 @@ from app.core.config import get_settings
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
+from tests.modules.delay_analysis.engine_test_modules import (
+    load_engine_test_module,
+)
 
 """
     평가 시나리오 10건 공통 픽스처 (GLOW-58, Data/평가시나리오_검토용)
@@ -18,7 +21,7 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 def glow50():
     if get_settings().glowship_engine_dir is None:
         pytest.skip("GLOWSHIP_ENGINE_DIR 이 없어 평가 시나리오 시험을 건너뜀")
-    return load_engine_module("tests.fixture_glow50")
+    return load_engine_test_module("fixture_glow50")
 
 
 @pytest.fixture(scope="session")
@@ -29,7 +32,7 @@ def scenario(glow50):
       - GS-05: 기존 fixture_gs05 세계 그대로(fixture_glow50.run_all 과 같음)
       - GS-11-probe: 공여 보유 300 → 200 탐침(fixture_glow50.gs11_trace 와 같음)"""
     pipeline = load_engine_module("pipeline")
-    gs05 = load_engine_module("tests.fixture_gs05")
+    gs05 = load_engine_test_module("fixture_gs05")
     cache = {}
 
     def build(key):

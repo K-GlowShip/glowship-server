@@ -18,10 +18,14 @@ from app.core.config import get_settings
       - 폴더 모양: GLOWSHIP_ENGINE_DIR/glowship_engine/…, GLOWSHIP_ENGINE_DIR/synth2025_v5/…
         엔진 core.py·snapshot.py 가 형제 폴더 synth2025_v5 를 sys.path 에 넣고 allocation_core 를 import 하기 때문이다.
       - 불러올 때 원본 폴더에 .pyc 캐시 파일을 만들지 않는다(공유 묶음을 바꾸지 않음).
+      - 해시 목록은 서버가 실행할 때 쓰는 파일(런타임)만 담는다. 엔진 시험 파일(glowship_engine/tests, synth2025_v5/tests)은
+        저장소 tests/ 아래의 시험 목록에 따로 있고 서버 코드는 그 목록을 읽지 않는다. 운영 엔진 묶음에서 시험 폴더를 빼도
+        서버가 뜨게 하려는 것이다(이슈 #98). 대조하지 않은 파일을 불러오지 않도록 load_engine_module 은 tests.* 를 거부한다.
 """
 
 MANIFEST_PATH = Path(__file__).with_name("engine_manifest.json")
 ENGINE_PACKAGE = "glowship_engine"
+ENGINE_TEST_PACKAGE = "tests"  # glowship_engine/tests — 런타임 목록에 없음
 
 
 class EngineNotConfiguredError(RuntimeError):
@@ -38,6 +42,18 @@ class EngineIntegrityError(RuntimeError):
             "엔진 원본이 해시 목록과 다릅니다."
             f" 없는 파일 {len(missing)}개 {missing[:5]}, 내용이 다른 파일 {len(mismatched)}개 {mismatched[:5]}."
             " 데이터 팀 원본(공유 묶음 04_적재검증도구 + glowship-plan tools/synth2025_v5)인지 확인하세요"
+        )
+
+
+class EngineTestModuleError(RuntimeError):
+    """엔진 시험 모듈(glowship_engine.tests.*)을 서버 쪽 로더로 불러오려 함. 런타임 목록에 없는 파일이라 대조되지 않는다."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(
+            f"엔진 시험 모듈({name})은 런타임 해시 목록에 없어 load_engine_module 로 불러오지 않습니다."
+            " 시험에서는 tests/modules/delay_analysis/engine_test_modules.py 의"
+            " load_engine_test_module 을 쓰세요(시험 목록을 대조한 뒤 불러옴)"
         )
 
 
@@ -101,7 +117,10 @@ def load_verified_engine_dir() -> Path:
 
 
 def load_engine_module(name: str) -> ModuleType:
-    """예) load_engine_module("pipeline"), load_engine_module("explain.validator")"""
+    """예) load_engine_module("pipeline"), load_engine_module("explain.validator")
+    엔진 시험 모듈(tests.*)은 런타임 목록으로 대조되지 않으므로 받지 않는다(EngineTestModuleError)."""
+    if name.split(".")[0] == ENGINE_TEST_PACKAGE:
+        raise EngineTestModuleError(name)
     return import_engine_module(load_verified_engine_dir(), name)
 
 

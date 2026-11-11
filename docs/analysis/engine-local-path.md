@@ -1,12 +1,21 @@
 # 데이터 팀 분석 엔진 불러오기 (로컬 경로 방식)
 
-- 대상: `app/modules/delay_analysis/infrastructure/engine/engine_loader.py`, `engine_manifest.json`, 설정 `GLOWSHIP_ENGINE_DIR`
+- 대상: `app/modules/delay_analysis/infrastructure/engine/engine_loader.py`, `engine_manifest.json`(런타임 목록), 설정 `GLOWSHIP_ENGINE_DIR`
+- 시험 쪽: `tests/modules/delay_analysis/engine_test_modules.py`, `engine_test_manifest.json`(시험 목록)
 - 쓰는 곳(다음 작업): 계산 연결(입력 스냅샷·재고 영향·위험 주문·입력 검증), AI 설명 생성·검증, STALE 판정 서명 재계산
 
 ## 1. 왜 저장소에 넣지 않나
 - 엔진 `glowship_engine`과 주문 배정 모듈 `allocation_core`는 데이터 팀 결과물입니다. 원본은 공유 묶음과 **비공개** 저장소 glowship-plan에 있습니다.
 - 이 서버 저장소는 **공개** 저장소라, 코드를 넣으면 엔진·설명 프롬프트·금지 표현 사전이 공개됩니다.
-- 그래서 저장소에는 **파일 목록과 SHA-256(`engine_manifest.json`, 44개)만** 넣습니다. 실행할 때 각자 PC의 원본을 이 목록으로 대조해 불러옵니다. 판이 어긋난 엔진으로는 계산하지 않습니다.
+- 그래서 저장소에는 **파일 목록과 SHA-256만** 넣습니다. 실행할 때 각자 PC의 원본을 이 목록으로 대조해 불러옵니다. 판이 어긋난 엔진으로는 계산하지 않습니다.
+- 목록은 두 개입니다(11-10, 이슈 #98). 운영 엔진 묶음에서 엔진 시험 폴더를 빼도 서버가 뜨게 하려고 나눴습니다.
+
+| 목록 | 파일 | 개수 | 담는 것 | 대조하는 곳 |
+| --- | --- | --- | --- | --- |
+| 런타임 목록 | `app/modules/delay_analysis/infrastructure/engine/engine_manifest.json` | 32 | 서버가 실행할 때 쓰는 파일: 엔진 모듈, 설명 자산, 달력 설정, `synth2025_v5/allocation_core.py` | 서버 시작 확인, 분석, 데모 시드(`load_verified_engine_dir`) |
+| 시험 목록 | `tests/modules/delay_analysis/engine_test_manifest.json` | 12 | 시험에서만 쓰는 파일: `glowship_engine/tests/`(자체 시험 4, fixture 3, 금지 표현 사례 2, `__init__.py`), `synth2025_v5/tests/`(판정 실행기 `run_g2.py`와 그 정답 사례 `golden_cases.py`) | 시험 쪽 도우미(`engine_test_modules.py`) |
+
+- 시험 목록은 저장소 `tests/` 아래에 있어 배포 이미지에 들어가지 않습니다(`.dockerignore`). 서버 코드는 시험 목록을 읽지 않습니다.
 
 ## 2. 처음 한 번 준비하기
 1. 공유 묶음 `00_필수_최신DB_전체재적재\04_적재검증도구\`에 `glowship_engine\`이 있는지 확인합니다.
@@ -26,7 +35,7 @@
    GLOWSHIP_ENGINE_DIR=C:/…/00_필수_최신DB_전체재적재/04_적재검증도구
    ```
    - 절대 경로를 넣으세요. 상대경로·`~`도 받지만, 엔진을 처음 부를 때의 실행 폴더·홈 폴더 기준으로 한 번 절대 경로로 바뀝니다.
-4. 확인합니다. 아래가 건너뜀 없이 14건 통과해야 합니다. 값을 비워 둔 `GLOWSHIP_ENGINE_DIR=`는 설정하지 않은 것으로 봅니다.
+4. 확인합니다. 아래가 건너뜀 없이 28건 통과해야 합니다. 값을 비워 둔 `GLOWSHIP_ENGINE_DIR=`는 설정하지 않은 것으로 봅니다.
    ```
    uv run pytest tests/modules/delay_analysis/test_engine_loader.py -rs
    ```
@@ -35,10 +44,11 @@
 | 단계 | 내용 |
 | --- | --- |
 | 경로 확인 | `GLOWSHIP_ENGINE_DIR`이 비었거나 그 아래에 `glowship_engine`이 없으면 `EngineNotConfiguredError`. 상대경로·`~`는 절대 경로로 바꾼 뒤 봅니다 |
-| 해시 대조 | 목록의 44개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
-| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다. 이때 엔진이 `synth2025_v5`를 `sys.path` **맨 앞**에 넣습니다(`core.py` 11행·`snapshot.py` 17행, 원본이라 서버에서 못 바꿈). 그래서 서버 코드에서 `allocation_core`·`keys`·`tests`라는 최상위 모듈을 만들거나 import 하지 않습니다(저장소의 `tests/`는 `__init__.py`가 없는 시험 폴더이고, `import tests`를 하는 곳이 없음. 11-05 확인) |
+| 해시 대조 | 런타임 목록의 32개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
+| 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다. 이때 엔진이 `synth2025_v5`를 `sys.path` **맨 앞**에 넣습니다(`core.py` 11행·`snapshot.py` 17행, 원본이라 서버에서 못 바꿈). 그래서 서버 코드에서 `allocation_core`·`keys`·`tests`라는 최상위 모듈을 만들거나 import 하지 않습니다(서버 코드 `app/`에는 `import tests`가 없음. 저장소 시험끼리는 `tests.modules.…`로 불러오는데, 저장소 `tests/`와 엔진 `synth2025_v5/tests/` 모두 `__init__.py`가 없어 두 폴더가 한 이름 아래 함께 보임. 11-10 확인) |
 | 캐시 파일 | 불러올 때 원본 폴더에 `.pyc`를 만들지 않습니다(`sys.dont_write_bytecode`). 공유 묶음을 바꾸지 않기 위해서입니다 |
 | 한 번만 | 해시 대조는 프로세스당 한 번 합니다(`load_verified_engine_dir`, `lru_cache`). 경로가 설정돼 있으면 **서버 시작 때** 하고(`engine_startup.verify_engine_on_startup`, 6절), 설정이 없으면 엔진을 처음 부를 때 `EngineNotConfiguredError`가 납니다 |
+| 엔진 시험 파일 | 서버 쪽 `load_engine_module("tests.…")`는 `EngineTestModuleError`입니다. 런타임 목록에 없는 파일이라 대조되지 않기 때문입니다. 시험은 도우미 `load_engine_test_module`·`engine_test_file`로 부릅니다. 도우미는 런타임 목록 대조 뒤 시험 목록 12개를 통째로 대조하고(시험 파일끼리 서로 불러옴), 시험 목록에 있는 파일만 내줍니다(없으면 `EngineTestFileNotListedError`). 시험 목록 대조는 시험 프로세스당 한 번입니다 |
 
 ```python
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
@@ -49,26 +59,46 @@ pipeline = load_engine_module("pipeline")
 validator = load_engine_module("explain.validator")
 ```
 
+시험에서 엔진 시험 파일을 쓸 때(저장소 `tests/` 아래에서만):
+
+```python
+from tests.modules.delay_analysis.engine_test_modules import (
+    engine_test_file,
+    load_engine_test_module,
+)
+
+gs05 = load_engine_test_module("fixture_gs05")  # glowship_engine.tests.fixture_gs05
+runner = engine_test_file("synth2025_v5/tests/run_g2.py")  # 대조된 파일의 경로
+```
+
 ## 4. 엔진 새 판을 받을 때
 1. 데이터 팀이 새 이름·새 해시로 낸 판만 받습니다.
-2. 받은 파일로 `engine_manifest.json`을 다시 만들고, 출처 기록(overlay manifest 또는 glowship-plan README)과 대조합니다.
+2. 받은 파일로 두 목록을 다시 만들고, 출처 기록(overlay manifest 또는 glowship-plan README)과 대조합니다.
+   - 항목은 `path`(엔진 폴더 기준, `/` 구분), `sha256`(파일 바이트 그대로), `recorded_in`(해시를 확인한 출처)입니다.
+   - 엔진 `glowship_engine/tests/`·`synth2025_v5/tests/` 아래 파일은 시험 목록에, 나머지는 런타임 목록에 넣습니다. 한 파일은 한 목록에만 넣습니다.
+   - `tests/` 밖의 파일은 이름이 시험처럼 보여도 런타임 목록에 둡니다. `glowship_engine/testdb.py`는 `storage.py`가 불러와서 런타임 목록에 있습니다(7절).
+   - 서버 시험이 쓰는 엔진 시험 파일과, 그 파일이 불러오는 시험 파일을 모두 시험 목록에 넣습니다. 목록에 없는 파일은 도우미가 내주지 않습니다.
+   - 개수가 바뀌면 `test_engine_loader.py`의 개수(런타임 32, 시험 12, 합 44, 런타임 모듈 20)도 함께 고칩니다. 이 시험이 두 목록이 겹치지 않는지, 런타임 목록에 `tests/` 경로가 없는지, 시험 폴더를 뺀 복사본으로 서버 시작 확인과 런타임 모듈 import가 되는지(엔진이 있을 때) 봅니다.
 3. 엔진 입력 저장소를 다시 확인합니다. `test_engine_input_store.py`의 엔진 `Store` 소스 해시 시험이 실패하면, 옮겨 적은 색인 코드를 새 판과 맞추고 `GLOWSHIP_ENGINE_GOLDEN=1` 정답 대조를 돌린 뒤 해시를 갱신합니다(`engine-input-store.md` 3절). PR 체크리스트에 정답 대조 결과를 적습니다.
 4. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
 
 ## 5. 시험
 | 시험 | 엔진 없이 | 엔진 있을 때 |
 | --- | --- | --- |
-| 목록 44개·필수 파일 | 돎 | 돎 |
+| 런타임 목록 32개·시험 목록 12개·필수 파일, 두 목록이 겹치지 않음, 런타임 목록에 `tests/` 경로 없음 | 돎 | 돎 |
 | 해시 대조(맞음 / 줄바꿈만 바뀜 / 파일 없음), 경로 확인·절대 경로 변환, `.pyc` 안 만듦 | 돎(임시 폴더) | 돎 |
-| 실제 원본이 목록과 같음 | **건너뜀**(사유 표시) | 돎 |
+| 시험 폴더가 없어도 런타임 대조·런타임 모듈 불러오기·서버 시작 확인이 됨 / 시험 파일이 바뀌거나 없으면 도우미가 멈춤 / 런타임 파일이 바뀌어도 도우미가 멈춤 / 시험 목록 밖 파일 거부 / `load_engine_module("tests.…")` 거부 / 시험 목록 대조는 한 번 | 돎(가짜 엔진 폴더) | 돎 |
+| 실제 원본이 두 목록과 같음 | **건너뜀**(사유 표시) | 돎 |
+| 엔진 시험 폴더를 뺀 복사본으로, 깨끗한 프로세스에서 서버 시작 확인 통과 + 런타임 모듈 20개와 배정 모듈 import | **건너뜀** | 돎 |
 | 엔진 자체 시험 4개(50·97·57건, Q9 6건) | **건너뜀** | 돎 |
 | 배정 모듈 판정 실행기(`run_g2.py`, G2) | **건너뜀** | 돎 |
 
-- CI(GitHub Actions)는 지금 ruff만 돌고, 엔진 원본이 없으므로 엔진 시험은 로컬에서 확인합니다.
+- CI(GitHub Actions `test.yml`)는 엔진 원본 없이 pytest를 돌립니다. 위 표의 "엔진 없이" 칸이 CI에서 도는 것이고, 엔진 시험은 로컬에서 확인합니다.
 - 경로를 설정하지 않은 PC에서는 엔진 시험이 건너뛰어집니다. `pytest -rs`로 건너뜀 사유를 볼 수 있습니다.
 
 ## 6. 배포
 - 배포 서버에도 같은 폴더 모양으로 원본을 두고 `GLOWSHIP_ENGINE_DIR`을 설정해야 합니다.
+- **운영 엔진 묶음에 필요한 파일:** 런타임 목록의 32개입니다. 엔진 시험 폴더(`glowship_engine/tests/`, `synth2025_v5/tests/`)는 넣지 않아도 서버가 뜹니다(11-10, 이슈 #98. 그 전에는 시험 파일 12개가 없으면 시작 확인에서 멈췄습니다). `glowship_engine/testdb.py`는 이름과 달리 `storage.py`가 불러오므로 꼭 넣습니다. 시험 폴더를 함께 두어도 됩니다(목록에 없는 파일은 보지 않음).
 - 이미지나 서버에 원본을 넣는 단계는 배포 작업(인프라)에서 정합니다.
 - `GLOWSHIP_ENGINE_DIR`이 설정돼 있으면 **서버 시작 단계**(`app.main.lifespan` → `verify_engine_on_startup`)에서 해시 대조를 한 번 합니다. 원본이 없거나 다르면 서버가 뜨지 않으므로 누락이 배포 직후에 드러납니다.
 - 설정하지 않으면 시작 단계 확인을 건너뛰고(로그 한 줄), 엔진이 필요한 기능을 처음 부를 때 `EngineNotConfiguredError`가 납니다. 엔진이 없는 PC·CI에서도 서버와 다른 시험이 돌아야 하기 때문입니다.
@@ -84,3 +114,9 @@ validator = load_engine_module("explain.validator")
 - **리뷰 반영(11-05, PR #25):**
   - 6절에 "시작 단계에서 오류"라고 썼지만, 실제 코드는 처음 부를 때 검사합니다(`lru_cache`, 시작 단계 호출 없음). 문구를 코드에 맞췄습니다. PR #25 답글에서 엔진 연결 작업으로 넘기겠다고 한 시작 때 검사는 엔진 입력 저장소(GLOW-125)와 같은 PR에서 넣었습니다(6절).
   - 상대경로·`~`가 `sys.path`에 그대로 들어가 실행 폴더(uvicorn·pytest 위치)에 따라 결과가 달라질 수 있었습니다. 처음 부를 때 절대 경로로 바꾸고 시험 1건을 더했습니다(13 → 14건). 바꾸기 전 코드로 되돌리면 이 시험이 실패합니다.
+- **목록 나누기(11-10, 이슈 #98):** 목록 44개에 엔진 시험 파일 12개가 섞여 있어, 운영 엔진 묶음에서 시험 폴더를 빼면 서버 시작 확인이 `EngineIntegrityError`(없는 파일 12개)로 멈췄습니다(PR #66 리뷰에서 나온 지적). 런타임 32개와 시험 12개로 나눴습니다.
+  - 목록은 손으로 옮기지 않고 스크립트로 나눈 뒤, 두 목록의 합이 나누기 전 44개와 경로·해시·출처 기록까지 같은지 대조했습니다.
+  - 처음에는 `glowship_engine/testdb.py`도 시험 목록으로 옮기려 했습니다. 런타임 파일만 복사한 폴더에서 런타임 모듈을 하나씩 불러와 보니 `storage.py`가 `testdb`를 import 해서 실패했고, 런타임 목록에 남겼습니다. 이름으로 나누지 않고 실제로 불러와 본 것이 잡았습니다. 이 확인은 시험으로 남겼습니다(5절 "시험 폴더를 뺀 복사본").
+  - 시험 목록을 앱 폴더가 아니라 저장소 `tests/` 아래에 둔 이유: 배포 이미지에 들어가지 않고, 서버 코드가 시험 목록을 몰라도 됩니다.
+  - 나누기만 하면 `load_engine_module("tests.…")`가 대조하지 않은 파일을 조용히 불러옵니다. 그래서 서버 쪽 로더는 `tests.*`를 거부하고, 시험은 시험 목록을 대조하는 도우미로 부르게 했습니다. 서버 시험 7개 파일에서 엔진 시험 모듈을 부르던 14곳과 판정 실행기 경로 1곳을 도우미로 바꿨습니다.
+  - **대조 시간(이 PC, 파일 캐시가 데워진 상태에서 40회 중앙값, 두 번 측정):** 서버 시작 확인이 읽는 파일이 44 → 32개로 줄어 5.8~6.4 ms → 4.2~4.7 ms입니다. 시험 목록 12개 대조(1.7~1.9 ms)는 시험 프로세스에서만 한 번 합니다.

@@ -31,6 +31,9 @@ from app.modules.delay_analysis.infrastructure.engine import explanation_assets 
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
+from tests.modules.delay_analysis.engine_test_modules import (
+    load_engine_test_module,
+)
 
 """
     AI 설명 생성 (GLOW-127, docs/agent-flow/explanation.md 5절)
@@ -84,9 +87,9 @@ def engine():
         "generator": load_engine_module("explain.generator"),
         "input_doc": load_engine_module("explain.input_doc"),
         "mock": load_engine_module("explain.mock"),
-        "gs05": load_engine_module("tests.fixture_gs05"),
-        "u6": load_engine_module("tests.fixture_u6_donor"),
-        "test_explain": load_engine_module("tests.test_explain"),
+        "gs05": load_engine_test_module("fixture_gs05"),
+        "u6": load_engine_test_module("fixture_u6_donor"),
+        "test_explain": load_engine_test_module("test_explain"),
         "labels": XA.load_explanation_assets()["labels"],
     }
 
