@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 # 실제 시각으로 이만큼 넘게 RUNNING 인 수집은 죽은 것으로 보고 다음 동기화 요청에서 FAILED 로 닫는다(이슈 #94).
-# 버튼 한 번은 약 0.3초, 다음 날로는 30~45초라 정상 작업을 닫지 않는다.
+# RUNNING 하나는 tick 하나(로컬 약 0.3초) 동안만 산다. 다음 날로도 tick 마다 새로 만들므로 정상 작업을 닫지 않는다(이슈 #113).
 STALE_RUNNING_AFTER = timedelta(minutes=10)
 
 
