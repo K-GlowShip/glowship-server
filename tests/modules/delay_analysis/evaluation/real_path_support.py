@@ -274,12 +274,13 @@ def app_like_runner(
             tune(runtime, run)
         return runtime
 
-    async def save(db_, run, state, *, now=None):
+    async def save(db_, run, state, *, now=None, **kwargs):
+        # 실행기가 더 넘기는 키워드(예: 저장 시간 초과 뒤 다시 저장의 recalculate=False)는 그대로 넘긴다
         if states is not None:
             states.append(state)
         if roles is not None:
             roles.append(await db_.scalar(text("SELECT current_user")))
-        outcome = await app_save(db_, run, state, now=now)
+        outcome = await app_save(db_, run, state, now=now, **kwargs)
         if saved is not None:
             saved.append(outcome)
         return outcome
