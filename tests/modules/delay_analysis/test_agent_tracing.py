@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.llm_usage import summarize_usage
 from app.modules.delay_analysis.application.agent.fake_runtime import fake_runtime
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
 from app.modules.delay_analysis.application.agent.retry import (
@@ -299,6 +300,53 @@ def test_explanation_attempts_keep_codes_but_not_prompt_or_output():
     assert first["usage"] == {"input_tokens": 900, "output_tokens": 300}
     dumped = json.dumps([e.to_json_dict() for e in sink.events], ensure_ascii=False)
     assert "규칙 1." not in dumped and "raw_output" not in dumped
+
+
+# --- 모델 사용량 사건 (NFR-008) -------------------------------------------------------
+
+
+def test_model_usage_event_keeps_numbers_and_stays_one_line(tmp_path):
+    """합계가 마스킹을 거쳐도 그대로 남고(지워지는 칸 없음), 내부 로그에 한 줄로 쓰인다."""
+    run_id, company_id = uuid.uuid4(), uuid.uuid4()
+    tracer = RunTracer(run_id, company_id, [TraceOutboxSink(tmp_path)])
+    forged = "gpt-x" + chr(10) + "forged line B-ORD-20260101-0040"
+    usage = summarize_usage(
+        "openai/gpt-5.4-mini",
+        [
+            {"error": "TIMEOUT", "elapsed_ms": 12000},
+            {
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "cached_input_tokens": 1536,
+                "response_model": forged,
+            },
+        ],
+    )
+
+    tracer.model_usage("explain", usage)
+    assert tracer.close()
+
+    (event,) = tracer.events
+    assert (event.kind, event.name, event.status) == ("MODEL_USAGE", "explain", "OK")
+    assert event.summary == usage  # 숫자·금액·단가가 그대로(가려지거나 잘린 칸 없음)
+    assert event.summary["estimated_cost_usd"] == "0.001813"
+    (path,) = tmp_path.rglob("*.jsonl")
+    text = path.read_text(encoding="utf-8")
+    assert len(text.splitlines()) == 1
+    assert "forged" not in text and "B-ORD" not in text
+    assert json.loads(text)["analysis_run_id"] == str(run_id)
+
+
+def test_model_usage_failure_is_counted_not_raised():
+    class Broken(RunTracer):
+        def emit(self, *args, **kwargs):
+            raise RuntimeError("trace backend down")
+
+    tracer = Broken(uuid.uuid4(), uuid.uuid4(), [MemorySink()])
+
+    tracer.model_usage("explain", summarize_usage("mock/mock-template-v1", [{}]))
+
+    assert tracer.sink_failures == 1
 
 
 # --- 추적 장애 독립성 -----------------------------------------------------------------

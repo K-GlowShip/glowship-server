@@ -51,8 +51,22 @@ MATRIX = [
     for fault in MATRIX_FAULTS
     if (branch, fault) not in SKIPPED
 ]
+MODEL_USAGE_KEYS = {
+    "model",
+    "response_models",
+    "calls",
+    "calls_failed",
+    "calls_without_usage",
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "estimated_cost_usd",
+    "cost_complete",
+    "price",
+}
 TOOL_HOOK_FAILED = "도구 시도 기록 실패"  # retry._record
 EXPLANATION_HOOK_FAILED = "설명 시도 추적 기록 실패"  # explanation._trace
+USAGE_HOOK_FAILED = "모델 사용량 추적 기록 실패"  # explanation._record_model_usage
 CALLBACK_FAILED = "추적 콜백 처리 실패"  # TraceCallbackHandler
 
 
@@ -99,12 +113,14 @@ def _fault_happened(fault: str, branch: S.Branch, tracer, run: S.Run, caplog) ->
         assert kinds == []
         assert _logged(caplog, CALLBACK_FAILED) > 0
         assert _logged(caplog, TOOL_HOOK_FAILED) == attempts
-        # 설명 시도 기록은 추적기가 예외를 올리지 않고 세기만 한다
-        assert tracer.sink_failures == explanation
+        # 설명 시도 기록과 모델 사용량 기록은 추적기가 예외를 올리지 않고 세기만 한다(설명 한 건에 한 번씩)
+        assert tracer.sink_failures == 2 * explanation
     elif fault == "F4":
         assert "TOOL_ATTEMPT" not in kinds and "EXPLANATION_ATTEMPT" not in kinds
+        assert "MODEL_USAGE" not in kinds
         assert _logged(caplog, TOOL_HOOK_FAILED) == attempts
         assert _logged(caplog, EXPLANATION_HOOK_FAILED) == explanation
+        assert _logged(caplog, USAGE_HOOK_FAILED) == explanation
     elif fault == "F5":  # 콜백이 죽어 실행·노드 사건이 없고, LangChain 이 예외를 삼킴
         assert "RUN_START" not in kinds and "NODE_START" not in kinds
         assert _logged(caplog, "RaisingHandler") > 0
@@ -248,6 +264,13 @@ async def test_설명_3회_실패는_도구_시도_뒤에_설명_시도_3번으�
     kinds = [e.kind for e in events]
     last_tool = len(kinds) - 1 - kinds[::-1].index("TOOL_ATTEMPT")
     assert last_tool < kinds.index("EXPLANATION_ATTEMPT") < kinds.index("RUN_END")
+    # 모델 사용량 합계는 설명 시도 뒤·실행 끝 앞에 한 번 남는다(실패한 설명도 호출은 했으므로 남김)
+    last_attempt = len(kinds) - 1 - kinds[::-1].index("EXPLANATION_ATTEMPT")
+    assert kinds.count("MODEL_USAGE") == 1
+    assert last_attempt < kinds.index("MODEL_USAGE") < kinds.index("RUN_END")
+    usage = events[kinds.index("MODEL_USAGE")]
+    assert (usage.name, usage.status) == ("explain", "OK")
+    assert (usage.summary["model"], usage.summary["calls"]) == (RT2_MODEL[0], 3)
     assert _tool_attempts(events, S.T.VALIDATE_AGENT_OUTPUT) == []  # 최종 확인은 안 감
     assert events[-1].summary["outcome"] == "FAILED"
 
@@ -291,3 +314,5 @@ async def test_설명_실패_갈래의_추적_기록에_canary와_입력_문서�
     for event in events:
         if event.kind == "EXPLANATION_ATTEMPT":  # 사유 코드·모델·프롬프트 판뿐
             assert set(event.summary) <= {"codes", "model", "prompt_version", "usage"}
+        if event.kind == "MODEL_USAGE":  # 모델 이름·수·금액·단가뿐
+            assert set(event.summary) == MODEL_USAGE_KEYS

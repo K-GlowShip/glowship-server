@@ -42,6 +42,7 @@ EventKind = Literal[
     "ROUTE",
     "TOOL_ATTEMPT",
     "EXPLANATION_ATTEMPT",
+    "MODEL_USAGE",
 ]
 EventStatus = Literal["STARTED", "OK", "RETRY", "ERROR"]
 
@@ -329,6 +330,20 @@ class RunTracer:
             self.sink_failures += 1
             logger.warning(
                 "설명 시도를 추적에 남기지 못했습니다(분석은 계속)", exc_info=True
+            )
+
+    def model_usage(self, feature: str, usage: Mapping[str, Any]) -> None:
+        """모델 사용량 합계(NFR-008)를 사건 하나로 남긴다. feature 는 모델을 부른 기능 이름(예: "explain").
+
+        usage 는 app/core/llm_usage.summarize_usage 의 결과다(숫자·정해진 코드·모델 이름뿐, 업무 값 없음).
+        한 실행 안에서 모델을 부르는 기능마다 하나씩 남고, 실행 합계는 그 사건들의 합이다.
+        """
+        try:
+            self.emit("MODEL_USAGE", feature, "OK", summary=usage)
+        except Exception:
+            self.sink_failures += 1
+            logger.warning(
+                "모델 사용량을 추적에 남기지 못했습니다(분석은 계속)", exc_info=True
             )
 
     def callback_handler(self) -> TraceCallbackHandler:

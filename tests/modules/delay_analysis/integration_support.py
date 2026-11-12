@@ -577,13 +577,16 @@ class EmitBrokenTracer(RunTracer):
 
 
 class AttemptBrokenTracer(RunTracer):
-    """도구 시도·설명 시도 기록 메서드가 예외."""
+    """도구 시도·설명 시도·모델 사용량 기록 메서드가 예외."""
 
     def tool_attempt(self, record):
         raise RuntimeError("tool_attempt down")
 
     def explanation_attempts(self, attempts, usage=()):
         raise RuntimeError("explanation_attempts down")
+
+    def model_usage(self, feature, usage):
+        raise RuntimeError("model_usage down")
 
 
 class RaisingHandler(TraceCallbackHandler):
