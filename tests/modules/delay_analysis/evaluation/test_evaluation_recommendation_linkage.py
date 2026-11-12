@@ -46,7 +46,7 @@ from app.modules.delay_analysis.presentation.analysis_run_schemas import (
       - 설명 실패 실행(EXPLANATION_GENERATION_FAILED)은 추천 행이 저장·응답되지만(DDL response_options_ck16, 데이터 팀
         정량 정답표 v2 E2 v1) 제시한 추천이 아니라 분모 밖이다. 그 실행은 지금 모습을 따로 고정한다: L1·L2 는 채워지고
         적용 기준 중 기준일 D 만 비어 있다(데이터 팀 JSON 계약 v3 2절 "FAILED 는 의존 범위 NULL", 서버는 기준일을 거기서 읽음).
-        이 차이는 설계·웹에 물어 둔 상태라, 규칙이 바뀌면 이 시험이 깨져 알린다.
+        이 모습을 그대로 둘지는 설계·화면에서 정할 일이고, 규칙이 바뀌면 이 시험이 깨져 알린다.
 """
 
 CALCULATION_FIELDS = (
@@ -125,7 +125,7 @@ def broken_links(view: dict, *, with_explanation: bool = True) -> list[str]:
 _STORED = text(
     """
     SELECT c.company_code, r.run_code, r.analysis_run_id, r.company_id,
-           r.explanation_validation_status, r.decision_signature_sha256,
+           r.explanation_validation_status, r.decision_signature_sha256, r.failure_code,
            EXISTS (SELECT 1 FROM response_options o
                     WHERE o.analysis_run_id = r.analysis_run_id AND o.is_recommended) AS has_recommendation
       FROM analysis_runs r JOIN companies c USING (company_id)
@@ -202,8 +202,9 @@ async def test_every_presented_recommendation_is_linked(db_session):
 
 async def test_runs_without_presented_recommendation(db_session):
     """
-    C1: 제시한 추천이 없는 실행. 추천이 없는 실행은 응답에도 없고, 설명 실패 실행만 추천 행이 남는다.
+    C1: 제시한 추천이 없는 실행. 추천이 없는 실행은 응답에도 없고, 설명 실패 실행만 — 그리고 모두 — 추천 행이 남는다.
     설명 실패 실행의 추천은 계산 결과(L1·L2)는 채워져 있고 적용 기준 중 기준일 D 만 비어 있다(지금 모습 고정).
+    설명 실패 실행이 없는 DB 에서는 그 고정만 건너뛴다(자료가 없는 것과 규칙이 바뀐 것을 가른다).
     """
     rest = [
         (s, v)
@@ -215,10 +216,13 @@ async def test_runs_without_presented_recommendation(db_session):
 
     without = [(s, v) for s, v in rest if not s["has_recommendation"]]
     failed = [(s, v) for s, v in rest if s["has_recommendation"]]
-    assert failed, (
-        "설명 실패 실행이 없는 DB 면 이 고정이 헛돈다(개발 DB 2026 H1 에는 1건)"
-    )
+    explanation_failed = [
+        _code(s) for s, _ in rest if s["failure_code"] == EXPLANATION_GENERATION_FAILED
+    ]
     assert [_code(s) for s, v in without if _recommends(v)] == []
+    assert [_code(s) for s, _ in failed] == explanation_failed
+    if not failed:
+        pytest.skip("설명 실패 실행이 없는 DB 라 그 실행의 추천 고정을 건너뜀")
     assert {
         _code(s): (v["failureCode"], broken_links(v, with_explanation=False))
         for s, v in failed
