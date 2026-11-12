@@ -19,7 +19,6 @@ from app.modules.delay_analysis.application.exception.analysis_run_creation_exce
 )
 from app.modules.delay_analysis.application.run_creation.run_creation_service import (
     create_analysis_run,
-    record_input_data_versions,
 )
 from app.modules.delay_analysis.application.stale.stale_service import (
     StaleJudgmentService,
@@ -178,5 +177,6 @@ class AutoRunService:
         )
         if not creation.created:
             return None
-        await record_input_data_versions(self.db, creation.run)
+        # 데이터 버전은 만들 때가 아니라 입력 검증을 통과한 실행의 결과를 저장할 때 기록한다(보류는 기록 안 함, 확정 DB 와 같음).
+        # outcome_save.save_graph_outcome·transitions(그래프 밖 FAILED) 가 기록한다
         return creation.run.analysis_run_id

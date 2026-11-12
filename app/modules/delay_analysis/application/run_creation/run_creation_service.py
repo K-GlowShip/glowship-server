@@ -51,7 +51,8 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
           run_code: AN-기준일-고객사·기준일별 순번(D14, 0006)
           계산 계약 T14-v1, 배정 규칙 D00-B-b2-v1 (DDL ck34·ck35 가 받는 유일한 값)
       - 데이터 버전(analysis_run_data_versions)은 record_input_data_versions 가 따로 기록한다.
-        overlay 에서 입력 검증에 실패한 ON_HOLD 실행은 데이터 버전이 없으므로, 입력 검증(GLOW-100)을 통과한 뒤 부른다.
+        overlay 에서 입력 검증에 실패한 ON_HOLD 실행은 데이터 버전이 없으므로, 입력 검증(GLOW-100)을 통과한 실행의 결과를 저장할 때 부른다
+        (outcome_save·transitions, 데모 시드는 결과를 넣을 때). 실행을 만들 때는 부르지 않는다(2026-11-11, serviceflow 5.2).
 """
 
 CALCULATION_CONTRACT_VERSION = "T14-v1"
