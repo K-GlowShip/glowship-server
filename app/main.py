@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.core.config import Settings, get_settings
 from app.core.exceptions import include_exception_handlers
 from app.core.health import router as health_router
+from app.core.log_config import configure_app_logging
 from app.core.middleware import include_middlewares
 from app.modules.dashboard.presentation.dashboard_api_router import (
     router as dashboard_router,
@@ -64,6 +65,8 @@ from app.modules.user.presentation.signup_api_router import router as signup_rou
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # 앱 INFO 로그가 서버 출력에 남게 한다(LOG_LEVEL, 기본 INFO). 아래 시작 단계 로그보다 먼저
+    configure_app_logging(get_settings().log_level)
     # 엔진 경로가 설정돼 있으면 시작할 때 해시 대조를 한 번 한다(원본이 없거나 다르면 서버가 뜨지 않음)
     verify_engine_on_startup()
     # AI 설명 모델(GLOW-150): 실제 모델을 골랐는데 엔진 등록부에 그 모델 설정이 없거나 키가 없으면 멈춘다(기본 mock 은 아무것도 안 함)
