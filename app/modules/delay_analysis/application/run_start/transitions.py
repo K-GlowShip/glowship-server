@@ -246,12 +246,17 @@ async def find_unfinished_runs(db: AsyncSession) -> list[UnfinishedRun]:
     return [UnfinishedRun(r.company_id, r.analysis_run_id, r.status) for r in rows]
 
 
-def unexpected_failure(step: AnalysisStep, message: str) -> FailureSummary:
-    """실행기가 끝내는 FAILED(분류되지 않은 오류, agentflow 7.1). 시도 1·소진 아님(그래프 노드의 같은 실패와 같은 값)."""
+def unexpected_failure(
+    step: AnalysisStep, message: str, code: str = UNEXPECTED_TOOL_ERROR
+) -> FailureSummary:
+    """
+    실행기가 끝내는 FAILED. 기본은 분류되지 않은 오류(agentflow 7.1), 시간 제한을 넘으면 RUN_TIME_LIMIT_EXCEEDED(이슈 #123).
+    시도 1·소진 아님(그래프 노드의 같은 실패와 같은 값).
+    """
     return FailureSummary(
         status=AnalysisOutcome.FAILED,
         failed_step=step,
-        failure_code=UNEXPECTED_TOOL_ERROR,
+        failure_code=code,
         attempt_count=1,
         retry_exhausted=False,
         failure_message=message,
@@ -264,10 +269,12 @@ async def fail_unfinished(
     company_id: uuid.UUID,
     analysis_run_id: uuid.UUID,
     message: str,
+    code: str = UNEXPECTED_TOOL_ERROR,
     now: datetime | None = None,
 ) -> ResultSaveOutcome | None:
     """
     진행 중(VALIDATING~VALIDATING_OUTPUT)인 실행을 지금 단계로 FAILED 저장한다. DETECTED·끝난 실행은 그대로(None).
+    code: 실패 코드(기본 UNEXPECTED_TOOL_ERROR, 시간 제한은 RUN_TIME_LIMIT_EXCEEDED).
     DETECTED 를 두는 이유: 아직 아무것도 하지 않은 실행이라 다음 시작 정리가 다시 시작한다.
     입력 데이터 버전도 같은 트랜잭션에서 기록한다. 보류가 아닌 종료는 모두 기록하는 규칙이라, 그래프 밖에서
     끝내는 FAILED(마지막 잡기·시작 정리)도 그래프 안 FAILED 와 같게 5건이 된다(확정 DB FAILED 실행과 같음).
@@ -283,6 +290,6 @@ async def fail_unfinished(
         db,
         company_id=company_id,
         analysis_run_id=analysis_run_id,
-        summary=unexpected_failure(AnalysisStep(run.status), message),
+        summary=unexpected_failure(AnalysisStep(run.status), message, code),
         now=now,
     )

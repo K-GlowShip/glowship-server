@@ -292,3 +292,37 @@ def test_blank_trace_dir_setting_means_off(monkeypatch, raw):
     )
 
     assert settings.agent_trace_dir is None
+
+
+def test_app_runner_passes_time_limits_from_settings():
+    runner = A.build_app_runner(
+        _settings(
+            analysis_run_time_limit_seconds=90.0, analysis_save_time_limit_seconds=45.0
+        )
+    )
+
+    assert (runner.run_time_limit_seconds, runner.save_time_limit_seconds) == (
+        90.0,
+        45.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"analysis_run_time_limit_seconds": 0},
+        {"analysis_save_time_limit_seconds": -1},
+    ],
+)
+def test_time_limit_setting_must_be_positive(env):
+    with pytest.raises(ValueError):
+        _settings_from_env(**env)
+
+
+def test_time_limit_defaults():
+    settings = _settings_from_env()
+
+    assert (
+        settings.analysis_run_time_limit_seconds,
+        settings.analysis_save_time_limit_seconds,
+    ) == (120.0, 60.0)

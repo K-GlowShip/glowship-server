@@ -10,6 +10,10 @@ from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
     fake_runtime,
 )
+from app.modules.delay_analysis.application.agent.retry import (
+    RUN_TIME_LIMIT_EXCEEDED,
+    RUN_TIME_LIMIT_MESSAGE,
+)
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
 from app.modules.delay_analysis.application.analysis_run_detail_service import (
     AnalysisRunDetailService,
@@ -644,3 +648,45 @@ async def test_retired_current_run_shows_in_detail_and_list(db_write_session):
     assert delay["closeReason"] == "RECEIVED"
     assert after["analyzing"] == before["analyzing"] - 1
     assert after["needsReanalysis"] == before["needsReanalysis"] + 1
+
+
+async def test_time_limit_failure_passes_checks_and_records_data_versions(
+    db_write_session,
+):
+    """
+    시간 제한 FAILED(이슈 #123): 새 실패 코드가 실제 DB CHECK(ck10~ck14)를 통과하고, 그때 단계·시도 1·소진 아님,
+    입력 데이터 버전 5건, 가상 시각이면 끝난 시각 = 시작 + 1초(다른 그래프 밖 FAILED 와 같은 규칙).
+    """
+    db = db_write_session
+    rid = await _run_of(db, "NO_DELAY")
+    company = await _reset(db, rid, "ANALYZING_OPTIONS")
+    await db.execute(
+        text("DELETE FROM analysis_run_data_versions WHERE analysis_run_id = :id"),
+        {"id": rid},
+    )
+    started = (await _row(db, rid)).started_at
+
+    saved = await fail_unfinished(
+        db,
+        company_id=company,
+        analysis_run_id=rid,
+        message=RUN_TIME_LIMIT_MESSAGE,
+        code=RUN_TIME_LIMIT_EXCEEDED,
+        now=started,
+    )
+    await db.flush()
+    row = await _row(db, rid)
+
+    assert saved is not None and saved.saved
+    assert (row.status, row.failed_step, row.failure_code) == (
+        "FAILED",
+        "ANALYZING_OPTIONS",
+        "RUN_TIME_LIMIT_EXCEEDED",
+    )
+    assert (row.attempt_count, row.retry_exhausted, row.failure_message) == (
+        1,
+        False,
+        RUN_TIME_LIMIT_MESSAGE,
+    )
+    assert row.finished_at == started + timedelta(seconds=1)
+    assert await db.scalar(_DATA_VERSIONS, {"id": rid}) == 5
