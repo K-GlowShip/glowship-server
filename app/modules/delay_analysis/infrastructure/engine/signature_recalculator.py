@@ -104,7 +104,9 @@ class EngineSignatureRecalculator:
     async def _new_store(self, run: AnalysisRun, applied_seq: int):
         key = (run.company_id, applied_seq)
         if key != self._new_store_key:
-            self._new_store_value = None  # 새로 읽기 전에 이전 저장소를 놓는다
+            # 새로 읽기 전에 이전 저장소를 놓는다. 열쇠도 함께 비워, 읽기가 실패해도 이전 순번 열쇠로 None 을 돌려주지 않게 한다(이슈 #126)
+            self._new_store_key = None
+            self._new_store_value = None
             self._new_store_value = await load_company_engine_store(
                 self.session, run.company_id, applied_seq
             )

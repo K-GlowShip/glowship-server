@@ -154,6 +154,30 @@ async def test_only_the_last_new_store_is_kept(fake_engine):
     assert calls["new"] == [924, 925, 924]
 
 
+async def test_previous_seq_is_read_again_after_a_failed_read(fake_engine, monkeypatch):
+    """새 순번 읽기가 실패한 뒤 이전 순번을 부르면 다시 읽는다(빈 저장소를 돌려주지 않음, 이슈 #126)"""
+    calls, _ = fake_engine
+    sha_calls = calls["sha"]
+
+    async def load(session, company_id, input_seq):
+        calls["new"].append(input_seq)
+        if input_seq == 925:
+            raise RuntimeError("저장소 읽기 실패")
+        return f"new-{input_seq}"
+
+    monkeypatch.setattr(signature_recalculator, "load_company_engine_store", load)
+    recalculator = EngineSignatureRecalculator(None)
+
+    await recalculator.signature_changed(_run(), [_change(924, FINISHED)])
+    assert await recalculator.signature_changed(
+        _run(), [_change(925, FINISHED)]
+    )  # 엔진 오류 → 다름
+    await recalculator.signature_changed(_run(), [_change(924, FINISHED)])
+
+    assert calls["new"] == [924, 925, 924]
+    assert [new for _, new, _, _ in sha_calls] == ["new-924", "new-924"]
+
+
 async def test_engine_error_counts_as_changed(fake_engine, monkeypatch, caplog):
     """엔진 쪽 오류는 수집·결과 저장을 멈추지 않고 다름(놓치지 않는 쪽)으로 본다"""
 
