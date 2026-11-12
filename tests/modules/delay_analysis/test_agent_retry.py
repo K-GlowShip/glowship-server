@@ -390,7 +390,7 @@ def test_summary_rejects_values_the_ddl_rejects(change, error):
 
 # --- 실제 DB 행에 덮어써 analysis_runs CHECK 전부로 판정 (읽기 전용) ------------------------------------
 # 리뷰(#28) 반영: 처음에는 ck10~14·ck26 만 봐서 completed_status(ck23)·result_class(ck21)·dependency_scope(ck36)
-# 누락을 못 잡았다. 이제 모델의 CHECK 42개를 모두, 엔진 결과 값이 찬 실제 행 위에서 판정한다.
+# 누락을 못 잡았다. 이제 모델의 CHECK 43개(0010 의 data_warnings 모양 CHECK 포함)를 모두, 엔진 결과 값이 찬 실제 행 위에서 판정한다.
 
 _CHECKS = {
     c.name.removeprefix("analysis_runs_"): str(c.sqltext)
@@ -403,8 +403,8 @@ _COLUMNS = {
 }
 
 
-def test_model_has_all_42_checks():
-    assert len(_CHECKS) == 42
+def test_model_has_all_43_checks():
+    assert len(_CHECKS) == 43
 
 
 async def _base_run_id(db, status: str) -> uuid.UUID:

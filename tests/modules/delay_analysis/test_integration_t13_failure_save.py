@@ -26,7 +26,7 @@ from tests.modules.delay_analysis.test_result_save import (
     (agentflow 5.5·7.1 "서비스가 실패 요약 5컬럼 저장", docs/agent-flow/integration-tests-t13-t20.md)
       - 정답 실패 실행 3건(RT-1 도구 시간 초과·RT-2 설명 실패·보류)을 진행 중으로 되돌린 뒤, 연결된 그래프가
         만든 실패 요약을 저장한다. 저장 뒤 행이 원래 정답 행과 같은지 본다(RT-1·RT-2 는 문구만 서버 문구).
-      - 실제 UPDATE 라 analysis_runs CHECK 42개는 DB 가 직접 판정한다. 모두 롤백된다.
+      - 실제 UPDATE 라 analysis_runs CHECK 43개는 DB 가 직접 판정한다. 모두 롤백된다.
       - 정답 실행이 없는 DB(빈 DB·데모 시드)는 건너뛴다.
       - 그래프 결과를 저장으로 잇는 실행기(자동 시작, 이슈 #51)는 아직 없어 요약을 직접 넘긴다. 설명 실패의
         계산 결과는 정답 실행의 결과 행에서 되돌린 것이고, 실패 요약·모델 판은 그래프가 만든 것이다

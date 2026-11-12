@@ -92,7 +92,7 @@ class FailureSummary:
       - FAILED·ON_HOLD 일 때만 만든다(ck10·ck11: 5개가 모두 차거나 모두 빔).
       - 만들 때 DDL 규칙을 먼저 확인한다(ck12·ck13·ck14·ck26). 어긋나면 ValueError.
       - columns() 는 실행을 실패·보류로 끝낼 때 analysis_runs 에서 바꿔야 하는 열을 모두 돌려준다.
-        진행 중 행에 이 값을 덮어쓰면 analysis_runs CHECK 42개를 모두 통과한다(시험으로 확인).
+        진행 중 행에 이 값을 덮어쓰면 analysis_runs CHECK 43개를 모두 통과한다(시험으로 확인).
     """
 
     status: AnalysisOutcome
