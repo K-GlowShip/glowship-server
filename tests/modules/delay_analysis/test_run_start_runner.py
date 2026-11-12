@@ -1,7 +1,10 @@
 import asyncio
+import gc
 import logging
 import uuid
+import weakref
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -13,10 +16,12 @@ from app.modules.delay_analysis.application.agent.fake_runtime import (
 from app.modules.delay_analysis.application.agent.graph import (
     UNEXPECTED_ERROR_MESSAGE,
 )
+from app.modules.delay_analysis.application.agent.runtime import RuntimeWiringError
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
     AnalysisStep,
 )
+from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.application.agent.tracing import RunTracer
 from app.modules.delay_analysis.application.run_start import runner as R
 from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
@@ -592,3 +597,112 @@ async def test_sweep_continues_when_closed_check_raises(db):
 
     assert result.errors == [broken] and result.restarted == [ok]
     assert db.status[broken] == "DETECTED" and broken not in db.saved
+
+
+# --- 끝난 실행의 엔진 입력 놓기 (이슈 #123) -------------------------------------------------
+
+
+class _HandOver:
+    """엔진 입력을 한 번 넘기고 들고 있지 않는 분석 준비(실제 EnginePreparer 처럼 결과를 담아 두지 않음)."""
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    async def judge_no_delay(self):
+        return None
+
+    async def build_engine_input(self):
+        engine, self._engine = self._engine, None
+        return engine
+
+
+def _pinning_runtime(made, *, decide_raises=None):
+    """
+    노드 안에서 긴 타이머를 만들고 취소하는 도구를 낀 가짜 묶음. asyncio 는 취소된 타이머를 예정 시각까지
+    대기열에 두고, 타이머가 들고 있는 실행 문맥(그래프 설정 → 실행 묶음)도 그동안 남는다(asyncpg 가 노드 안에서
+    거는 타이머와 같은 사슬). 엔진 입력은 약한 참조로만 밖에 남긴다.
+    """
+
+    def factory(_session, _run, _tracer):
+        runtime = fake_runtime()
+        engine = runtime.preparer.engine
+        made["engine"] = weakref.ref(engine)
+        runtime.preparer = _HandOver(engine)
+        del engine
+        spec = runtime.registry[ToolName.GET_DELAY_CONTEXT]
+        original = spec.fn
+
+        async def pinning(ctx, payload):
+            asyncio.get_running_loop().call_later(3600, lambda: None).cancel()
+            return await original(ctx, payload)
+
+        runtime.registry = {
+            **runtime.registry,
+            ToolName.GET_DELAY_CONTEXT: replace(spec, fn=pinning),
+        }
+        if decide_raises is not None:
+
+            def broken_decide(engine):
+                # 예외의 traceback 이 이 함수의 지역 변수를 붙잡으므로(pytest 가 로그 기록을 보관) 인자를 먼저 놓는다
+                del engine
+                raise decide_raises
+
+            runtime.decide = broken_decide
+        made["runtime"] = runtime
+        return runtime
+
+    return factory
+
+
+async def test_finished_run_releases_engine_input_held_by_its_context(db):
+    """
+    실행 문맥이 남아도(취소된 타이머) 끝난 실행의 엔진 입력은 풀린다. 놓지 않으면 엔진 저장소(0.3~0.5GB)가
+    타이머 예정 시각까지 남아, 순번이 다른 실행이 이어지면 2GB 서버가 메모리 부족으로 죽는다(이슈 #123).
+    """
+    (run_id,) = db.detected()
+    made = {}
+    runner = _runner(db, runtime_factory=_pinning_runtime(made))
+
+    runner.start(COMPANY, run_id)
+    await runner.wait_idle()
+    gc.collect()
+
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    assert made["engine"]() is None
+    with pytest.raises(RuntimeWiringError, match="놓은"):
+        made["runtime"].ctx  # noqa: B018 — 놓은 묶음을 다시 쓰면 연결 실수로 알림
+
+
+async def test_engine_input_is_released_when_graph_fails(db):
+    """그래프 밖으로 나온 예외(판정에서 연결 실수)로 끝나도 놓는다. 그 실행은 마지막 잡기로 FAILED."""
+    (run_id,) = db.detected()
+    made = {}
+    runner = _runner(
+        db,
+        runtime_factory=_pinning_runtime(
+            made, decide_raises=RuntimeWiringError("연결 실수(시험)")
+        ),
+    )
+
+    runner.start(COMPANY, run_id)
+    await runner.wait_idle()
+    gc.collect()
+
+    assert db.failed[run_id] == UNEXPECTED_ERROR_MESSAGE
+    assert made["engine"]() is None
+
+
+def test_released_runtime_cannot_start_again():
+    """놓은 묶음으로 다시 분석을 시작하면 연결 실수(묶음 하나 = 실행 하나는 그대로)."""
+    runtime = fake_runtime()
+    runtime.start(
+        company_id=COMPANY, analysis_run_id=uuid.uuid4(), engine=runtime.preparer.engine
+    )
+    runtime.release()
+
+    with pytest.raises(RuntimeWiringError, match="놓은"):
+        runtime.start(
+            company_id=COMPANY,
+            analysis_run_id=uuid.uuid4(),
+            engine=runtime.preparer.engine,
+        )
