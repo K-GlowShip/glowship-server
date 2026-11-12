@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -20,11 +20,8 @@ from app.modules.delay_analysis.application.agent.retry import (
 from app.modules.delay_analysis.application.agent.runtime import AnalysisRuntime
 from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.application.agent.tools.registry import ToolRegistry
-from app.modules.delay_analysis.application.run_start.engine_runtime import (
-    build_engine_runtime,
-)
-from app.modules.delay_analysis.application.run_start.outcome_save import (
-    save_graph_outcome,
+from app.modules.delay_analysis.application.run_start.app_runner import (
+    build_app_runner,
 )
 from app.modules.delay_analysis.application.run_start.runner import (
     AnalysisRunner,
@@ -44,14 +41,14 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
 
 """
     실제 경로 시험 장치 (GLOW-58 2단계, docs/analysis/evaluation-scenarios.md 2단계 절). 시험 파일이 아니다.
-      - 실제 경로 = 앱 실행기(app_runner.build_app_runner)가 가상 시각으로 만드는 것과 같은 조립:
+      - 실제 경로 = 앱 실행기(app_runner.build_app_runner)를 가상 시각 설정으로 그대로 만든 것:
         build_engine_runtime(실제 도구 12개·분석 준비·판정·설명) → AnalysisRunner → save_graph_outcome.
         설명 생성 시각 = 실행 시작 시각, 저장 끝난 시각 = 시작 + 1초(이슈 #50 결정). 다른 것은 세션뿐이다:
         앱은 워커 접속을 새로 열고, 여기서는 롤백 세션 하나를 실행기에 돌려주고 SET LOCAL ROLE 로 워커 역할을 건다.
         실행기가 세션을 열 때마다 RLS 문맥(app.user_id·app.company_id)을 비워, 새 접속에서는 문맥이 비어 있는 것을
         흉내 낸다(실행기가 문맥을 넣지 않으면 워커 역할에서 행이 보이지 않아 시험이 실패한다).
-      - 한계: 조립은 build_app_runner 를 부르지 않고 같은 내용을 따라 적은 것이다. app_runner 의 조립이 바뀌면 이 장치도
-        함께 고쳐야 한다(app_runner 자체는 test_run_start_app_runner 가 본다).
+      - 조립은 따라 적지 않고 build_app_runner 를 부른다(세션만 open_session 으로 바꿔 끼움). 그 위에 시험용으로
+        묶음 만들기(장애 주입)와 저장(상태·역할 기록)을 감싸고, 추적기는 시험이 넘긴 것을 쓴다.
       - 설명 모델 설정(EXPLANATION_MODEL)이 mock 이 아니면 건너뛴다. 정답은 엔진 템플릿 설명으로 만들어졌고,
         시험이 실제 모델을 부르지 않게 하기 위해서다.
       - 확정 DB(정답 overlay)의 실행은 모두 끝난 상태라, 실행 하나를 같은 트랜잭션 안에서 DETECTED 로 되돌려 다시 돌린다.
@@ -63,6 +60,8 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
 """
 
 WORKER_ROLE = "glowship_v4_worker"
+# 가상 시각 조립을 고르는 값(있기만 하면 됨): 설명 생성 시각 = 실행 시작 시각, 저장 끝난 시각 = 시작 + 1초
+VIRTUAL_CLOCK_START = datetime(2026, 1, 1, tzinfo=UTC)
 # 새로 연 세션의 RLS 문맥(빈 값). app/core/rls_context.set_rls_context 와 같은 설정 이름·트랜잭션 범위
 _EMPTY_RLS_CONTEXT = text(
     "SELECT set_config('app.user_id', '', true), set_config('app.company_id', '', true)"
@@ -247,7 +246,7 @@ def app_like_runner(
     max_concurrent_runs: int = 4,
 ) -> AnalysisRunner:
     """
-    앱 실행기(build_app_runner, 가상 시각)와 같은 조립. 세션만 롤백 세션 하나를 돌려준다.
+    앱 실행기(build_app_runner, 가상 시각) 그대로. 세션만 롤백 세션 하나를 돌려준다.
     tune 은 만들어진 실제 묶음에 장애를 걸 때만 쓴다. states·saved 는 그래프 종료 상태와 저장 결과를,
     roles 는 저장하는 순간의 DB 역할(current_user)을 받아 둔다.
     """
@@ -258,11 +257,19 @@ def app_like_runner(
         await db.execute(_EMPTY_RLS_CONTEXT)
         yield db
 
+    settings = get_settings().model_copy(
+        update={
+            "virtual_clock_start": VIRTUAL_CLOCK_START,
+            "analysis_auto_start_enabled": True,
+            "analysis_max_concurrent_runs": max_concurrent_runs,
+            "agent_trace_dir": None,
+        }
+    )
+    runner = build_app_runner(settings, open_session=same_session)
+    app_runtime_factory, app_save = runner.runtime_factory, runner.save_outcome
+
     def runtime_factory(session, run, tracer):
-        started = run.started_at.replace(microsecond=0)
-        runtime = build_engine_runtime(
-            session, run, clock=lambda: started, tracer=tracer
-        )
+        runtime = app_runtime_factory(session, run, tracer)
         if tune is not None:
             tune(runtime, run)
         return runtime
@@ -272,19 +279,15 @@ def app_like_runner(
             states.append(state)
         if roles is not None:
             roles.append(await db_.scalar(text("SELECT current_user")))
-        outcome = await save_graph_outcome(db_, run, state, now=now)
+        outcome = await app_save(db_, run, state, now=now)
         if saved is not None:
             saved.append(outcome)
         return outcome
 
-    return AnalysisRunner(
-        open_session=same_session,
-        runtime_factory=runtime_factory,
-        save_time=lambda run: run.started_at,
-        save_outcome=save,
-        tracer_factory=tracer_factory,
-        max_concurrent_runs=max_concurrent_runs,
-    )
+    runner.runtime_factory = runtime_factory
+    runner.save_outcome = save
+    runner.tracer_factory = tracer_factory
+    return runner
 
 
 @asynccontextmanager

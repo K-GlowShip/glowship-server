@@ -18,7 +18,7 @@ from app.modules.delay_analysis.application.stale.stale_service import (
 )
 from app.modules.delay_analysis.infrastructure.analysis_enums import TriggerReason
 from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
-    EngineSignatureRecalculator,
+    recalculator_or_none,
 )
 from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
     StaleChangeRepository,
@@ -41,10 +41,9 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
         돌리면 약 6분, 11-11). 그래서 17건 전체는 GLOWSHIP_ENGINE_GOLDEN=1 일 때만 돌고, 평소에는 짧은 대표 1건
         (FOLLOW_UP)과 아래 연결 확인만 돈다.
       - 대조는 시험 접속 계정으로 돈다(워커 역할·RLS 문맥 없음). 워커 역할로 도는 것은 아래 연결 확인(실제 경로)이다.
-      - 재계산기는 재계산 한 번(관련 변경이 걸린 수집 하나)마다 새로 만든다(server_stale_service). 앱의 재계산기는 트랜잭션
-        하나 동안 읽은 순번 저장소를 모두 들고 있어(순번별 한 번 읽기), 관련 순번이 14개인 실행(A AN-260115-001)을 한
-        재계산기로 돌리면 저장소 14개가 함께 산다(docs/analysis/evaluation-scenarios.md 8.5·8.6절). 판정 결과는 같고
-        저장소를 한 번에 하나만 든다.
+      - 재계산기는 앱(수집·결과 저장)과 같이 판정 서비스 하나에 하나를 만든다(recalculator_or_none, server_stale_service).
+        재계산기는 마지막으로 읽은 순번 저장소 하나만 든다(#119). 그 전에는 읽은 순번을 모두 들어, 관련 순번이 14개인
+        실행(A AN-260115-001)에서 저장소 14개가 함께 살았다(docs/analysis/evaluation-scenarios.md 8.5·8.6절).
       - 연결 확인: 현재 버전 실행 1건(A AN-260202-001)을 실제 경로(실행기 → save_graph_outcome → 저장 직후 재판정)로 돌려,
         앱의 저장 경로가 재계산기를 넘겨 정답 순번(178, 재계산기가 없으면 173)이 되는지 본다.
 """
@@ -115,22 +114,10 @@ _REOPEN = text(
 )
 
 
-class _OneStorePerJudgment:
-    """앱 재계산기와 같은 계산을 하되 재계산 한 번마다 새로 만들어, 읽은 순번 저장소를 그 재계산이 끝나면 놓는다(모듈 머리말)."""
-
-    def __init__(self, db):
-        self.db = db
-
-    async def signature_changed(self, run, changes):
-        return await EngineSignatureRecalculator(self.db).signature_changed(
-            run, changes
-        )
-
-
 def server_stale_service(db) -> StaleJudgmentService:
-    """앱(수집·결과 저장)과 같은 2차 판정. 엔진 경로가 없으면 건너뛴다(재계산기 없이는 1차만이라 정답과 다름)."""
+    """앱(수집·결과 저장)이 만드는 모양 그대로. 엔진 경로가 없으면 건너뛴다(재계산기 없이는 1차만이라 정답과 다름)."""
     require_engine()
-    return StaleJudgmentService(db, StaleChangeRepository(db), _OneStorePerJudgment(db))
+    return StaleJudgmentService(db, StaleChangeRepository(db), recalculator_or_none(db))
 
 
 async def _completed(db) -> dict:
