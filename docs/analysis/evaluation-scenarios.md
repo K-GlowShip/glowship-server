@@ -31,6 +31,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | `test_evaluation_gs10_followup.py` | GS-10 트리거 2개, AUTO/SCHEDULE_WORSENED, D' 03-11·E' 04-06, R1 STALE DELAY_SCHEDULE_CHANGED, 재생 예약 50 |
 | `test_evaluation_engine_selfcheck.py` | 엔진 자체 검사 31건(결과 파일은 임시 폴더), DB 저장 검사 52건(ROLLBACK, 거부 0, 행 수 그대로), 음성(CHECK 위반 행 거부) |
 | `test_evaluation_explanation.py` | READY 9건 설명 생성 → T12 재검증 PASSED(9건 모두, 4.1절 엔진 수정판), 수정판 토크나이저 고정 |
+| `test_evaluation_explanation_negative.py` | 음성 짝(NFR-003): 같은 9건에서 통과한 설명의 SKU 증분 수량 하나(문장)·근거 참조 값 하나를 +1 → T12 가 `RETRY`·`VALUE_MISMATCH` 하나만 냄. 대조군(바꾸지 않으면 PASSED)·바꿀 값 찾기 장치(코드·날짜 속 숫자는 안 바꿈) 포함 |
 
 실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움). 11-12(3.1절 정답표 PASS 항목 추가, develop `47470cc` 위): 이 폴더 전체 **136 통과·17 건너뜀**(추가 전 132·17, 새 시험 4건).
 
@@ -104,6 +105,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 - **DB 를 바꾸지 않음:** 저장 검사 전후 6개 표의 행 수가 같고(`rolled_back` true), 시험용 run_code 가 이미 있으면 건너뜁니다.
 - **엔진 묶음 무변경:** `SHA256SUMS.tsv` 118개 대조 — 다른 것은 알려진 Q9 수정 `glowship_engine/options.py` 뿐이고 `tests/test_q9_donor_reason.py` 는 목록에 없는 파일입니다(이전과 같음). 묶음 안에 `output/` 이 생기지 않았습니다.
 - **canary 고정:** 설명 시험은 `test_explanation.py` 와 같이 엔진 canary 를 고정합니다(전화번호 패턴 흔들림 방지).
+- **설명 시험의 음성 짝(11-12):** `test_evaluation_explanation.py` 는 9건이 통과하는 것만 봐서, 서버 T12 가 엔진 검증기의 결함을 버리도록 바꿔도(늘 통과) 그대로 통과했습니다. `test_evaluation_explanation_negative.py` 가 같은 9건의 설명을 한 군데만 틀리게 바꿔 T12 를 다시 부릅니다. 바꾸는 값은 문장 속 정수 중 가장 큰 것으로, 9건 모두 정답표 ② 의 SKU 지연 증분 수량(70·100·120·60·111·170)이 골립니다. 운영 코드를 틀리게 바꾼 세 가지 — T12 가 결함을 모두 버림, `VALUE_MISMATCH` 만 버림, 시도가 남아도 `FAILED` — 를 모두 잡습니다(각각 18건 실패). 사람이 9건을 읽고 확인한 기록(수동 검토)은 이 시험으로 갈음하지 않습니다.
 
 ## 6. 남은 일
 
