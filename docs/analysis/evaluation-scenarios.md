@@ -22,9 +22,9 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | --- | --- |
 | `conftest.py` | 엔진 fixture 불러오기(`GLOWSHIP_ENGINE_DIR` 없으면 이 픽스처를 쓰는 시험은 건너뜀. 엔진 시험 파일은 시험 목록을 대조하는 `engine_test_modules.load_engine_test_module`로 부름, `docs/analysis/engine-local-path.md` 3절), 시나리오 캐시(`scenario(key)`). GS-05 는 기존 `fixture_gs05` 세계, `GS-11-probe` 는 공여 보유 200 탐침 |
 | `evaluation_adapters.py` | 엔진 snap → `CheckOptionFeasibilityInput`(리드타임 키 7개 이름 바꿈, `next_inbound` 없는 SKU 는 `null`), 엔진 options → `CompareOptionsInput`(엔진 `supply_date` → `expected_delivery_date`), 행 모양 펴기 |
-| `test_evaluation_t9_t11.py` | 9건(GS-02·03·05·07·08·09A·09B·10·11) T9 후보 행·사전 판정·공급일·긴급 항공 SKU, T11 순위·추천, 엔진 대조(공급일·rank), ①~⑤·대응안 값, GS-11 탐침(O2 만 회복) |
+| `test_evaluation_t9_t11.py` | 9건(GS-02·03·05·07·08·09A·09B·10·11) T9 후보 행·사전 판정·공급일·긴급 항공 SKU, T11 순위·추천, 엔진 대조(공급일·rank), ①~⑤·대응안 값, GS-11 탐침(O2 만 회복). 11-12 추가(3.1절): GS-05 영향 출처·1주문/2상세·P·E 확보일, GS-07 NULL·GS-08 0 구분(집계·항목·donor·결과 행), GS-11 공여 객체·배정 추적 |
 | `test_evaluation_gs03_options.py` | 음성: KR 재고 0 → T9 가 NO_SUPPLY, KR NOT_FEASIBLE → T11 이 KEEP 1위. 같은 입력 = 같은 서명 |
-| `test_evaluation_gs04_allocation.py` | GS-04 D−1 배정(확보 집합·대기·보호량·대기 원인·보유·예약·확보일·출고일) |
+| `test_evaluation_gs04_allocation.py` | GS-04 D−1 배정(확보 집합·대기·보호량·대기 원인·보유·예약·확보일·출고일), 03-10 마감 보유(11-12 추가) |
 | `test_evaluation_gs06_hold.py` | GS-06 엔진 Hold 요약(ON_HOLD·VALIDATING·REQUIRED_DATA_INVALID·1·false·의존 범위 없음)과 대조군 |
 | `test_evaluation_hold_shape.py` | GS-06 → 서버 `hold_summary(...).columns()` 가 analysis_runs 열과 같고, 보류 요약으로 결과 행 저장은 거부 |
 | `test_evaluation_gs09_signature.py` | GS-09 변경 A(STALE·RELEVANT_ORDER_CHANGED)·B(유지), 서명 다름/같음, R1 = GS-03 |
@@ -32,7 +32,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | `test_evaluation_engine_selfcheck.py` | 엔진 자체 검사 31건(결과 파일은 임시 폴더), DB 저장 검사 52건(ROLLBACK, 거부 0, 행 수 그대로), 음성(CHECK 위반 행 거부) |
 | `test_evaluation_explanation.py` | READY 9건 설명 생성 → T12 재검증 PASSED(9건 모두, 4.1절 엔진 수정판), 수정판 토크나이저 고정 |
 
-실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움).
+실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움). 11-12(3.1절 정답표 PASS 항목 추가, develop `47470cc` 위): 이 폴더 전체 **136 통과·17 건너뜀**(추가 전 132·17, 새 시험 4건).
 
 ## 3. 정답표 대조 결과 (11-06)
 
@@ -49,6 +49,26 @@ GLOW-50 에서 만든 평가 시나리오 10건(`Data/평가시나리오_검토�
 | GS-10 후속 실행 | 트리거·AUTO/SCHEDULE_WORSENED·D' 03-11·E' 04-06·R1 STALE DELAY_SCHEDULE_CHANGED, 새 실행 소진일 03-11·90/260/170·KR 260/170/03-21 | 모두 일치 |
 | GS-11 기존 위험 + OTHER | O2 PRE_EXISTING·O1 DELAY_INDUCED, T11 KR 1★·OTHER 2·KEEP 3, KR·OTHER 전체 회복 2, OTHER 180/70/잔여 30/03-16, 탐침(공여 200) O2 만 회복·지연 증분 0 | 모두 일치 |
 | AI 설명(READY 9건) | 설명 통과 + T12 PASSED | 11-06 에는 GS-05 만 통과(8건 엔진 검증기 문제, 4.1절). **11-11 엔진 수정판으로 9건 모두 일치** |
+
+### 3.1 정답표 PASS 항목 추가 (11-12)
+
+평가 2단계(#129) 리뷰에서, 정답표 PASS 조건 중 1단계 시험이 견주지 않던 칸을 찾아 더했습니다. 기대값 출처는 GLOW-50 최종정답표 v6(`05_정답계약검증/정답/GLOW-50_최종정답표_v6.md`, SHA-256 `7bbc15fd…`) 2·3절과 원본 독립검증반영본의 시나리오별 PASS 문장입니다. 엔진 파일은 바꾸지 않았습니다.
+
+| 시나리오 | 더한 칸 | 정답표 값 | 시험 |
+| --- | --- | --- | --- |
+| GS-04 | 03-10 마감 보유 | X 10·Y 5·Z 3(03-10 은 확보만, 출고 03-11) | `test_on_hand_0310_matches_answer_sheet`. fixture `gs04()` 가 돌려주지 않아, 그 함수가 부르는 배정기(`simulate`)의 하루치 결과를 받아 본다 |
+| GS-05 | 영향 집합·출처, 위험 단위, 확보일 | {X, Y}, X `FORECAST_INCREMENT`·Y `DELAY_INDUCED_ORDER_LINE`, 1주문/2상세, P 03-22 → 03-25, E 03-30 → 04-02 | `test_gs05_companion_sku_matches_answer_sheet` |
+| GS-07 OTHER | 판정 불가는 NULL(G-2) | 전체 회복·미회복 수·일부 확보·잔여 준비 NULL, CREAM20 `NOT_ESTIMABLE`·감소·잔여·확정·공급 NULL, donor `N2`·다음 입고 null·60/0/0/70·계산 칸 6개 null | `ANSWERS["GS-07"]` 대응안 값, `test_gs07_other_item_and_donor_are_null_not_zero` |
+| GS-08 KR | 계산을 끝낸 불가는 0(G-3) | 회복 집계 0 / 0 / 1 / 0, O1 1행(`NOT_RECOVERED`·`NOT_SECURED`·확보 0·회복 0·배송·공급원 null), LOTION40 `NOT_APPLICABLE`·"0.0000"·"60.0000"·0·60 | `ANSWERS["GS-08"]` 대응안 값 |
+| GS-11 OTHER | 공여 객체, 배정 추적 | 300/0/0/70, "50.0000", "180.0000" → 180, 주문 층 110, "1.0000", 예측 확보 70, 180 → O2 30(150) → O1 80(70) | `test_gs11_donor_and_allocation_trace_match_answer_sheet` |
+
+- **틀린 값을 잡는지(시험 밖 스크립트, 되돌림):**
+  - GS-04: 기대값을 6/3/0(03-10 에 출고했다면)으로 바꾸면 실패.
+  - GS-05: O1 의 Y 상세를 배정 입력에서 빼면 P 확보 03-18·배송 03-21 로 당겨져 실패(04_오류검출_대응표 "X 만 보면 더 이른 확보·배송").
+  - GS-08·GS-07: KR 회복 집계를 NULL 로, OTHER 집계를 0 으로 바꾸면 각각 실패(대응표 "불가를 NULL 로 저장하는 오류").
+  - GS-11: 공여 보유를 300 → 320 으로 바꾸면 실패.
+- **배정 순서:** 엔진 결과에는 배정 순서가 따로 없어 GS-11 추적은 정답표 순서(O2 → O1)로 주문별 확보량을 빼서 만듭니다. 순서 자체는 탐침 시험(공여 200 이면 O2 만 회복)이 봅니다.
+- **넣지 않은 것:** GS-05 의 KR 확보일 03-22 는 엔진 결과에 날짜로 따로 나오지 않습니다(상세별 확보 수량만 있음). KR 배송 03-25 는 이미 봅니다. GS-09 R1 최종 선택 거부(409 `ANALYSIS_STALE`)는 서비스 API 라 2단계 후속에서 다룹니다.
 
 ## 4. 발견 (엔진·다른 담당 몫, 결정 대기)
 
