@@ -176,7 +176,11 @@ class DataVersion(CamelModel):
 
 
 class DataWarning(CamelModel):
-    """입력 확정 때 마지막 수집이 실패·지연이던 원천"""
+    """
+    분석을 시작할 때 정한 데이터 경고(이슈 #122). 원천 하나에 하나.
+      - lastStatus = FAILED 면 그 원천의 마지막으로 끝난 수집이 실패
+      - 그 밖(SUCCEEDED·PARTIAL_SUCCESS)이면 수집은 됐지만 자료가 실행 날짜까지 없어 기준일 D 를 당김(재고·주문)
+    """
 
     source_domain: str
     last_status: str
@@ -433,7 +437,16 @@ class AnalysisRunDetailResponse(CamelModel):
                     for v in detail.data_versions
                 ],
                 data_basis_at=detail.data_basis_at,
-                data_warnings=[],
+                data_warnings=[
+                    DataWarning(
+                        source_domain=w["source_domain"],
+                        last_status=w["last_status"],
+                        last_finished_at=w.get("last_finished_at"),
+                    )
+                    for w in sorted(
+                        run.data_warnings or [], key=lambda w: w["source_domain"]
+                    )
+                ],
             ),
             inventory_impacts=[_impact(row) for row in detail.inventory_impacts],
             at_risk_orders=_group_at_risk_orders(

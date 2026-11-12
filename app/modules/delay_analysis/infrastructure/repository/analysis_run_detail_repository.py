@@ -35,7 +35,7 @@ _RUN = text(
            r.final_explanation_json, r.explanation_validation_status,
            r.explanation_generated_at, r.model_name, r.prompt_version,
            r.failed_step, r.failure_code, r.attempt_count, r.retry_exhausted,
-           r.failure_message
+           r.failure_message, r.data_warnings
       FROM analysis_runs r
       JOIN operating_rule_sets rs
         ON rs.company_id = r.company_id
@@ -193,6 +193,8 @@ class AnalysisRunRow:
     attempt_count: int | None
     retry_exhausted: bool | None
     failure_message: str | None
+    # 데이터 경고(0010, 이슈 #122). NULL = 정하지 않음(분석 전·지연 해소·열이 생기기 전 실행)
+    data_warnings: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)

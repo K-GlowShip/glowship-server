@@ -1,13 +1,16 @@
+import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.core.rls_context import set_rls_context
 from app.core.security.auth import CurrentUser
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
@@ -41,6 +44,7 @@ from app.modules.delay_analysis.application.run_start.transitions import (
     find_unfinished_runs,
     retire_unstarted_run_of_closed_episode,
 )
+from app.modules.delay_analysis.infrastructure.engine import engine_input as EI
 from app.modules.delay_analysis.infrastructure.repository.analysis_run_detail_repository import (
     AnalysisRunDetailRepository,
 )
@@ -752,3 +756,159 @@ async def test_save_limit_during_db_query_is_saved_again_on_a_new_session():
         assert engine.pool.checkedout() == 0
     finally:
         await engine.dispose()
+
+
+# --- 데이터 경고 (이슈 #122) ------------------------------------------------------------------
+
+_DATA_WARNINGS = text(
+    "SELECT data_warnings FROM analysis_runs WHERE analysis_run_id = :id"
+)
+_CLEAR_DATA_WARNINGS = text(
+    "UPDATE analysis_runs SET data_warnings = NULL WHERE analysis_run_id = :id"
+)
+_WARNINGS = (
+    {"source_domain": "SHIPMENT", "last_status": "FAILED",
+     "last_finished_at": "2026-07-02T00:00:30+00:00",
+     "reasons": ["LAST_SYNC_FAILED"], "limit_date": None},
+)  # fmt: skip
+
+
+async def test_runner_saves_data_warnings_with_the_hold_result(db_write_session):
+    """보류도 결과 저장과 같은 트랜잭션에서 분석 준비가 정한 데이터 경고를 쓴다(저장값 그대로, reasons 포함)."""
+    db = db_write_session
+    rid = await _run_of(db, "ON_HOLD")
+    company = await _reset(db, rid)
+    await db.execute(_CLEAR_DATA_WARNINGS, {"id": rid})
+
+    @asynccontextmanager
+    async def same_session():
+        yield db
+
+    runner = AnalysisRunner(
+        open_session=same_session,
+        runtime_factory=lambda s, r, t: fake_runtime(
+            FakeScenario(hold_code="REQUIRED_DATA_INVALID", data_warnings=_WARNINGS)
+        ),
+        save_time=lambda run: run.started_at,
+    )
+    assert runner.start(company, rid)
+    await runner.wait_idle()
+
+    assert (await _row(db, rid)).status == "ON_HOLD"
+    assert await db.scalar(_DATA_WARNINGS, {"id": rid}) == list(_WARNINGS)
+
+
+async def test_runner_saves_empty_list_when_nothing_to_warn(db_write_session):
+    """정했는데 경고가 없으면 [] (NULL = 정하지 않음과 구분)."""
+    db = db_write_session
+    rid = await _run_of(db, "ON_HOLD")
+    company = await _reset(db, rid)
+    await db.execute(_CLEAR_DATA_WARNINGS, {"id": rid})
+
+    @asynccontextmanager
+    async def same_session():
+        yield db
+
+    runner = AnalysisRunner(
+        open_session=same_session,
+        runtime_factory=lambda s, r, t: fake_runtime(
+            FakeScenario(hold_code="REQUIRED_DATA_INVALID")
+        ),
+        save_time=lambda run: run.started_at,
+    )
+    assert runner.start(company, rid)
+    await runner.wait_idle()
+
+    assert await db.scalar(_DATA_WARNINGS, {"id": rid}) == []
+
+
+_INSERT_SYNC = text(
+    "INSERT INTO data_sync_runs (data_sync_run_id, company_id, source_domain, connection_method,"
+    " started_at, finished_at, status, received_record_count, loaded_record_count,"
+    " rejected_record_count, applied_seq)"
+    " VALUES (:id, :company, :domain, 'API', :started, :finished, :status, :n, :n, :r, :seq)"
+)
+
+
+async def _insert_sync(db, company, domain, status, started, seq=None):
+    applied = status in ("SUCCEEDED", "PARTIAL_SUCCESS")
+    await db.execute(
+        _INSERT_SYNC,
+        {"id": uuid.uuid7(), "company": company, "domain": domain, "status": status,
+         "started": started,
+         "finished": None if status == "RUNNING" else started + timedelta(seconds=30),
+         "n": 0 if applied else None, "r": 0 if applied else None,
+         "seq": seq},
+    )  # fmt: skip
+
+
+async def test_last_finished_syncs_follow_engine_input_range(db_write_session):
+    """
+    원천별 마지막으로 끝난 수집은 엔진 저장소가 수집 이력을 읽는 범위와 같다:
+    RUNNING 은 건너뛰고, 입력 확정 시각 뒤에 시작한 것·입력 순번보다 큰 적용 순번·다른 고객사 것은 보지 않는다.
+    실패 수집(적용 순번 없음)은 범위 안이면 본다.
+    """
+    db = db_write_session
+    company = await db.scalar(
+        text("SELECT company_id FROM data_sync_runs ORDER BY company_id LIMIT 1")
+    )
+    if company is None:
+        pytest.skip("수집 이력이 없는 DB 라 건너뜀")
+    other = await db.scalar(
+        text("SELECT company_id FROM companies WHERE company_id <> :c LIMIT 1"),
+        {"c": company},
+    )
+    seq = await db.scalar(
+        text("SELECT max(applied_seq) FROM data_sync_runs WHERE company_id = :c"),
+        {"c": company},
+    )
+    latest = await db.scalar(text("SELECT max(started_at) FROM data_sync_runs"))
+    confirm = (latest + timedelta(days=1)).replace(microsecond=0)
+    run = SimpleNamespace(company_id=company, started_at=confirm, input_seq=seq)
+    before = await EI._last_finished_syncs(db, run)
+
+    await _insert_sync(db, company, "SHIPMENT", "FAILED", confirm - timedelta(hours=1))
+    await _insert_sync(
+        db, company, "SHIPMENT", "RUNNING", confirm - timedelta(minutes=30)
+    )
+    await _insert_sync(
+        db, company, "ORDER", "SUCCEEDED", confirm - timedelta(minutes=10), seq + 1
+    )
+    await _insert_sync(db, company, "INVENTORY", "FAILED", confirm + timedelta(hours=1))
+    if other is not None:
+        await _insert_sync(
+            db, other, "PRODUCT", "FAILED", confirm - timedelta(minutes=5)
+        )
+    after = await EI._last_finished_syncs(db, run)
+
+    assert (
+        after["SHIPMENT"].status == "FAILED"
+    )  # RUNNING 보다 앞이지만 끝난 것 중 마지막
+    assert after["SHIPMENT"].finished_at == confirm - timedelta(minutes=59, seconds=30)
+    for domain in ("ORDER", "INVENTORY", "PRODUCT", "WAREHOUSE"):
+        assert after.get(domain) == before.get(domain), domain
+
+
+async def test_worker_role_writes_data_warnings_and_check_keeps_a_list(
+    db_write_session,
+):
+    """워커 역할(행 보안 적용)로 새 열을 쓸 수 있고(0001 표 단위 권한), 목록이 아닌 값은 CHECK 가 막는다(0010)."""
+    db = db_write_session
+    rid = await _run_of(db, "NO_DELAY")
+    company = (await _row(db, rid)).company_id
+    await set_rls_context(db, user_id=None, company_id=company)
+    await db.execute(text("SET LOCAL ROLE glowship_v4_worker"))
+    write = text(
+        "UPDATE analysis_runs SET data_warnings = CAST(:w AS jsonb)"
+        " WHERE company_id = :c AND analysis_run_id = :id"
+    )
+
+    done = await db.execute(
+        write, {"w": json.dumps(list(_WARNINGS)), "c": company, "id": rid}
+    )
+    assert done.rowcount == 1
+    with pytest.raises(DBAPIError, match="analysis_runs_data_warnings_ck"):
+        async with db.begin_nested():
+            await db.execute(
+                write, {"w": json.dumps({"not": "a list"}), "c": company, "id": rid}
+            )

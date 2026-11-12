@@ -37,7 +37,7 @@ from app.modules.delay_analysis.infrastructure.repository.delay_event_read_repos
       - 저장된 결과를 그대로 돌려줍니다. 상태별로 비는 묶음(NO_DELAY·ON_HOLD·도구 실패 FAILED 의 결과 행 등)은
         저장기가 행을 만들지 않은 결과이고, 여기서 따로 지우거나 만들지 않습니다(명세 4.5 "상태별로 보이는 내용").
       - 대상은 지연 조회(4.4)와 같은 함수로 만듭니다(D13): 선적의 현재 단계·입고일, 경로, 대표 상품, 지연 일수.
-      - dataWarnings 는 아직 빈 목록입니다. 입력 확정 때의 수집 상태를 남기는 일은 백그라운드 실행·저장 작업에서 합니다(GLOW-115 범위 밖).
+      - dataWarnings 는 분석을 시작할 때 정해 저장한 analysis_runs.data_warnings 를 그대로 냅니다(이슈 #122). 비어 있으면(NULL) 빈 목록.
 """
 
 

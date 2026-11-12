@@ -19,6 +19,7 @@ async def prepare_node(state: AnalysisState, config: RunnableConfig) -> dict:
       2) 엔진 입력 만들기(build_engine_input): 보류면 ON_HOLD(VALIDATING)로 끝냄.
          보류는 이 단계에서만 낸다(결정 1). 실패 요약은 #28 hold_summary(보류 코드·판정한 쪽 문구).
       3) 엔진 입력을 실행 도구 묶음에 한 번 담는다(뒤 노드의 도구 문맥 ctx.engine).
+      4) 엔진 입력(보류 포함)이 정한 데이터 경고를 상태에 싣는다(이슈 #122). 값만 나르고, 쓰기는 저장이 한다.
     권한·중복은 실행 생성(#21, 고객사 잠금 L1)이, STALE 은 조정 에이전트 진입 확인이 맡는다.
     """
     runtime = runtime_of(config)
@@ -29,6 +30,8 @@ async def prepare_node(state: AnalysisState, config: RunnableConfig) -> dict:
         return {**update, "outcome": AnalysisOutcome.NO_DELAY, "no_delay": no_delay}
 
     built = await runtime.preparer.build_engine_input()
+    # 데이터 경고가 없는 엔진 입력(시험 장치 등)은 빈 목록으로 본다
+    update["data_warnings"] = [dict(w) for w in getattr(built, "data_warnings", ())]
     if isinstance(built, EngineHoldLike):
         return {
             **update,

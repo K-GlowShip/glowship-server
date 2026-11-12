@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.delay_analysis.application.agent.retry import (
@@ -25,6 +26,7 @@ from app.modules.delay_analysis.application.run_creation.run_creation_service im
 )
 from app.modules.delay_analysis.application.run_start.transitions import StartedRun
 from app.modules.delay_analysis.infrastructure.analysis_enums import CompletedStatus
+from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
     recalculator_or_none,
 )
@@ -104,7 +106,36 @@ async def save_graph_outcome(
     그래프 종료 상태대로 저장한다. STALE 이면 저장하지 않고 None.
     recalculate=False: 저장 직후 재판정에 판정 서명 재계산을 쓰지 않는다(걸린 변경이 있으면 STALE, 놓치지 않는 쪽).
     실행기가 저장 시간 제한을 넘겨 다시 저장할 때만 넘긴다(이슈 #123).
+    결과를 저장했고 상태에 데이터 경고가 있으면 같은 트랜잭션에서 analysis_runs.data_warnings 에 쓴다(이슈 #122).
+    지연 해소(NO_DELAY)는 엔진 입력을 만들지 않아 경고가 없고 열은 NULL 그대로다.
     """
+    saved = await _save_by_outcome(db, run, state, now=now, recalculate=recalculate)
+    if saved is not None and saved.saved and "data_warnings" in state:
+        await _record_data_warnings(db, run, state["data_warnings"])
+    return saved
+
+
+async def _record_data_warnings(
+    db: AsyncSession, run: StartedRun, warnings: list[dict[str, Any]]
+) -> None:
+    await db.execute(
+        update(AnalysisRun)
+        .where(
+            AnalysisRun.company_id == run.company_id,
+            AnalysisRun.analysis_run_id == run.analysis_run_id,
+        )
+        .values(data_warnings=[dict(w) for w in warnings])
+    )
+
+
+async def _save_by_outcome(
+    db: AsyncSession,
+    run: StartedRun,
+    state: Mapping[str, Any],
+    *,
+    now: datetime | None,
+    recalculate: bool,
+) -> ResultSaveOutcome | None:
     outcome = state.get("outcome")
     if outcome is not None and outcome != AnalysisOutcome.ON_HOLD:
         await record_input_data_versions(db, run)

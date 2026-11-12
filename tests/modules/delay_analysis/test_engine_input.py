@@ -411,6 +411,61 @@ def test_no_data_at_all_keeps_run_date_for_engine_hold():
     )  # fmt: skip
 
 
+# --- 데이터 경고 (이슈 #122) ------------------------------------------------------------------
+
+_T = datetime(2026, 1, 10, 0, 10, 30, tzinfo=UTC)
+
+
+def _last(status="SUCCEEDED", finished_at=_T):
+    return EI.LastFinishedSync(status, finished_at)
+
+
+def _late(*sources, inventory=date(2026, 1, 9), order=date(2026, 1, 9)):
+    return EI.BaseDateResolution(
+        base_date=date(2026, 1, 9), run_date=date(2026, 1, 10),
+        inventory_limit=inventory, order_limit=order, late_sources=tuple(sources),
+    )  # fmt: skip
+
+
+def test_data_warnings_failed_sync_and_late_source():
+    # 실패한 원천(다섯 원천 아무거나)과 기준일을 당긴 원천(재고·주문)을 원천 이름순으로, 원천 하나에 항목 하나
+    syncs = {"SHIPMENT": _last("FAILED"), "INVENTORY": _last(), "ORDER": _last("FAILED"),
+             "PRODUCT": _last("PARTIAL_SUCCESS"), "WAREHOUSE": _last()}  # fmt: skip
+    warnings = EI.data_warnings_of(syncs, _late("INVENTORY", "ORDER"))
+
+    assert [w["source_domain"] for w in warnings] == ["INVENTORY", "ORDER", "SHIPMENT"]
+    inventory, order, shipment = warnings
+    assert inventory == {
+        "source_domain": "INVENTORY", "last_status": "SUCCEEDED",
+        "last_finished_at": "2026-01-10T00:10:30+00:00",
+        "reasons": [EI.BASE_DATE_LIMITED], "limit_date": "2026-01-09",
+    }  # fmt: skip
+    assert order["reasons"] == [EI.LAST_SYNC_FAILED, EI.BASE_DATE_LIMITED]
+    assert (shipment["reasons"], shipment["limit_date"]) == (
+        [EI.LAST_SYNC_FAILED],
+        None,
+    )
+
+
+def test_data_warnings_empty_when_all_in_and_succeeded():
+    # 다섯 원천이 다 들어온 날: 실패도, 당긴 원천도 없으면 빈 목록(부분 성공은 실패가 아님)
+    syncs = {
+        d: _last() for d in ("INVENTORY", "ORDER", "PRODUCT", "SHIPMENT", "WAREHOUSE")
+    }
+    syncs["PRODUCT"] = _last("PARTIAL_SUCCESS")
+    assert EI.data_warnings_of(syncs, _late()) == ()
+
+
+def test_data_warnings_skip_source_without_sync_history():
+    # 수집 이력이 없는 원천은 당긴 원천이어도 항목을 만들지 않는다(엔진 보류가 알림). 근거가 없으면(None) 실패만 본다
+    assert EI.data_warnings_of({}, _late("INVENTORY")) == ()
+    only_failed = EI.data_warnings_of({"SHIPMENT": _last("FAILED", None)}, None)
+    assert only_failed == (
+        {"source_domain": "SHIPMENT", "last_status": "FAILED", "last_finished_at": None,
+         "reasons": [EI.LAST_SYNC_FAILED], "limit_date": None},
+    )  # fmt: skip
+
+
 def _run_input(stage, expected):
     return EI._RunInput(
         shipment_id=uuid.UUID(int=42), confirm_t="2026-01-10T00:10:00Z", run_date=date(2026, 1, 10),
@@ -474,7 +529,9 @@ def test_build_passes_trigger_stage_and_expected_date_to_engine(monkeypatch):
     )
     assert resolved[0] == ("STORE", COMPANY, "2026-01-10T00:10:00Z")
     assert calls[1][3:] == (None, None)
-    assert hold == EI.EngineHold(code="REQUIRED_DATA_INVALID", message="재고 행 없음")
+    assert (hold.code, hold.message) == ("REQUIRED_DATA_INVALID", "재고 행 없음")
+    # 보류여도 기준일 D 의 근거를 싣는다(데이터 경고용, 이슈 #122)
+    assert hold.base_date_resolution.base_date == date(2026, 1, 9)
     assert (
         checked == [("STORE", {"snap": 1})] * 2
     )  # 엔진이 보류한 세 번째는 검사하지 않음
@@ -677,7 +734,8 @@ def test_engine_hold_comes_before_operating_rule_hold(monkeypatch):
         monkeypatch, engine.snap, hold=("MISSING_REQUIRED_DATA", "행사 일정 없음")
     )
 
-    assert _build(engine) == EI.EngineHold("MISSING_REQUIRED_DATA", "행사 일정 없음")
+    built = _build(engine)
+    assert (built.code, built.message) == ("MISSING_REQUIRED_DATA", "행사 일정 없음")
     assert calls == ["build"]
 
 
@@ -790,9 +848,8 @@ async def _check_run(session, run: AnalysisRun) -> str:
 
     built = await EI.build_engine_input(session, run)
     if run.completed_status == "ON_HOLD":
-        assert built == EI.EngineHold(code=run.failure_code, message=built.message), (
-            run.run_code
-        )
+        assert isinstance(built, EI.EngineHold), (run.run_code, built)
+        assert built.code == run.failure_code, run.run_code
         return "ON_HOLD"
     assert isinstance(built, EI.EngineInput), (run.run_code, built)
     # ⑪ overlay 실행은 모두 그날 수집이 입력에 들어온 뒤에 만들어져 새 규칙(#51)으로도 D = 실행 날짜, 늦은 원천 없음
@@ -803,6 +860,8 @@ async def _check_run(session, run: AnalysisRun) -> str:
         run_date,
         (),
     ), run.run_code
+    # 이슈 #122 시험 ②: 다섯 원천이 다 들어온 날(확정 데이터에는 실패 수집도 없음) → 데이터 경고 없음
+    assert built.data_warnings == (), run.run_code
     assert built.snap["D"] == built.base_date == basis.base_date, run.run_code
     decision = EI.decision_of(built)
     if (
@@ -920,6 +979,15 @@ async def test_run_before_next_days_collections_uses_last_data_day(
     assert (basis.run_date, basis.base_date, basis.late_sources) == (
         run_day + timedelta(days=1), run_day, ("INVENTORY", "ORDER"))  # fmt: skip
     assert built.base_date == built.snap["D"] == run_day
+    # 이슈 #122 시험 ①: 기준일을 당긴 두 원천이 데이터 경고로 남는다(수집은 성공, 자료가 실행 날짜까지 없음)
+    assert [(w["source_domain"], w["reasons"], w["limit_date"]) for w in built.data_warnings] == [
+        ("INVENTORY", [EI.BASE_DATE_LIMITED], basis.inventory_limit.isoformat()),
+        ("ORDER", [EI.BASE_DATE_LIMITED], basis.order_limit.isoformat()),
+    ]  # fmt: skip
+    assert {w["last_status"] for w in built.data_warnings} <= {
+        "SUCCEEDED",
+        "PARTIAL_SUCCESS",
+    }
     decision = EI.decision_of(built)
     assert decision.decision_signature_sha256 == run.decision_signature_sha256
     assert decision.dependency_scope == run.dependency_scope
@@ -976,9 +1044,10 @@ async def test_unsupported_operating_rules_in_db_hold_the_run(
     engine_store_cache().clear()
     held = await EI.build_engine_input(db, run)
 
-    assert held == EI.EngineHold(
-        code="REQUIRED_DATA_INVALID",
-        message=(
+    assert isinstance(held, EI.EngineHold)
+    assert (held.code, held.message) == (
+        "REQUIRED_DATA_INVALID",
+        (
             f"운영 기준 버전 {version}: 판매 기준 일수 14(계산은 28일만 지원),"
             f" 리드타임 AIR_TRANSIT {kr_code}→{region} BUSINESS_DAY(계산은 CALENDAR_DAY만 지원)"
         ),
