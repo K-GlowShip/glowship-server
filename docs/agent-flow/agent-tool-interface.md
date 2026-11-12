@@ -16,7 +16,7 @@
 | 엔진 입력 `build_engine_input`·`EngineInput`·`EngineHold`, `judge_no_delay`, `decision_of` | C | `infrastructure/engine/engine_input.py` |
 | T1~T5·T8 조회, T7·T6 계산 | C | `agent/tools/` 새 파일 |
 | T9 대응안 후보·사전 판정, T10 대응안 결과, T11 추천 순위 | A | `agent/tools/option_feasibility.py`(T9, #43), `option_outcomes.py`(T10, GLOW-133), `option_comparison.py`(T11, #44) |
-| T12 결과 검증, 설명 생성 `generate_explanation(ctx, *, now)`, 설명 자산 확인 `verify_explanation_assets()` | C | 설명 모듈 |
+| T12 결과 검증, 설명 생성 `generate_explanation(*, snap, analysis, analysis_run_id, shipment_code, now, adapter, tracer)`(노드는 `explain(ctx, now)`로 부름, 아래 "설명 함수 모양"), 설명 자산 확인 `verify_explanation_assets()` | C | 설명 모듈 |
 
 - 도구 함수는 **노드·상태·등록표를 import하지 않습니다.** 등록과 노드 호출은 그래프 쪽이 합니다.
 - 도구는 업무 DB에 쓰지 않습니다(agentflow 5.5). 엔진 값은 `ctx.engine`으로만 읽습니다.
@@ -93,7 +93,7 @@ ToolSpec(
 | 원천 응답 지연·일시 오류 | `TransientToolError` | 최대 2회 더 부름, 3회면 FAILED `TOOL_TEMPORARY_ERROR_EXHAUSTED`(소진) |
 | 시간 초과 | 던지지 않음(`ToolSpec.timeout_seconds`) | 최대 2회 더 부름, 3회면 FAILED `TOOL_TIMEOUT_EXHAUSTED`(소진) |
 | 고객사 범위 밖 | `PermissionDeniedError` | 재시도 없이 FAILED `PERMISSION_DENIED` |
-| 필수 자료 부족 | **던지지 않음**(결정 1). 보류는 prepare의 `EngineHold`에서만 | 그래도 `RequiredDataError`가 나면 재시도 없이 FAILED `UNEXPECTED_TOOL_ERROR`(메시지에 원래 코드) |
+| 필수 자료 부족 | **던지지 않음**(결정 1). 보류는 prepare의 `EngineHold`에서만 | 그래도 `RequiredDataError`가 나면 재시도 없이 FAILED `UNEXPECTED_TOOL_ERROR`(Client 문구는 고정, 원래 코드는 서버 로그 — 이슈 #57 2번) |
 | 대응안 하나의 사전 조건 실패 | 던지지 않음 — 그 대응안의 결과(`NOT_FEASIBLE`·집계 null, 명세 4.5 G-3, 계약 Q7) | 실행은 계속 |
 | 입력·출력 형식이 계약 모델이 아님, 등록되지 않은 도구, 그 밖의 예외(예: T11 정렬 값 null `ValueError`) | — | 재시도 없이 FAILED `UNEXPECTED_TOOL_ERROR` |
 
@@ -115,7 +115,7 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 노드는 `config["configurable"]["analysis_runtime"]`의 묶음에서 등록표·분석 준비(`judge_no_delay`·`build_engine_input`)·`decide`(`decision_of`)·`explain`·`final_check_input`(T12 입력)·기준일·입력 순번·추적기를 꺼냅니다. 분석 준비가 엔진 입력을 한 번 담고(`start`), 뒤 노드는 `runtime.call(도구, 입력, step=…)`으로 `call_tool`을 부릅니다. 자세한 것은 [그래프 문서](delay-analysis-graph.md) 5절 "실행 도구 묶음".
 
 - 엔진 입력·설명 생성 함수의 실제 타입을 import하지 않고 모양(Protocol)만 씁니다: `EngineHoldLike(code, message)`, `ExplanationFailedLike(model_name, prompt_version, failure_summary())`.
-- 엔진 대조가 다르거나 최종 확인(T12)에서 떨어지면 노드가 `code_error`로 `FAILED`(`UNEXPECTED_TOOL_ERROR`, `VALIDATING_OUTPUT`)를 올립니다.
+- 엔진 대조가 다르거나 최종 확인(T12)에서 떨어지면 노드가 `code_error`로 `FAILED`(`UNEXPECTED_TOOL_ERROR`, `VALIDATING_OUTPUT`)를 올립니다. Client 문구는 고정이고, 어느 값이 달랐는지는 서버 로그 경고로만 남습니다(이슈 #57 2번).
 - **도구 밖 함수의 예외(이슈 #57 1번, 결정 6):** 분석 준비·`decide`·`explain`·`final_check_input`·STALE 조회처럼 등록표를 거치지 않는 함수가 예외를 내도, 노드 래퍼(`graph.with_failure_stop`)가 `FAILED`·`UNEXPECTED_TOOL_ERROR`·시도 1·소진 아님 실패 요약으로 바꿉니다. 실패 단계는 그 노드의 단계(조정 에이전트는 재고 영향 결과 전·NO_RISK 판정까지 `ANALYZING_IMPACT`, 그 뒤 `ANALYZING_OPTIONS`)이고, 문구는 고정(`UNEXPECTED_ERROR_MESSAGE`)이며 예외 내용은 서버 로그로만 보냅니다. 실행 도구 묶음 연결 실수(`RuntimeWiringError`: 묶음 없음·다른 형식·실행 둘에 씀·분석 준비 전 도구 문맥)는 부르는 코드의 버그라 바꾸지 않고 올립니다. LangGraph 제어 신호(`GraphBubbleUp`: `interrupt`·`Command` 등)도 `Exception` 하위지만 오류가 아니라 LangGraph가 받아야 하므로 그대로 올립니다(지금은 쓰지 않음).
 
 ### 5.2 추적 연결 (GLOW-124)

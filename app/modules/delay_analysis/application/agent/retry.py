@@ -155,11 +155,15 @@ class FailureSummary:
 
 
 class ToolFailure(Exception):
-    """call_with_retry 가 멈출 때 던진다. 노드는 이것을 받아 실행을 끝낸다(outcome·failure)."""
+    """
+    call_with_retry 가 멈출 때 던진다. 노드는 이것을 받아 실행을 끝낸다(outcome·failure).
+    detail 은 서버 로그에만 남길 자세한 사유다(Client 문구 failure_message 에는 넣지 않음, 이슈 #57 2번).
+    """
 
-    def __init__(self, summary: FailureSummary):
+    def __init__(self, summary: FailureSummary, detail: str | None = None):
         super().__init__(summary.failure_message)
         self.summary = summary
+        self.detail = detail
 
 
 # --- 시도 기록(추적 연결용) -------------------------------------------------------------------
@@ -176,14 +180,47 @@ class AttemptRecord:
 
 
 # --- failure_message (한 곳에서 만든다. 문구를 바꾸려면 여기만 고친다) -------------------------------
+# failure_message 는 Client 에게 보일 사유와 재실행 방법이다(agentflow 7.1). 내부 함수 이름·대조 값·예외 내용은 넣지 않는다(이슈 #57 2번).
+# 예상하지 못한 오류(UNEXPECTED_TOOL_ERROR)는 원인과 상관없이 이 문장 하나(명세 v6.2 2절 문구, docs/frontend-api.md 실패 코드 표).
+# 자세한 사유는 ToolFailure.detail 로 넘겨 서버 로그에만 남긴다(graph.with_failure_stop).
+UNEXPECTED_ERROR_MESSAGE = "분석 중 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요."
+
+# 화면에 보일 도구 이름(agentflow 7.1 예 "판매량 조회가 시간 초과로 3번 모두 실패했습니다"). 설계 문서에는 T4 예만 있어 나머지는 같은 꼴로 정함.
+# 키는 ToolName 값(tools/common.py)이다. retry 는 tools 를 import 하지 않으므로 문자열로 둔다.
+TOOL_LABELS: dict[str, str] = {
+    "get_delay_context": "지연 정보 조회",  # T1
+    "get_inventory_snapshot": "재고 조회",  # T2
+    "get_inbound_schedule": "입고 일정 조회",  # T3
+    "get_sales_history": "판매량 조회",  # T4
+    "get_open_orders": "미출고 주문 조회",  # T5
+    "calculate_inventory_impact": "재고 영향 계산",  # T6
+    "identify_at_risk_orders": "위험 주문 확인",  # T7
+    "get_operating_rules": "운영 기준 조회",  # T8
+    "check_option_feasibility": "대응안 가능 여부 확인",  # T9
+    "calculate_option_outcomes": "대응안 결과 계산",  # T10
+    "compare_options": "대응안 비교",  # T11
+    "validate_agent_output": "결과 검증",  # T12
+}
+# 표에 없는 이름(시험용 가짜 도구 등)도 내부 이름을 보이지 않는다
+UNKNOWN_TOOL_LABEL = "분석 도구"
+
+
+def tool_label(tool_name: str) -> str:
+    """화면에 보일 도구 이름 + 주격 조사(이/가). 예: "판매량 조회가", "재고 영향 계산이"."""
+    label = TOOL_LABELS.get(tool_name, UNKNOWN_TOOL_LABEL)
+    last = ord(label[-1]) - 0xAC00  # 한글 음절이면 받침 유무로 조사를 고른다
+    return label + ("이" if 0 <= last < 11172 and last % 28 else "가")
+
+
 def _tool_message(tool_name: str, code: str, attempts: int) -> str:
-    if code == TOOL_TIMEOUT_EXHAUSTED:
-        return f"{tool_name} 도구가 시간 초과로 {attempts}번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요."
-    if code == PERMISSION_DENIED:
-        return f"{tool_name} 도구가 권한 오류로 멈췄습니다(재시도하지 않음). 접근 권한을 확인하세요."
     if code == UNEXPECTED_TOOL_ERROR:
-        return f"{tool_name} 도구가 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요."
-    return f"{tool_name} 도구가 일시 오류로 {attempts}번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요."
+        return UNEXPECTED_ERROR_MESSAGE
+    who = tool_label(tool_name)
+    if code == TOOL_TIMEOUT_EXHAUSTED:
+        return f"{who} 시간 초과로 {attempts}번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요."
+    if code == PERMISSION_DENIED:
+        return f"{who} 권한 오류로 멈췄습니다(재시도하지 않음). 접근 권한을 확인하세요."
+    return f"{who} 일시 오류로 {attempts}번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요."
 
 
 # --- 실패 요약 만들기 ---------------------------------------------------------------------

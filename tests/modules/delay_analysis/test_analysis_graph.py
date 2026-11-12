@@ -283,23 +283,35 @@ async def test_지연_문맥_조회가_실패하면_조정_에이전트에서_FA
     assert result["visited_nodes"][-1] == "coordinator:failed"
 
 
-async def test_추천이_엔진_판정_서명과_다르면_설명_전에_FAILED로_멈춘다():
-    result, tracer, _ = await _run(
-        FakeScenario(engine_recommended=OptionType.KEEP_PLAN)
+def _warned(caplog) -> str:
+    """서버 로그 경고(코드 오류의 자세한 사유)를 한 문자열로"""
+    return "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
     )
+
+
+async def test_추천이_엔진_판정_서명과_다르면_설명_전에_FAILED로_멈춘다(caplog):
+    with caplog.at_level(logging.WARNING):
+        result, tracer, _ = await _run(
+            FakeScenario(engine_recommended=OptionType.KEEP_PLAN)
+        )
 
     failure = result["failure"]
     assert (failure.failed_step, failure.failure_code) == (
         AnalysisStep.VALIDATING_OUTPUT,
         UNEXPECTED_TOOL_ERROR,
     )
-    assert "추천" in failure.failure_message
+    # Client 문구는 고정, 어디가 다른지는 서버 로그에만(이슈 #57 2번)
+    assert failure.failure_message == UNEXPECTED_ERROR_MESSAGE
+    assert "추천: 엔진 KEEP_PLAN" in _warned(caplog)
     assert result["visited_nodes"][-1] == "compare:failed"
     assert T.VALIDATE_AGENT_OUTPUT not in tracer.first_calls()
     assert "decision" not in result
 
 
-async def test_대응안_값이_엔진과_다르면_어느_값인지_적고_FAILED로_멈춘다():
+async def test_대응안_값이_엔진과_다르면_어느_값인지_서버_로그에_적고_FAILED로_멈춘다(
+    caplog,
+):
     original = fake_tools(FakeScenario())[T.CALCULATE_OPTION_OUTCOMES].fn
 
     async def changed(ctx, payload):
@@ -312,13 +324,15 @@ async def test_대응안_값이_엔진과_다르면_어느_값인지_적고_FAIL
         ]
         return OptionOutcomes.model_construct(options=options)
 
-    result, _, _ = await _run(tools=_replace_tool(T.CALCULATE_OPTION_OUTCOMES, changed))
+    with caplog.at_level(logging.WARNING):
+        result, _, _ = await _run(
+            tools=_replace_tool(T.CALCULATE_OPTION_OUTCOMES, changed)
+        )
 
     assert result["outcome"] == AnalysisOutcome.FAILED
-    assert (
-        "OTHER_REGION_FULFILL.reduction_committed_total"
-        in result["failure"].failure_message
-    )
+    assert result["failure"].failure_message == UNEXPECTED_ERROR_MESSAGE
+    assert "OTHER_REGION_FULFILL.reduction_committed_total" in _warned(caplog)
+    assert str(result["analysis_run_id"]) in _warned(caplog)  # 어느 실행인지
 
 
 async def test_설명이_3번_실패하면_계산_결과를_남기고_FAILED로_끝난다():
@@ -338,15 +352,17 @@ async def test_설명이_3번_실패하면_계산_결과를_남기고_FAILED로_
     assert T.VALIDATE_AGENT_OUTPUT not in tracer.first_calls()
 
 
-async def test_최종_확인에서_떨어지면_연결_오류로_FAILED가_된다():
-    result, _, _ = await _run(FakeScenario(final_check_passes=False))
+async def test_최종_확인에서_떨어지면_연결_오류로_FAILED가_된다(caplog):
+    with caplog.at_level(logging.WARNING):
+        result, _, _ = await _run(FakeScenario(final_check_passes=False))
 
     failure = result["failure"]
     assert (failure.failed_step, failure.failure_code) == (
         AnalysisStep.VALIDATING_OUTPUT,
         UNEXPECTED_TOOL_ERROR,
     )
-    assert "NUMBER_MISMATCH@risk_summary#s1" in failure.failure_message
+    assert failure.failure_message == UNEXPECTED_ERROR_MESSAGE
+    assert "NUMBER_MISMATCH@risk_summary#s1" in _warned(caplog)
     assert result["visited_nodes"][-1] == "validate:failed"
 
 

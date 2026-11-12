@@ -1,3 +1,4 @@
+import logging
 import time
 
 import pytest
@@ -12,6 +13,7 @@ from app.modules.delay_analysis.application.agent.retry import (
     TOOL_TEMPORARY_ERROR_EXHAUSTED,
     TOOL_TIMEOUT_EXHAUSTED,
     UNEXPECTED_TOOL_ERROR,
+    tool_label,
 )
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
@@ -26,7 +28,7 @@ from tests.modules.delay_analysis import integration_support as S
       1. 종료 상태·실패 요약(단계·코드·시도 횟수·소진)·마지막 노드가 기대와 같은지
       2. 도구 12개의 호출 수가 정확히 기대와 같은지(재시도는 최대 2번, 멈춘 뒤 단계의 도구는 0번)
       3. 실패한 계산을 설명(언어 모델)으로 대신하지 않는지
-      4. 실패 문구에 도구 이름·사유·재실행 방법이 있고 예외 내용은 없는지
+      4. 실패 문구에 도구의 화면 이름·사유·재실행 방법이 있고 내부 이름·예외 내용은 없는지(이슈 #57 2번)
     를 본다. 기대값 가운데 정답 자료에 있는 것은 RT-1(E3 v2)·RT-2(E2 v1)·보류(E9 v1) 3건이고,
     나머지는 재시도 규칙(retry.py)과 agentflow 7절 문장이 근거다.
     재시도 함수·등록표 단위는 test_agent_retry·test_tool_registry 가, 그래프 갈래 하나씩은 test_analysis_graph 가 본다.
@@ -104,26 +106,35 @@ async def test_시도별_시간_제한을_3번_넘기면_정답_RT1과_같은_�
 
 
 @pytest.mark.parametrize("branch", TOOL_FAILURES, ids=_name)
-async def test_도구_실패_문구에_도구_이름과_사유와_재실행_방법이_있고_예외_내용은_없다(
+async def test_도구_실패_문구에_화면_이름과_사유와_재실행_방법이_있고_내부_이름과_예외_내용은_없다(
     branch,
 ):
     (tool,) = branch.setup().faults
     failure = (await S.run_branch(branch)).result["failure"]
     message = failure.failure_message
 
-    assert tool.value in message
+    assert tool.value not in message  # 내부 함수 이름은 Client 문구에 넣지 않는다
+    if failure.failure_code == UNEXPECTED_TOOL_ERROR:
+        assert message == UNEXPECTED_ERROR_MESSAGE  # 원인·도구와 상관없이 고정 문구
+    else:
+        assert message.startswith(tool_label(tool.value))  # 예: "판매량 조회가 …"
     assert REASON[failure.failure_code] in message
     how = "접근 권한" if failure.failure_code == PERMISSION_DENIED else "재분석"
     assert how in message
     assert S.SECRET not in message  # 예외 내용은 Client 문구에 넣지 않는다
 
 
-async def test_도구가_필수_자료_오류를_내면_보류가_아니라_FAILED이고_문구에_그_코드가_남는다():
-    run = await S.run_branch(S.BRANCHES["R07-도구의필수자료오류-T10"])
+async def test_도구가_필수_자료_오류를_내면_보류가_아니라_FAILED이고_그_코드는_서버_로그에만_남는다(
+    caplog,
+):
+    with caplog.at_level(logging.WARNING):
+        run = await S.run_branch(S.BRANCHES["R07-도구의필수자료오류-T10"])
 
     failure = run.result["failure"]
     assert failure.status == AnalysisOutcome.FAILED
-    assert MISSING_REQUIRED_DATA in failure.failure_message
+    assert failure.failure_message == UNEXPECTED_ERROR_MESSAGE
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(MISSING_REQUIRED_DATA in m for m in warned)
 
 
 @pytest.mark.parametrize(

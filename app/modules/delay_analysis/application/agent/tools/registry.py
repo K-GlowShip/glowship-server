@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.modules.delay_analysis.application.agent.retry import (
+    UNEXPECTED_ERROR_MESSAGE,
     UNEXPECTED_TOOL_ERROR,
     FailureSummary,
     ToolFailure,
@@ -85,7 +86,10 @@ class ToolRegistry(Mapping[ToolName, ToolSpec]):
 
 
 def code_error(name: str, step: AnalysisStep, attempt: int, why: str) -> ToolFailure:
-    """재시도 없이 멈추는 코드 오류(FAILED·UNEXPECTED_TOOL_ERROR). 노드가 도구 출력의 연결 오류를 알릴 때도 쓴다."""
+    """
+    재시도 없이 멈추는 코드 오류(FAILED·UNEXPECTED_TOOL_ERROR). 노드가 도구 출력의 연결 오류를 알릴 때도 쓴다.
+    Client 문구는 예상하지 못한 오류의 고정 문구이고, 도구 이름과 사유(why)는 서버 로그로만 간다(이슈 #57 2번).
+    """
     return ToolFailure(
         FailureSummary(
             status=AnalysisOutcome.FAILED,
@@ -93,8 +97,9 @@ def code_error(name: str, step: AnalysisStep, attempt: int, why: str) -> ToolFai
             failure_code=UNEXPECTED_TOOL_ERROR,
             attempt_count=attempt,
             retry_exhausted=False,
-            failure_message=f"{name} 도구가 예상하지 못한 오류로 멈췄습니다({why}). 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요.",
-        )
+            failure_message=UNEXPECTED_ERROR_MESSAGE,
+        ),
+        detail=f"{name}: {why}",
     )
 
 

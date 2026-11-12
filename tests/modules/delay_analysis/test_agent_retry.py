@@ -12,8 +12,10 @@ from app.modules.delay_analysis.application.agent.retry import (
     MAX_ATTEMPTS,
     PERMISSION_DENIED,
     REQUIRED_DATA_INVALID,
+    TOOL_LABELS,
     TOOL_TEMPORARY_ERROR_EXHAUSTED,
     TOOL_TIMEOUT_EXHAUSTED,
+    UNEXPECTED_ERROR_MESSAGE,
     UNEXPECTED_TOOL_ERROR,
     AttemptRecord,
     FailureSummary,
@@ -24,11 +26,13 @@ from app.modules.delay_analysis.application.agent.retry import (
     call_with_retry,
     explanation_failure,
     hold_summary,
+    tool_label,
 )
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
     AnalysisStep,
 )
+from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 
 """
@@ -63,10 +67,12 @@ class Sleeps:
         self.waits.append(seconds)
 
 
-async def _fail(tool: FakeTool, **kwargs: Any) -> tuple[FailureSummary, Sleeps]:
+async def _fail(
+    tool: FakeTool, name: str = "get_sales_history", **kwargs: Any
+) -> tuple[FailureSummary, Sleeps]:
     sleeps = Sleeps()
     with pytest.raises(ToolFailure) as caught:
-        await call_with_retry("get_sales_history", STEP, tool, sleep=sleeps, **kwargs)
+        await call_with_retry(name, STEP, tool, sleep=sleeps, **kwargs)
     return caught.value.summary, sleeps
 
 
@@ -88,7 +94,52 @@ async def test_timeout_three_times_is_exhausted_failure():
         summary.attempt_count,
         summary.retry_exhausted,
     ) == (AnalysisOutcome.FAILED, STEP, TOOL_TIMEOUT_EXHAUSTED, 3, True)
-    assert "get_sales_history" in summary.failure_message
+    # agentflow 7.1 failure_message 예와 같은 문장(내부 함수 이름 get_sales_history 는 넣지 않음, 이슈 #57 2번)
+    assert summary.failure_message == (
+        "판매량 조회가 시간 초과로 3번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요."
+    )
+
+
+@pytest.mark.parametrize("name", list(ToolName), ids=lambda n: n.value)
+@pytest.mark.parametrize(
+    "errors",
+    [
+        (TimeoutError(), TimeoutError(), TimeoutError()),
+        (TransientToolError("UPSTREAM_BUSY"),) * 3,
+        (PermissionDeniedError(),),
+    ],
+    ids=["timeout", "transient", "permission"],
+)
+async def test_failure_message_shows_screen_name_not_function_name(name, errors):
+    """화면이 그대로 보이는 세 코드(docs/frontend-api.md 실패 코드 표)는 도구의 화면 이름 + 조사로 쓴다"""
+    # 도구마다 화면 이름이 있어야 함(없으면 "분석 도구")
+    assert name.value in TOOL_LABELS
+    summary, _ = await _fail(FakeTool(*errors), name=name.value)
+
+    assert summary.failure_message.startswith(tool_label(name.value) + " ")
+    assert name.value not in summary.failure_message
+    assert "_" not in summary.failure_message
+
+
+async def test_unexpected_error_message_is_fixed_and_unknown_tool_name_is_hidden():
+    """분류 안 된 예외는 도구와 상관없이 고정 문구, 표에 없는 도구 이름도 내부 이름을 보이지 않는다"""
+    summary, _ = await _fail(FakeTool(RuntimeError("db down")))
+    assert (summary.failure_code, summary.failure_message) == (
+        UNEXPECTED_TOOL_ERROR,
+        UNEXPECTED_ERROR_MESSAGE,
+    )
+
+    summary, _ = await _fail(FakeTool(PermissionDeniedError()), name="new_tool")
+    assert summary.failure_message.startswith("분석 도구가 권한 오류로")
+    assert "new_tool" not in summary.failure_message
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"), [("판매량 조회", "가"), ("결과 검증", "이")]
+)
+def test_tool_label_picks_subject_particle(monkeypatch, label, expected):
+    monkeypatch.setitem(TOOL_LABELS, "x", label)
+    assert tool_label("x") == label + expected
 
 
 async def test_success_after_two_transient_errors_returns_result():
