@@ -19,6 +19,7 @@ from app.core import llm
       - 외부로 나가지 않는다. 이 PC 의 가짜 HTTP 서버(127.0.0.1)가 제공자 응답 모양으로 답하고, 실제 LiteLLM 이 그 서버를 부른다.
         그래서 "LiteLLM 이 실제로 몇 번 요청하는지·오류를 무엇으로 바꾸는지·무엇을 출력하는지"를 본다.
       1. 세 제공자(OpenAI·Claude·Gemini) 응답에서 글·토큰 수·모델 이름을 읽고, 요청은 한 번, 키는 헤더로만 간다
+         모델에는 도구(tools·functions)를 넘기지 않는다. 모델은 글만 돌려주므로 외부 문장이 지시처럼 읽혀도 실행할 수단이 없다(AIR-010)
       2. 실패는 두 가지로만 올라온다: 시간 초과 / 그 밖(한도·인증·서버·거부·잘림·빈 응답·연결). 재시도는 없다(요청 1번)
       3. 키·프롬프트·제공자 원문은 예외 문구·로그·표준 출력 어디에도 없다
       4. LiteLLM 콜백(외부 기록)이 켜져 있으면 부르지 않는다. 가격표는 묶음에 든 것만 쓴다(원격 조회 없음)
@@ -263,6 +264,29 @@ def test_key_goes_in_header_and_prompt_is_one_user_message(
     sent = json.dumps(request.body, ensure_ascii=False)
     assert sent.count("PROMPT-MARKER") == 1
     assert '"system"' not in sent
+
+
+# 제공자마다 모델이 서버 쪽 함수를 부르게 하는 요청 칸(OpenAI·Claude·Gemini)
+TOOL_FIELDS = {
+    "tools",
+    "functions",
+    "tool_choice",
+    "function_call",
+    "toolConfig",
+    "tool_config",
+}
+
+
+@pytest.mark.parametrize("model", [OPENAI, ANTHROPIC, GEMINI])
+def test_model_gets_no_tools_so_it_can_only_answer_with_text(provider, model):
+    """AIR-010: 모델은 글만 돌려준다. 도구를 넘기지 않으므로 입력 속 지시문을 따라도 서버에서 실행할 것이 없다."""
+    provider.answer(BODY[model]())
+
+    _call(model, response_format={"type": "json_object"})
+
+    body = provider.requests[0].body
+    assert body  # 요청 본문을 실제로 읽었다
+    assert not TOOL_FIELDS & set(body), sorted(body)
 
 
 def test_json_mode_is_sent_to_openai_and_gemini(provider):
