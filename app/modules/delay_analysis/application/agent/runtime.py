@@ -29,6 +29,9 @@ from app.modules.delay_analysis.application.agent.tools.registry import (
       - 엔진 입력은 분석 준비 노드가 실행마다 한 번 만들어 여기에 담는다(start). 상태에 넣지 않는 이유:
         결과가 아니라 입력이고 고객사 전체 스냅샷이라 크다. 상태는 서비스가 받아 저장할 결과만 담는다.
       - 실행 하나에 묶음 하나. 다른 실행에 다시 쓰면 start 가 막는다(ToolContext 도 실행 하나에 하나).
+      - 실행이 끝나면 부르는 쪽(실행기)이 release 로 엔진 입력을 놓는다(이슈 #123). 그래프 설정이 이 묶음을 들고 있고,
+        노드 안에서 걸린 타이머(asyncpg 등)는 취소돼도 예정 시각까지 그 실행 문맥을 붙잡아(asyncio 동작), 놓지 않으면
+        엔진 저장소(0.3~0.5GB)가 실행이 끝난 뒤에도 남는다. 놓은 묶음을 다시 쓰면 연결 실수로 알린다.
       - 여기서는 노드가 쓰는 모양(Protocol)만 정한다. 실제 함수(엔진 입력 judge_no_delay·build_engine_input·decision_of,
         설명 생성 make_explainer, T12 입력 final_check_input, 실제 도구 12개)를 끼운 묶음은
         run_start/engine_runtime.build_engine_runtime 이 만든다. 시험은 가짜 묶음(fake_runtime)을 쓴다.
@@ -101,6 +104,7 @@ class AnalysisRuntime:
         asyncio.sleep
     )  # 재시도 사이 대기(시험에서 바꿈)
     _ctx: ToolContext | None = field(default=None, init=False, repr=False)
+    _released: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         missing = [name.value for name in ToolName if name not in self.registry]
@@ -114,6 +118,10 @@ class AnalysisRuntime:
         analysis_run_id: uuid.UUID,
         engine: EngineInputLike,
     ) -> ToolContext:
+        if self._released:
+            raise RuntimeWiringError(
+                "실행이 끝나 엔진 입력을 놓은 묶음입니다(실행 하나에 묶음 하나)"
+            )
         if self._ctx is not None:
             raise RuntimeWiringError(
                 "실행 도구 묶음은 실행 하나에만 씁니다(엔진 입력을 이미 담음)"
@@ -130,8 +138,20 @@ class AnalysisRuntime:
         )
         return self._ctx
 
+    def release(self) -> None:
+        """
+        실행이 끝나면 엔진 입력(도구 문맥 → 스냅샷·분석·엔진 저장소)을 놓는다. 저장은 그래프 상태만 쓰므로 끝난 뒤
+        이 묶음을 읽는 곳이 없다. 예외를 내지 않는다(실행기의 finally 에서 부름).
+        """
+        self._ctx = None
+        self._released = True
+
     @property
     def ctx(self) -> ToolContext:
+        if self._released:
+            raise RuntimeWiringError(
+                "실행이 끝나 엔진 입력을 놓은 묶음입니다(끝난 뒤에는 그래프 상태를 읽음)"
+            )
         if self._ctx is None:
             raise RuntimeWiringError("분석 준비(엔진 입력) 전에는 도구 문맥이 없습니다")
         return self._ctx

@@ -71,6 +71,7 @@ from app.modules.delay_analysis.infrastructure.repository.run_status_repository 
         끝나면 aclose() 로 닫는다(동기 close 는 이벤트 루프를 멈춰 다른 실행의 도구가 시간 초과로 잡힘, PR #42 리뷰).
         추적기를 만들거나 닫다 예외가 나도 분석은 계속한다(agentflow 8.1 "장애 영향"). 만들기에 실패하면 추적 없이 돈다.
         없으면(기본) 추적하지 않는다.
+      - 메모리(이슈 #123): 그래프가 끝나면(예외 포함) 실행 묶음의 엔진 입력을 놓는다(AnalysisRuntime.release).
 """
 
 logger = logging.getLogger(__name__)
@@ -236,12 +237,14 @@ class AnalysisRunner:
         """그래프를 끝까지 돌리며 단계 전이를 하고 마지막 상태를 돌려준다."""
         step = AnalysisStep.VALIDATING
         final: dict[str, Any] | None = None
+        runtime: AnalysisRuntime | None = None
         async with self.open_session() as graph_db:
             try:
                 await set_rls_context(graph_db, user_id=None, company_id=run.company_id)
+                runtime = self.runtime_factory(graph_db, run, tracer)
                 config: dict[str, Any] = {
                     "configurable": {
-                        RUNTIME_KEY: self.runtime_factory(graph_db, run, tracer),
+                        RUNTIME_KEY: runtime,
                         "run_status_reader": AnalysisRunStatusReader(
                             lambda: _reuse(graph_db), run.company_id
                         ),
@@ -262,6 +265,10 @@ class AnalysisRunner:
                         step = next_step
                         await self._advance(run, step)
             finally:
+                # 끝난 실행의 엔진 입력을 놓는다(이슈 #123). 노드 안에서 걸린 타이머가 취소돼도 예정 시각까지 이 실행의
+                # 문맥(그래프 설정 → 실행 묶음)을 붙잡아, 놓지 않으면 엔진 저장소가 실행이 끝난 뒤에도 남는다.
+                if runtime is not None:
+                    runtime.release()
                 # 그래프 세션은 읽기만 한다. 실패한 트랜잭션이어도 되돌리고 닫는다(저장은 새 세션)
                 await graph_db.rollback()
         return final
