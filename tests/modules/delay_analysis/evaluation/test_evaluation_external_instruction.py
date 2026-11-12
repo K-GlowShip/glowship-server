@@ -38,7 +38,7 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 증명하지 못하는 것(한계): 검증을 통과하는 범위 안에서 어조를 바꾸는 것, 금지 표현 목록에 없는 새 표현.
         아래 승인 주장 시험이 그 예다 — "팀장 승인이 끝났습니다" 한 문장은 지금 검증을 통과한다(strict xfail).
         승인 절차 자체(최종 선택은 팀장 API 로만)는 바뀌지 않지만 화면에 거짓 문장이 보일 수 있어, 엔진 금지 표현에
-        더하도록 데이터 팀에 제안한다. 규칙이 들어오면 XPASS 로 알린다.
+        더하도록 데이터 팀에 제안한다(이슈 #135). 규칙이 들어오면 XPASS 로 알린다.
 """
 
 KEYS = ["GS-03", "GS-05", "GS-11"]  # 대응안이 2개 이상이고 추천이 KEEP 이 아닌 시나리오
@@ -202,7 +202,7 @@ def test_model_input_document_has_no_free_sentences(scenario):
 @pytest.mark.xfail(
     strict=True,
     reason="한계: '팀장 승인이 끝났습니다' 같은 승인 주장은 지금 엔진 금지 표현(ko-v2)에 없어 설명 검증을 통과한다. "
-    "승인 절차 자체는 바뀌지 않음(최종 선택은 팀장 API 만). 데이터 팀에 금지 표현 추가 제안, 들어오면 XPASS",
+    "승인 절차 자체는 바뀌지 않음(최종 선택은 팀장 API 만). 금지 표현 추가 제안은 이슈 #135, 들어오면 XPASS",
 )
 async def test_approval_claim_in_explanation_is_rejected(scenario):
     honest = await G._state(scenario, "GS-03")
