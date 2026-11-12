@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.log
+# 실행 추적 내부 로그(AGENT_TRACE_DIR 를 저장소 안 폴더로 둔 경우)
+agent_trace_outbox/
 
 # OS
 .DS_Store

@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     analysis_max_concurrent_runs: int = Field(default=4, ge=1)
     # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
     analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
+    # 실행 추적 내부 로그 폴더 (이슈 #51, docs/agent-flow/agent-tracing.md 3절). 실행 사건(노드·도구·설명 시도, 마스킹됨)을
+    # <폴더>/agent_trace_outbox/<고객사>/<UTC 날짜>.jsonl 에 한 줄씩 남긴다(agentflow 8.1 "외부 전송 불허 시").
+    # 비우면(기본) 추적하지 않는다. 배포 컨테이너는 /app 아래에 쓸 수 없어, 쓸 수 있는 폴더(볼륨)를 정한 뒤 넣는다.
+    agent_trace_dir: Path | None = None
 
     # Language model (GLOW-150, docs/agent-flow/explanation.md 8절)
     # AI 설명을 만드는 모델. "제공자/모델 ID" 한 줄이다(예: openai/<모델 ID>). 기본은 엔진 mock 이라 외부 호출이 없다.
@@ -108,7 +112,7 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
-    @field_validator("glowship_engine_dir", mode="before")
+    @field_validator("glowship_engine_dir", "agent_trace_dir", mode="before")
     @classmethod
     def _blank_engine_dir_is_unset(cls, value: object) -> object:
         # `GLOWSHIP_ENGINE_DIR=` 처럼 값을 비워 두면 Path("") 가 현재 폴더(".")가 되어 설정된 것으로 보인다.
@@ -144,6 +148,13 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("agent_trace_dir")
+    @classmethod
+    def _trace_dir_is_absolute(cls, value: Path | None) -> Path | None:
+        # 엔진 경로(engine_loader)와 같게 ~ 와 상대 경로를 절대 경로로 바꾼다(상대 경로는 서버를 띄운 폴더 기준).
+        # 그대로 두면 "~/trace" 가 실행 폴더 아래 "~" 폴더가 된다.
+        return None if value is None else value.expanduser().resolve()
 
     @field_validator(
         "virtual_tms_scenario_path", "virtual_erp_wms_scenario_path", mode="before"
