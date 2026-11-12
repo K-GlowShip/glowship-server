@@ -43,9 +43,7 @@ from app.modules.delay_analysis.infrastructure.engine.signature_recalculator imp
       - 입력 데이터 버전(analysis_run_data_versions)은 보류(ON_HOLD)가 아니면 저장과 같은 트랜잭션에서 기록한다
         (STALE 로 멈춘 실행 포함). 입력 검증을 통과한 실행에만 기록하는 규칙(run_creation_service 머리말, 확정 DB 보류 실행
         0건·나머지 도메인 5건, 사용자 결정 11-10)이다. 그래프 밖에서 끝내는 FAILED 는 transitions.fail_unfinished 가 같은 규칙으로 기록한다.
-        재분석 실행은 만들 때 기록하지 않아 여기서 채워진다. 이미 있으면 다시 넣지 않는다.
-        자동(AUTO) 실행은 지금 만들 때 기록하므로(auto_run_service) 보류로 끝나도 5건이다. 확정 DB 와 다른 이 부분은
-        docs/analysis/auto-start.md 3절에 적었다.
+        재분석·자동 실행 모두 만들 때 기록하지 않아 여기서 채워진다. 이미 있으면 다시 넣지 않는다.
       - 저장 함수들은 실행이 아직 진행 중일 때만 쓰고, 커밋은 부르는 쪽이 한다.
 """
 
