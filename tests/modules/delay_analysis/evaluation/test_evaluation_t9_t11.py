@@ -29,6 +29,7 @@ from app.modules.delay_analysis.application.agent.tools.option_feasibility impor
         계획(P)·예상(E) 확보일·배송일. X 만 보면 확보·배송이 더 일러져 깨진다(04_오류검출_대응표 GS-05).
       - NULL 과 0 구분(정답표 v6 2절): GS-07 OTHER(판정 불가)는 회복 집계·항목·donor 계산 칸이 NULL,
         GS-08 KR(계산을 끝낸 불가)은 0 / 0 / 1 / 0 과 O1 1행. 불가를 NULL 로 저장하면 GS-08 이 깨진다.
+      - GS-11 공여 객체 값과 배정 추적 180 → 150 → 70(정답표 v6 3절, 원본_독립검증반영본 GS-11 PASS).
 """
 
 KEEP, PDA, KR, OTHER = (
@@ -499,6 +500,43 @@ def test_gs07_other_item_and_donor_are_null_not_zero(glow50, scenario):
         "forecast_channel_share": None,
         "forecast_securable_quantity": None,
     }
+
+
+def test_gs11_donor_and_allocation_trace_match_answer_sheet(glow50, scenario):
+    """
+    정답표 v6 3절 GS-11 공여 SKU: 300 / 0 / 0 / 70, 예측 "50.0000", 넘길 수 있는 양 "180.0000" → 180, 주문 층 110,
+    비율 "1.0000", 예측 확보 70. PASS 의 배정 추적 180 → O2 30(잔여 150) → O1 80(잔여 70)(원본_독립검증반영본 GS-11).
+    엔진 결과에는 배정 순서가 없어 정답표 순서(O2 → O1)로 주문별 확보량을 빼 본다. 순서 자체는 아래 탐침 시험이 본다.
+    """
+    snap, _replay, analysis = scenario("GS-11")
+    effect = glow50.summarize(snap, analysis)["options"][OTHER]["sku_effects"]
+    donor = dict(effect["SERUM30"]["donor"])
+    donor.pop("source_warehouse_id")  # 정답표에 없는 UUID
+    assert donor == {
+        "next_inbound_basis": "N2",
+        "next_inbound_date": "2026-03-20",
+        "on_hand": 300,
+        "reserved": 0,
+        "open_commitment_net": 0,
+        "safety_stock_quantity": 70,
+        "forecast_until_next_raw": "50.0000",
+        "transferable_raw": "180.0000",
+        "transferable_quantity": 180,
+        "order_layer_used_quantity": 110,
+        "forecast_channel_share": "1.0000",
+        "forecast_securable_quantity": 70,
+    }
+
+    other = next(o for o in analysis["options"] if o["option_type"] == OTHER)
+    secured = {
+        x["risk"]["order_code"]: sum(x["secured"].values()) for x in other["outcomes"]
+    }
+    assert secured == {"O2": 30, "O1": 80}
+    trace = [donor["transferable_quantity"]]
+    for order in ("O2", "O1"):
+        trace.append(trace[-1] - secured[order])
+    assert trace == [180, 150, 70]
+    assert trace[-1] == donor["forecast_securable_quantity"]  # 남은 70 이 예측 층으로
 
 
 def test_gs11_probe_other_recovers_only_o2(scenario):
