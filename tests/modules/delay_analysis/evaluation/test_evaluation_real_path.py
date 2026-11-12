@@ -25,8 +25,9 @@ from app.modules.delay_analysis.application.run_start.engine_runtime import (
     정답 실행을 실제 경로로 다시 돌려 저장 행을 정답과 대조 (GLOW-58 2단계 A 갈래)
       - 실제 경로: 실제 도구 12개 묶음(build_engine_runtime) → 실행기(AnalysisRunner) → save_graph_outcome, 워커 역할.
         분석 자동 시작(docs/analysis/auto-start.md)이 켜졌을 때 도는 길과 같다.
-      - 대표 6건(READY·NO_RISK·NO_DELAY·보류·RT-1·RT-2)은 늘 돈다. 전체 21건은 GLOWSHIP_ENGINE_GOLDEN=1 일 때만
-        (test_engine_input.py 의 정답 대조와 같은 스위치, 몇 분).
+      - 대표 6건(READY·NO_RISK·NO_DELAY·보류·RT-1·RT-2)은 평소에 돈다. 전체 21건은 GLOWSHIP_ENGINE_GOLDEN=1 일 때만
+        (test_engine_input.py 의 정답 대조와 같은 스위치, 몇 분) 돌고, 그때 대표 6건 시험은 건너뛴다
+        (전체 시험이 같은 6건을 포함함. 주입을 뺀 대조는 대표 시험에만 있어 그때는 돌지 않는다).
       - 견주는 것: 결과 열·실패 요약 4열·결과 행 4종(재고 영향·위험 주문·대응안·주문 결과). 실패 문구와 상태·STALE 열은
         견주지 않는다(real_path_support 머리말).
       - 정답의 장애 주입 2건(RT-1 T5 시간 초과, RT-2 설명 결함 3개)은 같은 주입으로 재현하고, 주입을 빼면 READY 로
@@ -40,7 +41,7 @@ RT1, RT2 = "TOOL_TIMEOUT_EXHAUSTED", "EXPLANATION_GENERATION_FAILED"
 REPRESENTATIVE = {
     ("A_BEAUTY", "AN-260107-001"): RT2,  # 입력 순번 40
     ("A_BEAUTY", "AN-260110-001"): RT1,  # 55
-    ("A_BEAUTY", "AN-260115-001"): "READY_FOR_REVIEW",  # 80, 위험 주문 7건
+    ("A_BEAUTY", "AN-260115-001"): "READY_FOR_REVIEW",  # 80, 위험 주문 3건(상세 7행)
     ("A_BEAUTY", "AN-260115-002"): "NO_RISK",  # 80 (저장소 캐시 적중)
     ("B_COSMETICS", "AN-260102-001"): "NO_DELAY",  # 15
     ("B_COSMETICS", "AN-260102-002"): "ON_HOLD",  # 15

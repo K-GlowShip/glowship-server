@@ -63,6 +63,7 @@ from tests.modules.delay_analysis.test_result_save import _snapshot
         v1 STALE·v2 자동 실행 → 실제 경로. 조각(자동 실행 생성 test_auto_run_sql, 수집 → 시작 넘김
         test_manual_sync_start_runs)은 이미 시험이 있고, 여기서는 실제 STALE 판정·실제 묶음으로 한 번 이어 붙인다.
         수집이 돌려준 실행 ID 를 실행기에 직접 넘긴다(수동 수집의 넘김은 거치지 않음).
+        새 선적은 지연 증분이 없어 두 실행 모두 NO_RISK 로 끝난다.
       - 모두 롤백 세션 하나로 돈다(real_path_support). 분석은 워커 역할이다.
 """
 
@@ -97,16 +98,12 @@ _CHAIN_RUNS = text(
      ORDER BY r.version_no
     """
 )
-END_STATES = {"READY_FOR_REVIEW", "NO_RISK", "ON_HOLD", "NO_DELAY"}
 
 
-def _versions_after_save(row) -> int:
-    """
-    결과를 저장한 뒤의 입력 데이터 버전 수: 도메인 5개, 보류는 0건(save_graph_outcome 이 기록).
-    실행을 만들 때의 건수는 단정하지 않는다. 자동 실행을 만들 때 기록하던 것을 저장 때로 옮기는 변경(PR #120)
-    전에는 만들 때 5건, 뒤에는 0건이고, 저장 뒤는 두 경우 모두 같다.
-    """
-    return 0 if row.status == "ON_HOLD" else 5
+# 결과를 저장한 뒤의 입력 데이터 버전 수(도메인 5개). 실행을 만든 직후의 건수는 단정하지 않는다:
+# 자동 실행을 만들 때 기록하던 것을 결과 저장 때로 옮기는 변경(PR #120) 전에는 5건, 뒤에는 0건이고,
+# NO_RISK 로 저장한 뒤는 두 경우 모두 5건이다
+VERSIONS_AFTER_SAVE = 5
 
 
 async def _versions(db, run):
@@ -311,8 +308,8 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
         "DETECTED",
     )
     assert v1_created.input_seq == first.applied_seq
-    assert v1_done.status in END_STATES and v1_done.status == v1_done.completed_status
-    assert v1_done.versions == _versions_after_save(v1_done)
+    assert v1_done.status == v1_done.completed_status == "NO_RISK"
+    assert v1_done.versions == VERSIONS_AFTER_SAVE
 
     # ② 같은 선적의 예상 입고일을 늦춰 다시 수집 → v1 STALE, v2 자동 실행
     later = replace(
@@ -346,8 +343,8 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
     await _analyze(db, company_id, v2_created.analysis_run_id)
     v1_after, v2_done = await _chain(db, company_id, shipment.shipment_code)
 
-    assert v2_done.status in END_STATES and v2_done.status == v2_done.completed_status
-    assert v2_done.versions == _versions_after_save(v2_done)
+    assert v2_done.status == v2_done.completed_status == "NO_RISK"
+    assert v2_done.versions == VERSIONS_AFTER_SAVE
     assert (v1_after.status, v1_after.stale_detected_seq) == (
         "STALE",
         second.applied_seq,

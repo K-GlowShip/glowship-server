@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import MOCK_EXPLANATION_MODEL, get_settings
 from app.modules.delay_analysis.application.agent.explanation import make_explainer
 from app.modules.delay_analysis.application.agent.retry import (
     EXPLANATION_GENERATION_FAILED,
@@ -48,6 +48,12 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
         build_engine_runtime(실제 도구 12개·분석 준비·판정·설명) → AnalysisRunner → save_graph_outcome.
         설명 생성 시각 = 실행 시작 시각, 저장 끝난 시각 = 시작 + 1초(이슈 #50 결정). 다른 것은 세션뿐이다:
         앱은 워커 접속을 새로 열고, 여기서는 롤백 세션 하나를 실행기에 돌려주고 SET LOCAL ROLE 로 워커 역할을 건다.
+        실행기가 세션을 열 때마다 RLS 문맥(app.user_id·app.company_id)을 비워, 새 접속에서는 문맥이 비어 있는 것을
+        흉내 낸다(실행기가 문맥을 넣지 않으면 워커 역할에서 행이 보이지 않아 시험이 실패한다).
+      - 한계: 조립은 build_app_runner 를 부르지 않고 같은 내용을 따라 적은 것이다. app_runner 의 조립이 바뀌면 이 장치도
+        함께 고쳐야 한다(app_runner 자체는 test_run_start_app_runner 가 본다).
+      - 설명 모델 설정(EXPLANATION_MODEL)이 mock 이 아니면 건너뛴다. 정답은 엔진 템플릿 설명으로 만들어졌고,
+        시험이 실제 모델을 부르지 않게 하기 위해서다.
       - 확정 DB(정답 overlay)의 실행은 모두 끝난 상태라, 실행 하나를 같은 트랜잭션 안에서 DETECTED 로 되돌려 다시 돌린다.
         되돌리는 순서: 실패 요약 비우기 → 결과 행·초안·최종 선택 지우기 → DETECTED. 이 순서가 아니면 ck10 에 걸린다.
       - 장애 주입(정답 RT-1·RT-2 를 만든 주입과 같음): RT-1 = T5 가 시도별 시간 제한을 넘김, RT-2 = 설명 결함 3개.
@@ -57,6 +63,10 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
 """
 
 WORKER_ROLE = "glowship_v4_worker"
+# 새로 연 세션의 RLS 문맥(빈 값). app/core/rls_context.set_rls_context 와 같은 설정 이름·트랜잭션 범위
+_EMPTY_RLS_CONTEXT = text(
+    "SELECT set_config('app.user_id', '', true), set_config('app.company_id', '', true)"
+)
 T5 = ToolName.GET_OPEN_ORDERS
 
 # 정답과 같아야 하는 실행 열: 결과 열 + 실패 요약 4열(실패 문구는 뺌)
@@ -150,8 +160,13 @@ class RealPathRun:
 
 
 def require_engine() -> None:
-    if get_settings().glowship_engine_dir is None:
+    settings = get_settings()
+    if settings.glowship_engine_dir is None:
         pytest.skip("GLOWSHIP_ENGINE_DIR 이 없어 실제 경로 시험을 건너뜀")
+    if settings.explanation_model != MOCK_EXPLANATION_MODEL:
+        pytest.skip(
+            "EXPLANATION_MODEL 이 mock 이 아니라 건너뜀(정답은 엔진 템플릿 설명)"
+        )
 
 
 def fix_explanation_canary(monkeypatch) -> None:
@@ -239,6 +254,8 @@ def app_like_runner(
 
     @asynccontextmanager
     async def same_session():
+        # 앱은 세션마다 새 접속이라 RLS 문맥이 비어 있다. 세션 하나를 돌려쓰면 앞에서 넣은 문맥이 남으므로 비운다
+        await db.execute(_EMPTY_RLS_CONTEXT)
         yield db
 
     def runtime_factory(session, run, tracer):

@@ -21,6 +21,8 @@ from tests.modules.delay_analysis.test_agent_tracing import MemorySink
         실행 시작 → 도구 시도 14건 → 설명 시도 1건 → 실행 끝이 실행 ID 하나로 이어지고, 그 실행의 실제 주문 코드·
         선적 코드가 기록에 원문으로 남지 않는다(agentflow 8.1, docs/agent-flow/agent-tracing.md 3절).
         앱 실행기(app_runner)는 아직 tracer_factory 를 넘기지 않는다. 여기서는 실행기에 직접 넘긴다.
+        보는 것은 "실제 실행의 기록에 코드 원문이 없다"까지다. 문자열 안의 주문 코드를 바꿔 적는 규칙 자체는
+        test_agent_tracing 이 본다(그 규칙을 지워도 이 시험은 통과한다 — 코드가 든 값이 기록에 들어가지 않기 때문).
       - D3 감사 연결(NFR-007 검증 방법): 최종 선택까지 간 실행에서 실행 ID 하나로 감지 이벤트(지연 에피소드)·
         시작 스냅샷·입력 데이터 버전 5건·결과 행·설명·팀원 초안·최종 선택이 이어진다. 읽기만 한다.
 """
@@ -71,7 +73,7 @@ _LINKS = text(
 )
 
 
-async def test_traced_real_run_links_events_by_run_id_and_masks_codes(
+async def test_traced_real_run_links_events_by_run_id_and_keeps_codes_out(
     db_write_session, monkeypatch
 ):
     """D1·D2: 실제 묶음 + 추적기. 사건이 실행 ID 하나로 이어지고 실제 주문·선적 코드가 기록에 없다."""

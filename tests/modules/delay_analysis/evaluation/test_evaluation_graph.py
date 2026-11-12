@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import evaluation_adapters as EA
 import pytest
-from real_path_support import fix_explanation_canary
+from real_path_support import fix_explanation_canary, require_engine
 from test_evaluation_t9_t11 import ANSWERS
 
 from app.modules.delay_analysis.application.agent.graph import build_analysis_graph
@@ -71,7 +71,8 @@ _states: dict[str, dict] = {}  # 키 → 그래프 마지막 상태(시나리오
 
 @pytest.fixture(autouse=True)
 def _fixed_canary(glow50, monkeypatch):
-    """glow50 이 엔진 경로가 없으면 건너뛴다. 설명 canary 는 고정한다(real_path_support)."""
+    """glow50 이 엔진 경로가 없으면 건너뛴다. 설명 모델이 mock 이 아니어도 건너뛴다. 설명 canary 는 고정한다."""
+    require_engine()
     fix_explanation_canary(monkeypatch)
 
 
