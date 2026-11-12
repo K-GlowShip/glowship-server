@@ -7,9 +7,11 @@ from real_path_support import (
     fix_explanation_canary,
     require_engine,
     rerun,
+    try_final_decision,
 )
 from sqlalchemy import text
 
+from app.core.config import APP_DB_ROLE
 from app.modules.delay_analysis.application.run_creation.auto_run_service import (
     previous_run_stale_reason,
 )
@@ -46,6 +48,9 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
         실행(A AN-260115-001)에서 저장소 14개가 함께 살았다(docs/analysis/evaluation-scenarios.md 8.5·8.6절).
       - 연결 확인: 현재 버전 실행 1건(A AN-260202-001)을 실제 경로(실행기 → save_graph_outcome → 저장 직후 재판정)로 돌려,
         앱의 저장 경로가 재계산기를 넘겨 정답 순번(178, 재계산기가 없으면 173)이 되는지 본다.
+        그렇게 STALE 이 된 실행에 그 실행의 FEASIBLE 대응안으로 최종 선택을 요청하면(팀장 요청, 앱 역할)
+        409 ANALYSIS_STALE 로 거부되고 최종 선택 행이 생기지 않는다. 정답표 GS-09 변경 A 의 "R1 에 대한 최종 선택
+        시도는 거부"와 같은 모양(일반 데이터 변경 → 서명 바뀜 → STALE → 선택 거부)을 실제 데이터로 보는 자리다.
 """
 
 NOW = datetime(2026, 7, 1, tzinfo=UTC)
@@ -219,20 +224,29 @@ async def _saved_through_real_path(db, monkeypatch) -> dict:
     await db.execute(_REOPEN, {"event": run.delay_event_id})
     result = await rerun(db, run)
     row = result.after["run"]
+    selection = await try_final_decision(
+        db, company_id=run.company_id, analysis_run_id=run.analysis_run_id, at=NOW
+    )
     return {
         "status": row["status"],
         "completed_status": row["completed_status"],
         "stale": (row["stale_primary_reason"], row["stale_detected_seq"]),
         "impacts": len(result.after["inventory"]),
+        "selection": selection,
     }
 
 
 async def test_saved_result_goes_stale_where_signature_changes(
     db_write_session, monkeypatch
 ):
-    """연결 확인: 앱의 저장 경로(save_graph_outcome → 저장 직후 재판정)가 재계산기를 넘겨 정답 순번에서 STALE, 결과는 남긴다."""
+    """연결 확인: 앱의 저장 경로(save_graph_outcome → 저장 직후 재판정)가 재계산기를 넘겨 정답 순번에서 STALE, 결과는 남긴다.
+    그 실행의 FEASIBLE 대응안으로 최종 선택을 요청하면 409 ANALYSIS_STALE, 최종 선택 행 없음."""
     saved = await _saved_through_real_path(db_write_session, monkeypatch)
+    selection = saved["selection"]
 
     assert saved["stale"] == RECHECK[CONNECTION_PROBE]  # 재계산기가 없으면 173
     assert (saved["status"], saved["completed_status"]) == ("STALE", "READY_FOR_REVIEW")
     assert saved["impacts"] > 0
+    assert selection.feasible_option and selection.role == APP_DB_ROLE
+    assert selection.refused_with == ("ANALYSIS_STALE", 409)
+    assert (selection.status, selection.decisions) == ("STALE", 0)
