@@ -19,7 +19,7 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
     판정 서명 재계산기 (이슈 #75) — DB·엔진 없이 분기만 본다. 실제 엔진 계산은 test_signature_recalculator_sql.py
       - 서명이 없거나, 변경이 없거나, 수집 완료 시각이 없으면 계산하지 않고 다름(놓치지 않는 쪽)
       - 다시 계산한 해시가 실행의 해시와 같으면 False, 다르거나 보류(None)면 True
-      - 새 입력 순번 저장소는 재계산기 하나 안에서 순번마다 한 번만 읽고, 실행의 입력 순번 저장소는 캐시 함수로 읽는다
+      - 새 입력 순번 저장소는 재계산기 하나 안에서 마지막 순번 하나만 들고(같은 순번이면 다시 쓰고), 실행의 입력 순번 저장소는 캐시 함수로 읽는다
 """
 
 COMPANY_ID = uuid.uuid7()
@@ -141,6 +141,17 @@ async def test_new_store_is_read_once_per_seq_within_one_recalculator(fake_engin
 
     assert calls["new"] == [924, 925]
     assert calls["base"] == [921, 921, 921]  # 실행 입력 순번은 캐시 함수가 맡는다
+
+
+async def test_only_the_last_new_store_is_kept(fake_engine):
+    """새 순번 저장소는 마지막 하나만 든다(메모리, PR #116 리뷰). 지난 순번으로 돌아가면 다시 읽는다"""
+    calls, _ = fake_engine
+    recalculator = EngineSignatureRecalculator(None)
+
+    for seq in (924, 925, 924):
+        await recalculator.signature_changed(_run(), [_change(seq, FINISHED)])
+
+    assert calls["new"] == [924, 925, 924]
 
 
 async def test_engine_error_counts_as_changed(fake_engine, monkeypatch, caplog):
