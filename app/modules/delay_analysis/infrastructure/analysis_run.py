@@ -11,6 +11,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.orm import Base, uuid_pk
@@ -28,6 +29,8 @@ class AnalysisRun(Base):
       - STALE 상태일 때만 STALE 사유 4컬럼(stale_*)을 채웁니다. TIME_ELAPSED 만 stale_detected_seq 가 비어 있습니다.
       - dependency_scope 는 분석이 실제로 읽은 입력 범위(dependency_scope.v1)로, STALE 1차 판정에 씁니다.
       - run_code 는 화면에 보이는 실행 ID(D14, `AN-YYMMDD-NNN`)로 고객사 안에서 고유합니다(0006).
+      - data_warnings 는 분석을 시작할 때 정한 데이터 경고 목록입니다(0010, 이슈 #122). NULL = 정하지 않음
+        (분석 전·지연 해소·그래프 밖 실패·열이 생기기 전 실행), [] = 정했는데 없음. 상태와 묶은 제약은 두지 않습니다.
     """
 
     __tablename__ = "analysis_runs"
@@ -38,6 +41,11 @@ class AnalysisRun(Base):
         UniqueConstraint("company_id", "run_code", name="analysis_runs_run_code_uk"),
         CheckConstraint(
             "run_code ~ '^AN-[0-9]{6}-[0-9]{3}$'", name="analysis_runs_run_code_ck"
+        ),
+        # 0010(이슈 #122): 데이터 경고. v6.2 DDL 에는 없고 서버 리비전이 추가한다. 모양(목록)만 고정한다
+        CheckConstraint(
+            "data_warnings IS NULL OR jsonb_typeof(data_warnings) = 'array'",
+            name="analysis_runs_data_warnings_ck",
         ),
         CheckConstraint(
             "trigger_type IN ('AUTO','REANALYSIS')", name="analysis_runs_ck1"
@@ -317,3 +325,4 @@ class AnalysisRun(Base):
     explanation_generated_at: Mapped[datetime | None]
     started_at: Mapped[datetime]
     finished_at: Mapped[datetime | None]
+    data_warnings: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB())

@@ -2,8 +2,9 @@ import asyncio
 import copy
 import hashlib
 import uuid
-from dataclasses import dataclass
-from datetime import date, timedelta
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -42,6 +43,11 @@ from app.modules.delay_analysis.infrastructure.engine.engine_store_cache import 
           · 기준일 D = resolve_base_date: min(실행 날짜, 최신 재고일 + 1, 성공 ORDER 수집이 다룬 마지막 접수일 + 1)
             (이슈 #51 사용자 결정). 그날 재고·주문 자료가 아직 입력(입력 순번)에 없는 실행도 마지막 자료 날 기준으로 계산하고, 늦은 원천을 남긴다
           · 단계·예상 입고일 = 실행의 트리거 일정 스냅샷. 트리거가 없으면(재분석) 엔진처럼 confirm_t 까지의 최신 관측
+      - 데이터 경고(dataWarnings, 이슈 #122): 엔진 입력을 만들 때(보류여도) 원천별로 정해 EngineInput·EngineHold 에 싣는다.
+          · 수집 실패: 원천의 "마지막으로 끝난 수집"(RUNNING 아님, 시작 ≤ confirm_t, 적용 순번이 없거나 입력 순번 이하 —
+            엔진 저장소가 수집 이력을 읽는 범위와 같음)이 FAILED
+          · 기준일 D 를 당김: resolve_base_date 의 late_sources(재고·주문)
+          · 저장은 결과 저장과 같은 트랜잭션에서 한다(run_start/outcome_save.py). 여기서는 값만 만든다.
       - 읽기 전용이다. 커밋하지 않는다.
 """
 
@@ -68,6 +74,10 @@ class EngineHold:
 
     code: str  # REQUIRED_DATA_INVALID | MISSING_REQUIRED_DATA
     message: str
+    # 보류여도 기준일 D 는 snapshot.build 전에 구한다. 데이터 경고를 정하는 데 쓴다
+    base_date_resolution: BaseDateResolution | None = None
+    # 데이터 경고(이슈 #122, data_warnings_of). 보류 원인이 수집 문제인 경우가 많아 보류 실행에도 남긴다
+    data_warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,6 +131,100 @@ class EngineInput:
     snap: dict[str, Any]  # snapshot.build 결과
     analysis: dict[str, Any]  # pipeline.analyze(snap) 결과
     store: Any  # 엔진 Store(한 고객사·한 입력 순번). 스냅샷에 없는 원값(28일 수요 합계 등)을 읽을 때만
+    # 데이터 경고(이슈 #122, data_warnings_of). 그래프 상태를 거쳐 결과와 함께 저장한다
+    data_warnings: tuple[dict[str, Any], ...] = ()
+
+
+# 데이터 경고 이유(저장값 reasons, 응답에는 내지 않음 — 화면은 last_status 로 실패·지연을 가름)
+LAST_SYNC_FAILED = "LAST_SYNC_FAILED"  # 원천의 마지막으로 끝난 수집이 FAILED
+BASE_DATE_LIMITED = (
+    "BASE_DATE_LIMITED"  # 그 원천 자료가 실행 날짜까지 없어 기준일 D 를 당김
+)
+
+
+@dataclass(frozen=True)
+class LastFinishedSync:
+    """원천 하나의 마지막으로 끝난 수집(입력 확정 시각·입력 순번 범위 안)."""
+
+    status: str  # SUCCEEDED | PARTIAL_SUCCESS | FAILED
+    finished_at: datetime | None
+
+
+def data_warnings_of(
+    last_syncs: Mapping[str, LastFinishedSync],
+    basis: BaseDateResolution | None,
+) -> tuple[dict[str, Any], ...]:
+    """
+    데이터 경고(이슈 #122). 저장소·DB 를 읽지 않는 순수 함수. 원천 이름순, 원천 하나에 항목 하나(이유는 여럿일 수 있음).
+      - 수집 실패: 마지막으로 끝난 수집이 FAILED 인 원천(다섯 원천 모두)
+      - 기준일 D 를 당김: basis.late_sources(재고·주문). 한도 날짜를 함께 남긴다
+      - 수집 이력이 없는 원천은 항목을 만들지 않는다(last_status 에 넣을 값이 없고, 자료가 없으면 엔진이 보류로 알림)
+    항목은 JSON 그대로 저장할 수 있는 dict 다(시각은 ISO 문자열).
+    """
+    late = set(basis.late_sources) if basis is not None else set()
+    limits = (
+        {"INVENTORY": basis.inventory_limit, "ORDER": basis.order_limit}
+        if basis is not None
+        else {}
+    )
+    warnings: list[dict[str, Any]] = []
+    for domain in sorted(set(last_syncs) | late):
+        last = last_syncs.get(domain)
+        if last is None:
+            continue
+        reasons = []
+        if last.status == "FAILED":
+            reasons.append(LAST_SYNC_FAILED)
+        if domain in late:
+            reasons.append(BASE_DATE_LIMITED)
+        if not reasons:
+            continue
+        limit = limits.get(domain) if domain in late else None
+        warnings.append(
+            {
+                "source_domain": domain,
+                "last_status": last.status,
+                "last_finished_at": (
+                    last.finished_at.isoformat()
+                    if last.finished_at is not None
+                    else None
+                ),
+                "reasons": reasons,
+                "limit_date": limit.isoformat() if limit is not None else None,
+            }
+        )
+    return tuple(warnings)
+
+
+# 원천별 마지막으로 끝난 수집. 엔진 저장소가 수집 이력을 읽는 범위(engine_input_store: 적용 순번이 없거나 입력 순번 이하)와
+# 엔진 store.runs_until(시작 ≤ confirm_t, 초 아래 버림)을 그대로 따른다. 실패 수집은 적용 순번이 없어 입력 순번이 바뀌지 않으므로
+# (고객사, 입력 순번)으로 캐시된 저장소에는 안 보일 수 있어, 저장소가 아니라 이 질의로 읽는다
+_LAST_FINISHED_SYNCS_SQL = text(
+    "SELECT DISTINCT ON (source_domain) source_domain, status, finished_at"
+    " FROM data_sync_runs"
+    " WHERE company_id = :company_id AND status <> 'RUNNING'"
+    "   AND date_trunc('second', started_at) <= :confirm_at"
+    "   AND (applied_seq IS NULL OR applied_seq <= :input_seq)"
+    " ORDER BY source_domain, started_at DESC, data_sync_run_id DESC"
+)
+
+
+async def _last_finished_syncs(
+    session: AsyncSession, run: AnalysisRunLike
+) -> dict[str, LastFinishedSync]:
+    rows = (
+        await session.execute(
+            _LAST_FINISHED_SYNCS_SQL,
+            {
+                "company_id": run.company_id,
+                "confirm_at": run.started_at.replace(microsecond=0),  # = confirm_t
+                "input_seq": run.input_seq,
+            },
+        )
+    ).all()
+    return {
+        row.source_domain: LastFinishedSync(row.status, row.finished_at) for row in rows
+    }
 
 
 @lru_cache(maxsize=1)
@@ -303,11 +407,17 @@ def _build_and_analyze(
             E=ri.expected.isoformat() if ri.expected is not None else None,
         )
     except snapshot.Hold as hold:
-        return EngineHold(code=hold.code, message=hold.message)
+        return EngineHold(
+            code=hold.code, message=hold.message, base_date_resolution=basis
+        )
     # 엔진이 고른 운영 기준 버전·리드타임 행을 본다. 엔진 보류가 먼저이고, 걸리면 계산하지 않는다
     unsupported = unsupported_operating_rules(store, snap)
     if unsupported is not None:
-        return EngineHold(code=UNSUPPORTED_RULE_HOLD_CODE, message=unsupported)
+        return EngineHold(
+            code=UNSUPPORTED_RULE_HOLD_CODE,
+            message=unsupported,
+            base_date_resolution=basis,
+        )
     return snap, load_engine_module("pipeline").analyze(snap), basis
 
 
@@ -321,8 +431,12 @@ async def build_engine_input(
     store = await get_company_engine_store(session, run.company_id, run.input_seq)
     check_input_seq(store, run.company_id, ri.confirm_t, run.input_seq)
     built = await asyncio.to_thread(_build_and_analyze, store, str(run.company_id), ri)
+    last_syncs = await _last_finished_syncs(session, run)
     if isinstance(built, EngineHold):
-        return built
+        return replace(
+            built,
+            data_warnings=data_warnings_of(last_syncs, built.base_date_resolution),
+        )
     snap, analysis, basis = built
     return EngineInput(
         analysis_run_id=run.analysis_run_id,
@@ -336,6 +450,7 @@ async def build_engine_input(
         snap=snap,
         analysis=analysis,
         store=store,
+        data_warnings=data_warnings_of(last_syncs, basis),
     )
 
 

@@ -125,7 +125,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | ~~라우터·서비스·DB 조회~~ | GLOW-115에서 만듦(11절) |
 | ~~ORM 행 → 응답 변환~~ | GLOW-115에서 만듦(11절) |
 | ~~`runCode`~~ | `0006` 뒤로 값이 있음 |
-| `dataWarnings[]` 실제 값 | 아직 항상 `[]`. 입력 확정 때의 수집 상태를 남기는 일은 백그라운드 실행·저장 작업에서 함(GLOW-115 Jira "팀원 참고사항") |
+| `dataWarnings[]` 실제 값 | 분석을 시작할 때(엔진 입력을 만들 때) 정해 결과 저장과 함께 `analysis_runs.data_warnings`(리비전 0010)에 남긴 값을 그대로 냄(이슈 #122). 수집 실패(원천의 마지막으로 끝난 수집이 `FAILED`, 다섯 원천)·기준일 D 를 당김(재고·주문). 열이 비어 있으면(분석 전·지연 해소·그래프 밖 실패·0010 전 실행) `[]`. 명세 "입력 확정 때"와 다른 점은 `docs/analysis/engine-input.md` 데이터 경고 절 |
 | 공통 camelCase 변환의 `3pl` 표기 | 이 스키마만 별칭으로 고침. 같은 필드를 쓰는 다른 API(지연 목록·선적)도 같은 문제가 있어 공통 베이스 담당과 공유 필요 |
 
 ## 7. 검증
@@ -251,7 +251,7 @@ AnalysisRunDetailResponse                 실행·STALE·AI 설명·실패 요�
 | 위험 주문의 주문 단위 값은 그 주문의 첫 줄(가장 작은 줄 번호)에서 읽음 | `at_risk_orders`는 줄마다 귀속·약속·예상 납품·사유를 가짐. 2026 H1 주문 3건(모두 여러 줄)은 줄끼리 값이 같음(11-05 SQL 확인). DDL이 보장하지는 않음(7절 한계와 같음). 줄끼리 다르면 첫 줄 값을 쓰고 경고 로그(실행 ID·주문 ID·줄)를 남김(PR #32 리뷰) |
 | 대응안 순서는 고정 순서(KEEP → 출항 전 항공 → 한국 창고 항공 → 다른 권역) | 설명의 `option_explanations[]`와 같은 순서(명세 4.5 AI 설명 표). 추천 순위는 `recommendationRank`로 따로 있음 |
 | `dataBasisAt` = 사용한 수집 중 `finished_at`이 가장 이른 것, 끝나지 않은 수집은 뺌 | 명세 4.5 입력 기준 칸 "사용한 수집 중 가장 오래된 수집 시각" |
-| `dataWarnings`는 `[]` | Jira "팀원 참고사항": 실제 값은 백그라운드 실행·저장 작업 뒤 |
+| `dataWarnings` | 이슈 #122 로 채움(위 표). 저장값의 `reasons`·`limit_date` 는 응답에 내지 않음 |
 | `sku_results` 모델(`SkuResultItem` 등)은 건드리지 않음 | PR #26(GLOW-112)이 이 모델을 `infrastructure/stored_json_schemas.py`로 옮김. 겹침을 줄이려고 그 구역은 그대로 두고, #26 머지 뒤 develop을 병합하기로 함(사용자 결정 11-05) |
 
 **알려 둘 점:** 저장된 `sku_results` 항목에 `impact_source` 키가 없으면(v1·v2 엔진 산출물) 응답에는 `"impact_source": null`이 붙습니다(`SkuResultItem` 기본값 `None`). D20 "저장된 그대로"와 엄밀히는 다릅니다. 2026 H1 저장값 856항목은 모두 키가 있어 실제 응답은 저장값과 같습니다(11.4 실제 DB 시험). 이 모델은 #26(머지됨)이 만든 공용 파일 `infrastructure/stored_json_schemas.py`에 있고 에이전트 도구 모델도 함께 쓰므로, 이 PR에서는 고치지 않고 후속으로 다룹니다(PR #32 리뷰 답, 사용자 결정 11-05).

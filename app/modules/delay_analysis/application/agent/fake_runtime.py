@@ -94,6 +94,8 @@ class FakeScenario:
     engine_recommended: OptionType | None = (
         OptionType.OTHER_REGION_FULFILL
     )  # 엔진 판정 서명의 추천
+    # 엔진 입력·보류가 정한 데이터 경고(이슈 #122, engine_input.data_warnings_of 와 같은 모양)
+    data_warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,12 +109,14 @@ class FakeEngineInput:
     base_date: date = BASE_DATE
     input_seq: int = 1
     store: Any = None
+    data_warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
 class FakeHold:
     code: str
     message: str
+    data_warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,6 +211,7 @@ def _engine(scenario: FakeScenario) -> FakeEngineInput:
             "scope": {"schema_version": "dependency_scope.v1"},
             "options": options,
         },
+        data_warnings=scenario.data_warnings,
     )
 
 
@@ -223,7 +228,11 @@ class FakePreparer:
     async def build_engine_input(self) -> FakeEngineInput | FakeHold:
         self.calls.append("build_engine_input")
         if self.scenario.hold_code:
-            return FakeHold(self.scenario.hold_code, "가짜 보류: 필수 자료 부족")
+            return FakeHold(
+                self.scenario.hold_code,
+                "가짜 보류: 필수 자료 부족",
+                data_warnings=self.scenario.data_warnings,
+            )
         return self.engine
 
 

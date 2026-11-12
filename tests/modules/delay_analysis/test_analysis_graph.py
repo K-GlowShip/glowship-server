@@ -202,6 +202,28 @@ async def test_엔진_입력이_보류면_ON_HOLD와_VALIDATING_실패_요약으
     assert tracer.first_calls() == []
 
 
+_WARNINGS = (
+    {"source_domain": "SHIPMENT", "last_status": "FAILED", "last_finished_at": None,
+     "reasons": ["LAST_SYNC_FAILED"], "limit_date": None},
+)  # fmt: skip
+
+
+async def test_엔진_입력이_정한_데이터_경고를_정상과_보류_상태에_싣고_지연_해소에는_없다():
+    """이슈 #122: 분석 준비 노드는 값만 나른다(정상·보류). 지연 해소는 엔진 입력을 만들지 않아 키가 없다."""
+    ready, _, _ = await _run(FakeScenario(data_warnings=_WARNINGS))
+    held, _, _ = await _run(
+        FakeScenario(hold_code=MISSING_REQUIRED_DATA, data_warnings=_WARNINGS)
+    )
+    plain, _, _ = await _run(FakeScenario())
+    no_delay, _, _ = await _run(FakeScenario(no_delay=True, data_warnings=_WARNINGS))
+
+    assert ready["data_warnings"] == list(_WARNINGS)
+    assert held["outcome"] == AnalysisOutcome.ON_HOLD
+    assert held["data_warnings"] == list(_WARNINGS)
+    assert plain["data_warnings"] == []
+    assert "data_warnings" not in no_delay
+
+
 async def test_재고_영향이_NO_RISK면_판정_서명을_만들고_대응안_없이_끝난다():
     scenario = FakeScenario(
         completed_status=CompletedStatus.NO_RISK,

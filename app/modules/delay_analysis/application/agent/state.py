@@ -64,6 +64,9 @@ class AnalysisState(TypedDict, total=False):
     # 분석 준비
     # 지연 해소 판정(엔진 입력 judge_no_delay 결과: 판정 서명·SHA-256) → NO_DELAY
     no_delay: Any
+    # 데이터 경고(이슈 #122): 엔진 입력(보류 포함)이 정한 값을 그대로 나른다. 저장이 analysis_runs.data_warnings 에 쓴다.
+    # 지연 해소(NO_DELAY)는 엔진 입력을 만들지 않아 이 키가 없다(저장하지 않음 = 응답 빈 목록)
+    data_warnings: list[dict[str, Any]]
 
     # 조정 에이전트 (T1)
     delay_context: DelayContext

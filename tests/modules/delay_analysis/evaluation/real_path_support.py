@@ -105,7 +105,8 @@ _RESET = text(
     " decision_signature = NULL, decision_signature_sha256 = NULL, model_name = NULL,"
     " prompt_version = NULL, final_explanation_json = NULL, explanation_validation_status = NULL,"
     " explanation_generated_at = NULL, stale_primary_reason = NULL, stale_reason_codes = NULL,"
-    " stale_detected_seq = NULL, stale_detected_at = NULL, finished_at = NULL"
+    " stale_detected_seq = NULL, stale_detected_at = NULL, finished_at = NULL,"
+    " data_warnings = NULL"
     " WHERE analysis_run_id = :id"
 )
 _RUNS = text(

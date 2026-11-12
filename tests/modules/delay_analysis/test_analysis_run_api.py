@@ -387,6 +387,28 @@ def test_data_basis_at_is_oldest_finished_sync():
     assert oldest_finished_at([]) is None
 
 
+def test_data_warnings_are_three_spec_fields_in_source_order():
+    """dataWarnings(이슈 #122): 저장값의 명세 3필드만 원천 이름순으로 낸다. 저장용 reasons·limit_date 는 내지 않는다"""
+    stored = [
+        {"source_domain": "ORDER", "last_status": "FAILED",
+         "last_finished_at": "2026-01-01T00:10:30+00:00",
+         "reasons": ["LAST_SYNC_FAILED", "BASE_DATE_LIMITED"], "limit_date": "2025-12-31"},
+        {"source_domain": "INVENTORY", "last_status": "SUCCEEDED",
+         "last_finished_at": "2025-12-31T23:50:00+00:00",
+         "reasons": ["BASE_DATE_LIMITED"], "limit_date": "2025-12-31"},
+    ]  # fmt: skip
+    body = _body(replace(DETAIL, run=replace(RUN, data_warnings=stored)))
+
+    assert body["inputBasis"]["dataWarnings"] == [
+        {"sourceDomain": "INVENTORY", "lastStatus": "SUCCEEDED", "lastFinishedAt": "2025-12-31T23:50:00Z"},
+        {"sourceDomain": "ORDER", "lastStatus": "FAILED", "lastFinishedAt": "2026-01-01T00:10:30Z"},
+    ]  # fmt: skip
+    # 정하지 않음(NULL)과 정했는데 없음([])은 둘 다 빈 목록
+    for empty in (None, []):
+        body = _body(replace(DETAIL, run=replace(RUN, data_warnings=empty)))
+        assert body["inputBasis"]["dataWarnings"] == []
+
+
 def test_at_risk_lines_are_grouped_by_order():
     """위험 주문은 주문별로 묶고 상세 줄은 lines[] 에 둔다(D21, U12). 주문 수 = 서로 다른 주문 수"""
     orders = _body()["atRiskOrders"]
