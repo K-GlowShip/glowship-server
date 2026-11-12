@@ -9,6 +9,7 @@ from real_path_support import (
     ROW_PARTS,
     answer_runs,
     answer_snapshot,
+    app_like_runner,
     differences,
     fix_explanation_canary,
     pick_runs,
@@ -16,6 +17,7 @@ from real_path_support import (
     rerun,
     state_problems,
 )
+from sqlalchemy import text
 
 from app.modules.delay_analysis.application.run_start.engine_runtime import (
     missing_engine_tools,
@@ -53,6 +55,9 @@ ANSWER_COUNTS = {
     "ON_HOLD": 1,
     "FAILED": 2,
 }
+# 장치 세션 시험이 쓰는 트랜잭션 범위 설정값(표를 건드리지 않고 '쓴 것'을 흉내 낸다)
+_MARK = text("SELECT set_config('glowship_test.harness_mark', :value, true)")
+_MARKED = text("SELECT current_setting('glowship_test.harness_mark', true)")
 MAX_SECONDS = 60  # 느슨한 상한. NFR-001(30초)은 PC 마다 달라 여기서 단정하지 않는다(문서에 측정값)
 
 
@@ -63,6 +68,40 @@ def _golden() -> bool:
 def test_real_runtime_has_every_contract_tool():
     """실제 등록표에 계약 도구 12개가 모두 있다(임시 등록 없이 그대로 쓴다)."""
     assert missing_engine_tools() == []
+
+
+async def test_harness_session_drops_uncommitted_work_like_a_closed_app_session(
+    db_write_session,
+):
+    """
+    장치가 실행기에 돌려주는 세션은 앱 세션처럼 닫힐 때 커밋 안 한 것을 버린다. 이것이 없으면 실행기가 저장 뒤 커밋을
+    빠뜨리거나 저장이 도중에 실패해도 쓴 것이 남아 평가 시험이 통과한다. 시간 제한은 꺼 둔다(장치 머리말).
+    """
+    runner = app_like_runner(db_write_session)
+
+    async def marked() -> str | None:
+        async with runner.open_session() as session:
+            # 다음 세션의 커밋: 버려지지 않은 것이 있으면 여기서 함께 남는다
+            await session.commit()
+            return await session.scalar(_MARKED)
+
+    async with runner.open_session() as session:
+        await session.execute(_MARK, {"value": "커밋함"})
+        await session.commit()
+    assert await marked() == "커밋함"
+
+    async with runner.open_session() as session:  # 커밋 없이 끝남
+        await session.execute(_MARK, {"value": "커밋 안 함"})
+    assert await marked() == "커밋함"
+
+    with pytest.raises(RuntimeError):
+        async with runner.open_session() as session:  # 예외로 끝남
+            await session.execute(_MARK, {"value": "예외"})
+            raise RuntimeError("시험")
+    assert await marked() == "커밋함"
+
+    assert runner.run_time_limit_seconds is None
+    assert runner.save_time_limit_seconds is None
 
 
 def test_differences_reports_changed_cells():

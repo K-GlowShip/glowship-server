@@ -46,7 +46,12 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
         설명 생성 시각 = 실행 시작 시각, 저장 끝난 시각 = 시작 + 1초(이슈 #50 결정). 다른 것은 세션뿐이다:
         앱은 워커 접속을 새로 열고, 여기서는 롤백 세션 하나를 실행기에 돌려주고 SET LOCAL ROLE 로 워커 역할을 건다.
         실행기가 세션을 열 때마다 RLS 문맥(app.user_id·app.company_id)을 비워, 새 접속에서는 문맥이 비어 있는 것을
-        흉내 낸다(실행기가 문맥을 넣지 않으면 워커 역할에서 행이 보이지 않아 시험이 실패한다).
+        흉내 낸다(실행기가 문맥을 넣지 않으면 워커 역할에서 행이 보이지 않아 시험이 실패한다). 세션이 끝날 때는
+        커밋 안 한 것을 버린다(앱은 세션을 닫으며 버림). 이것이 없으면 실행기가 저장 뒤 커밋을 빠뜨리거나 저장이
+        도중에 실패해도 쓴 것이 다음 세션의 커밋에 섞여 남는다.
+      - 시간 제한(분석·저장)은 꺼 둔다. 제한에 걸려 DB 질의가 도중에 취소되면 접속이 무효가 되는데, 앱은 그 접속을
+        버리고 새로 열지만 여기서는 시험 트랜잭션 전체가 그 접속 하나라 이어 갈 수 없다. 정답 대조는 PC 속도와
+        상관없어야 하고, 제한에 걸린 뒤의 동작(다시 저장·FAILED)은 실행기 시험(test_run_start_runner)이 본다.
       - 조립은 따라 적지 않고 build_app_runner 를 부른다(세션만 open_session 으로 바꿔 끼움). 그 위에 시험용으로
         묶음 만들기(장애 주입)와 저장(상태·역할 기록)을 감싸고, 추적기는 시험이 넘긴 것을 쓴다.
       - 설명 모델 설정(EXPLANATION_MODEL)이 mock 이 아니면 건너뛴다. 정답은 엔진 템플릿 설명으로 만들어졌고,
@@ -255,7 +260,11 @@ def app_like_runner(
     async def same_session():
         # 앱은 세션마다 새 접속이라 RLS 문맥이 비어 있다. 세션 하나를 돌려쓰면 앞에서 넣은 문맥이 남으므로 비운다
         await db.execute(_EMPTY_RLS_CONTEXT)
-        yield db
+        try:
+            yield db
+        finally:
+            # 앱은 세션을 닫으며 커밋 안 한 것을 버린다. 여기서는 이 세션의 SAVEPOINT 를 되돌린다(워커 역할은 바깥에 남음)
+            await db.rollback()
 
     settings = get_settings().model_copy(
         update={
@@ -266,6 +275,9 @@ def app_like_runner(
         }
     )
     runner = build_app_runner(settings, open_session=same_session)
+    # 시간 제한은 끈다(머리말). 앱 조립이 설정값으로 넘긴 것을 지운다. 제한이 없는 실행기에서는 쓰이지 않는 값이다
+    runner.run_time_limit_seconds = None
+    runner.save_time_limit_seconds = None
     app_runtime_factory, app_save = runner.runtime_factory, runner.save_outcome
 
     def runtime_factory(session, run, tracer):
