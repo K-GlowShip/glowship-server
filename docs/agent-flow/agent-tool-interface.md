@@ -157,6 +157,20 @@ out = await call_tool(ctx, ToolName.GET_DELAY_CONTEXT, payload, step=AnalysisSte
 
 - 이 표대로 저장하는 코드는 분석 자동 시작의 `run_start/outcome_save.py`(`save_graph_outcome`)입니다. 보류가 아니면 같은 트랜잭션에서 입력 데이터 버전도 기록합니다([분석 자동 시작](../analysis/auto-start.md) 3절).
 
+### 7.1 에이전트는 업무 DB 에 쓰지 않는다 (AIR-007, GLOW-36)
+
+agentflow "에이전트가 하지 않는 것"(상태를 STALE·FINALIZED 로 바꾸기, 데이터 버전 기록, 초안·최종 선택 저장, 업무 데이터·운영 기준 변경)을 시험으로 고정했습니다(`tests/modules/delay_analysis/test_agent_write_boundary.py`).
+
+| 무엇을 | 어떻게 보나 |
+| --- | --- |
+| 에이전트 코드에 쓰는 수단이 없다 | 새 프로세스에서 `application/agent/**` 모듈을 모두 불러온 뒤, DB 라이브러리(sqlalchemy·asyncpg 등)·DB 세션·저장소·저장·전이 서비스·판단 모듈이 하나도 올라오지 않았음을 본다. 쓰기 호출 이름을 찾는 방식은 쓰지 않았다(배정 계산 변수 `commit` 같은 헛짚음, 이름을 바꾸면 놓침). 검사기 음성: 저장 서비스 하나를 더 불러오게 하면 잡는다 |
+| 대응안을 확정하지 않는다 | 에이전트 코드는 초안·최종 선택 모델과 `FINALIZED` 를 모른다(AST). 에이전트 종료 상태에 `FINALIZED` 가 없다. 초안·최종 선택 행을 만드는 곳은 `app/modules/decision` 뿐이다 |
+| 주입받은 DB 접근도 읽기만 한다 | 실행기가 넣는 실제 묶음(`build_engine_runtime`: 분석 준비·도구 12개·판정·설명)과 실행 상태 조회기를 `READ ONLY` 트랜잭션 하나로 만들어 개발 DB 의 실제 실행(A `AN-260101-002`)을 그래프 끝까지 돌린다. 어디서든 쓰면 PostgreSQL 이 거부해 실패한다. 결과는 저장된 설명·추천과 같다. 장치 음성: 같은 트랜잭션에서 `UPDATE` 한 줄은 거부된다 |
+
+- 변이 확인(11-12): 에이전트 모듈에 `import sqlalchemy`·`import app.core.database` 를 넣거나, 분석 준비가 `UPDATE` 를 하거나, 종료 상태에 `FINALIZED` 를 더하면 이 시험들이 실패했다.
+- 범위 밖: 메일 추출값 반영·안내문 발송은 설계상 MVP 밖(serviceflow 7절 Should, 발송 없음)이라 서버에 그 기능이 없다. 추적 로그 파일 쓰기는 요구가 허용한다("분석 로그 저장은 개별 승인 없이").
+- 저장·상태 전이는 지금처럼 서비스(`run_start/outcome_save.py` 등)가 그래프 밖에서 한다. 에이전트 쪽에 저장이 필요해지면 이 시험이 먼저 깨지므로, 그때는 설계(agentflow)부터 고친다.
+
 ## 8. 작업 중 실패와 원인
 
 - **넓게 잡은 `except Exception`이 LangGraph 제어 신호까지 삼킬 뻔함(이슈 #57 1번, 다시 점검에서 찾음):** 첫 구현은 `RuntimeWiringError`만 올렸는데, `GraphInterrupt`·`ParentCommand`(`GraphBubbleUp` 하위)도 `Exception` 하위라 노드 안에서 쓰면 FAILED로 바뀌었을 것입니다. 지금은 쓰지 않아 시험이 모두 통과했습니다. `langgraph.errors`의 예외 계층을 확인해 `GraphBubbleUp`도 올리게 하고, 시험과 변이(삼키게 바꾸면 실패)를 더했습니다.
