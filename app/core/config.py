@@ -191,8 +191,10 @@ class Settings(BaseSettings):
     @field_validator("log_level", mode="before")
     @classmethod
     def _log_level_upper(cls, value: object) -> object:
-        # LOG_LEVEL=info 처럼 소문자로 넣어도 받는다
-        return value.upper() if isinstance(value, str) else value
+        # LOG_LEVEL=info 처럼 소문자로 넣어도 받고, `LOG_LEVEL=` 처럼 비워 두면 기본(INFO)으로 본다
+        if isinstance(value, str):
+            return value.strip().upper() or "INFO"
+        return value
 
     @field_validator("postgres_role", mode="before")
     @classmethod

@@ -83,6 +83,63 @@ lib.info("SELECT 1")
     assert "SELECT 1" not in done.stderr  # 이 설정의 출력으로 다시 찍히지 않음
 
 
+def test_library_warning_with_its_own_handler_is_not_printed_twice():
+    # 자기 출력이 있는 로거(또는 그 아래 로거)의 경고는 이미 한 번 찍혔다. 출력이 없는 라이브러리의 경고만 여기서 낸다
+    done = _run(
+        _PRELUDE
+        + """
+parent = logging.getLogger("sqlalchemy.engine")
+own = logging.StreamHandler(sys.stdout)
+own.setFormatter(logging.Formatter("OWN %(message)s"))
+parent.addHandler(own)
+configure_app_logging("INFO")
+logging.getLogger("sqlalchemy.engine.Engine").warning("ENGINE-WARNING")
+logging.getLogger("sqlalchemy.pool").error("POOL-ERROR")
+"""
+    )
+    assert done.stdout.count("ENGINE-WARNING") == 1
+    assert "ENGINE-WARNING" not in done.stderr
+    assert done.stderr.count("POOL-ERROR") == 1  # 출력이 없는 로거의 오류는 그대로 나옴
+
+
+def test_logger_whose_name_only_starts_with_app_is_not_an_app_logger():
+    # "application"·"appx" 는 앱 로거가 아니다. 자기 수준을 INFO 로 내린 라이브러리의 INFO 는 찍지 않는다
+    done = _run(
+        _PRELUDE
+        + """
+configure_app_logging("INFO")
+other = logging.getLogger("application.module")
+other.setLevel(logging.INFO)
+other.info("NOT-APP-INFO")
+other.warning("NOT-APP-WARNING")
+logging.getLogger("app").info("APP-ROOT-INFO")
+"""
+    )
+    assert "NOT-APP-INFO" not in done.stderr
+    assert "NOT-APP-WARNING" in done.stderr
+    assert "APP-ROOT-INFO" in done.stderr
+
+
+def test_under_uvicorn_default_logging_each_line_is_printed_once():
+    # 운영과 같은 순서: uvicorn 이 자기 로깅을 먼저 설정하고, 그 뒤 앱이 lifespan 에서 설정한다
+    done = _run(
+        _PRELUDE
+        + """
+import logging.config
+import uvicorn.config
+logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)
+configure_app_logging("INFO")
+logging.getLogger("app.modules.x").info("APP-INFO")
+logging.getLogger("app.modules.x").warning("APP-WARNING")
+logging.getLogger("uvicorn.error").info("UVICORN-INFO")
+logging.getLogger("some.library").warning("LIB-WARNING")
+"""
+    )
+    both = done.stdout + done.stderr
+    for line in ("APP-INFO", "APP-WARNING", "UVICORN-INFO", "LIB-WARNING"):
+        assert both.count(line) == 1, line
+
+
 def test_calling_twice_adds_one_handler():
     done = _run(
         _PRELUDE
@@ -130,7 +187,13 @@ def test_log_level_default_and_lowercase():
     assert Settings(_env_file=None, **REQUIRED, log_level="debug").log_level == "DEBUG"
 
 
-@pytest.mark.parametrize("value", ["VERBOSE", "", "10"])
+@pytest.mark.parametrize("value", ["", "  "])
+def test_blank_log_level_is_default(value):
+    # `LOG_LEVEL=` 로 비워 둔 설정 파일로 서버가 멈추지 않게(다른 선택 설정과 같은 규칙)
+    assert Settings(_env_file=None, **REQUIRED, log_level=value).log_level == "INFO"
+
+
+@pytest.mark.parametrize("value", ["VERBOSE", "10", "info,debug"])
 def test_log_level_rejects_unknown(value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **REQUIRED, log_level=value)
