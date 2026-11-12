@@ -25,6 +25,8 @@ from app.modules.delay_analysis.application.agent.tools.option_feasibility impor
       - ①~⑤: 소진일·raw 3개·정수 준비량·품절일·위험 주문 귀속·지연 증분 회복·추천·H_end 와
         시나리오별 표의 대응안 값(공급량·확정 감소·회복 배송일·required_quantity).
       - GS-11 탐침(공여 200): OTHER 는 O2 만 회복, 지연 증분 회복 0.
+      - GS-05 동반 SKU(정답표 v6 3절·PASS "위험 단위 1주문/2상세"): 영향 집합 {X, Y}와 출처, 위험 상세 수,
+        계획(P)·예상(E) 확보일·배송일. X 만 보면 확보·배송이 더 일러져 깨진다(04_오류검출_대응표 GS-05).
 """
 
 KEEP, PDA, KR, OTHER = (
@@ -399,6 +401,31 @@ def test_engine_values_match_answer_sheet(glow50, scenario, key):
     for option_type, fields in expected["options"].items():
         option = got["options"][option_type]
         assert {k: option[k] for k in fields} == fields, option_type
+
+
+def test_gs05_companion_sku_matches_answer_sheet(glow50, scenario):
+    """K_IMPACTED {X, Y}(Y DELAY_INDUCED_ORDER_LINE), 위험 1주문/2상세, O1 P 03-22/03-25·E 03-30/04-02."""
+    snap, _replay, analysis = scenario("GS-05")
+    s = glow50.summarize(snap, analysis)
+    assert sorted(s["k_impacted"]) == ["X", "Y"]
+    assert s["impact_source"] == {
+        "X": "FORECAST_INCREMENT",
+        "Y": "DELAY_INDUCED_ORDER_LINE",
+    }
+
+    ol = analysis["ol"]
+    assert [r["order_code"] for r in ol["risks"]] == ["O1"]  # 1주문
+    (o1,) = ol["risks"]
+    assert sorted(line["sku"] for line in o1["lines"]) == ["X", "Y"]  # 2상세
+    assert o1["attribution"] == "DELAY_INDUCED"
+    got = {
+        "P": (ol["simP"]["secured"]["O1"].isoformat(), o1["delivery_P"].isoformat()),
+        "E": (ol["simE"]["secured"]["O1"].isoformat(), o1["delivery_E"].isoformat()),
+    }
+    assert got == {
+        "P": ("2026-03-22", "2026-03-25"),
+        "E": ("2026-03-30", "2026-04-02"),
+    }
 
 
 def test_gs11_probe_other_recovers_only_o2(scenario):
