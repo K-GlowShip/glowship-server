@@ -10,6 +10,7 @@ from app.modules.delay_analysis.application.agent.retry import (
     PERMISSION_DENIED,
     TOOL_TEMPORARY_ERROR_EXHAUSTED,
     TOOL_TIMEOUT_EXHAUSTED,
+    UNEXPECTED_ERROR_MESSAGE,
     UNEXPECTED_TOOL_ERROR,
     PermissionDeniedError,
     RequiredDataError,
@@ -104,6 +105,12 @@ def _failure(*args, **kwargs):
     return caught.value.summary
 
 
+def _caught(*args, **kwargs) -> ToolFailure:
+    with pytest.raises(ToolFailure) as caught:
+        _call(*args, **kwargs)
+    return caught.value
+
+
 async def _double(ctx, payload):
     return Out(doubled=payload.value * 2)
 
@@ -131,7 +138,9 @@ def test_unregistered_tool_is_blocked():
         1,
         False,
     )
-    assert "등록되지 않은 도구" in s.failure_message
+    # Client 문구는 고정, 도구 이름과 사유는 서버 로그로 갈 detail 에만(이슈 #57 2번)
+    assert s.failure_message == UNEXPECTED_ERROR_MESSAGE
+    assert caught.value.detail == "compare_options: 등록되지 않은 도구"
 
 
 def test_wrong_input_and_output_types_are_code_errors():
@@ -217,14 +226,16 @@ def test_required_data_error_after_prepare_is_failed_not_hold():
     async def missing(ctx, payload):
         raise RequiredDataError("MISSING_REQUIRED_DATA", "영향 SKU 가 입력에 없음")
 
-    s = _failure(missing, step=AnalysisStep.ANALYZING_OPTIONS)
+    failure = _caught(missing, step=AnalysisStep.ANALYZING_OPTIONS)
+    s = failure.summary
     assert (s.status, s.failed_step, s.failure_code, s.attempt_count) == (
         AnalysisOutcome.FAILED,
         AnalysisStep.ANALYZING_OPTIONS,
         UNEXPECTED_TOOL_ERROR,
         1,
     )
-    assert "MISSING_REQUIRED_DATA" in s.failure_message
+    assert s.failure_message == UNEXPECTED_ERROR_MESSAGE
+    assert "MISSING_REQUIRED_DATA 영향 SKU 가 입력에 없음" in failure.detail
 
 
 def test_step_comes_from_calling_node():

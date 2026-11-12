@@ -25,7 +25,7 @@
 | 보류 | E9 v1 `AN-260102-002` | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID` / 1 / false | 문구 = 판정한 쪽 문구 |
 
 - 권한 오류·일시 오류·분류 안 된 예외·도구 밖 예외와 추적 장애의 기대값은 정답 자료에 없습니다(정성 답안지 "실제 처리 결과는 OPEN"). 이 부분은 재시도 규칙(`docs/agent-flow/agent-retry.md` 2절)과 agentflow 7절·8.1절 문장이 근거입니다.
-- 문구는 글자 전체가 아니라 뜻(도구 이름·사유·재실행 방법)으로 확인합니다. 글자 전체는 단위 시험(`test_agent_retry.py`)이 봅니다.
+- 문구는 글자 전체가 아니라 뜻(도구의 화면 이름·사유·재실행 방법, 내부 함수 이름 없음)으로 확인합니다. 예상하지 못한 오류(`UNEXPECTED_TOOL_ERROR`)는 고정 문구입니다(이슈 #57 2번). 글자 전체는 단위 시험(`test_agent_retry.py`)이 봅니다.
 
 ## 2. 시험 장치
 
@@ -49,7 +49,7 @@
 | R04 | 일시 오류 3회: T1·T9·T11·T12 | FAILED / AI·AO·VO·VO / `TOOL_TEMPORARY_ERROR_EXHAUSTED` / 3 / true | `<노드>:failed` | 그 도구 3, 그 뒤 0 |
 | R05 | 권한 오류: T1·T7·T11·T12 | FAILED / 그 단계 / `PERMISSION_DENIED` / 1 / false | `<노드>:failed` | 그 도구 1 |
 | R06 | T1 일시 오류 1회 뒤 권한 오류 | FAILED / AI / `PERMISSION_DENIED` / 2 / false | `coordinator:failed` | T1 2 |
-| R07 | T10이 필수 자료 오류 | FAILED / AO / `UNEXPECTED_TOOL_ERROR` / 1 / false, 문구에 그 코드 | `response_options:failed` | T10 1, T11 0 |
+| R07 | T10이 필수 자료 오류 | FAILED / AO / `UNEXPECTED_TOOL_ERROR` / 1 / false, 고정 문구(그 코드는 서버 로그 경고에) | `response_options:failed` | T10 1, T11 0 |
 | R08 | T6 분류 안 된 예외 | FAILED / AI / `UNEXPECTED_TOOL_ERROR` / 1 / false | `inventory_impact:failed` | T6 1 |
 | R09 | 실제 설명 함수 + 엔진 결함 3개(엔진 필요) | FAILED / VO / `EXPLANATION_GENERATION_FAILED` / 3 / true (**정답 RT-2**) | `explain` | 모델 3, T12 0 |
 | R10 | 엔진 입력 보류: `REQUIRED_DATA_INVALID`(**정답 E9 v1**)·`MISSING_REQUIRED_DATA` | ON_HOLD / V / 그 코드 / 1 / false | `prepare` | 도구 0 |

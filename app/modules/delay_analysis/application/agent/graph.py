@@ -20,6 +20,7 @@ from app.modules.delay_analysis.application.agent.nodes.response_options import 
 )
 from app.modules.delay_analysis.application.agent.nodes.validate import validate_node
 from app.modules.delay_analysis.application.agent.retry import (
+    UNEXPECTED_ERROR_MESSAGE,
     UNEXPECTED_TOOL_ERROR,
     FailureSummary,
     ToolFailure,
@@ -77,10 +78,6 @@ def with_stale_check(name: str, node: Node) -> Node:
     return guarded
 
 
-# 도구 밖 함수의 예외일 때 Client 에게 보일 고정 문구(agentflow 7.1 failure_message). 예외 내용은 서버 로그로만 보낸다.
-UNEXPECTED_ERROR_MESSAGE = "분석 중 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요."
-
-
 def unexpected_error_summary(step: AnalysisStep) -> FailureSummary:
     """
     도구 밖 함수의 예외 → 실패 요약(agentflow 7.1 "분류되지 않은 오류").
@@ -114,6 +111,7 @@ def with_failure_stop(name: str, node: Node, step: StepOf) -> Node:
     """
     노드가 멈추면 FAILED 와 실패 요약을 남기고 종료로 보낸다. 그 전까지 채운 결과는 상태에 그대로 남는다.
       - 도구가 멈춤(call_tool 의 ToolFailure): 실패 요약 그대로. 실패 단계는 부르는 노드가 정한 failed_step.
+        코드 오류(code_error)의 자세한 사유(detail)는 서버 로그 경고로 남긴다.
       - 그 밖의 예외(Exception): FAILED·UNEXPECTED_TOOL_ERROR·시도 1. 실패 단계는 step
         (노드마다 고정, 조정 에이전트는 들어올 때의 상태로 정함).
       - 실행 도구 묶음 연결 실수(RuntimeWiringError)는 바꾸지 않고 올린다(부르는 코드의 버그).
@@ -127,6 +125,14 @@ def with_failure_stop(name: str, node: Node, step: StepOf) -> Node:
             return await node(state, config)
         except ToolFailure as failure:
             summary = failure.summary
+            if failure.detail:  # 코드 오류의 자세한 사유는 서버 로그로만(Client 문구는 고정, 이슈 #57 2번)
+                logger.warning(
+                    "분석 그래프 %s 노드에서 %s 로 FAILED (실행 %s): %s",
+                    name,
+                    summary.failure_code,
+                    state.get("analysis_run_id"),
+                    failure.detail,
+                )
         except RuntimeWiringError, GraphBubbleUp:
             raise
         except Exception:

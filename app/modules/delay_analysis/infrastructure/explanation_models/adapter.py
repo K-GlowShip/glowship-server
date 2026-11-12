@@ -4,7 +4,14 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from app.core.llm import LlmCallError, LlmResult, LlmTimeoutError, complete_text
+from app.core.llm import (
+    LlmCallError,
+    LlmError,
+    LlmResult,
+    LlmTimeoutError,
+    LlmUsage,
+    complete_text,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
 )
@@ -22,6 +29,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 어댑터는 설명 한 건마다 새로 만든다(selection.new_explanation_adapter). 예산·시도별 사용량이 건별 상태라서
         여러 실행이 하나를 같이 쓰면 값이 섞인다.
       - 시도별 사용량(attempt_usage): 엔진 시도 기록과 같은 순서. 토큰 수·걸린 시간, 실패면 사유 코드.
+        거부·잘림·빈 응답은 실패지만 제공자가 청구하므로 토큰 수도 남긴다. 시간 예산이 떨어져 부르지 않은 시도는
+        requested=False 로 표시한다(제공자에게 요청이 안 나감 → 호출 수·비용에 넣지 않음, app/core/llm_usage.py).
 """
 
 # 엔진 검증기가 JSON 원문을 읽으므로 제공자에게 JSON 방식으로 답하게 한다. 스키마 강제는 하지 않는다
@@ -61,7 +70,9 @@ class ExplanationModelAdapter:
             self._deadline = now + self._total_budget_seconds
         remaining = self._deadline - now
         if remaining <= 0:
-            self.attempt_usage.append({"error": BUDGET_EXHAUSTED, "elapsed_ms": 0})
+            self.attempt_usage.append(
+                {"error": BUDGET_EXHAUSTED, "elapsed_ms": 0, "requested": False}
+            )
             raise engine_errors.ModelTimeout(BUDGET_EXHAUSTED)
         try:
             result = self._complete(
@@ -72,22 +83,31 @@ class ExplanationModelAdapter:
                 response_format=EXPLANATION_RESPONSE_FORMAT,
             )
         except LlmTimeoutError as error:
-            self.attempt_usage.append(self._failed(error.reason, now))
+            self.attempt_usage.append(self._failed(error, now))
             raise engine_errors.ModelTimeout(error.reason) from error
         except LlmCallError as error:
-            self.attempt_usage.append(self._failed(error.reason, now))
+            self.attempt_usage.append(self._failed(error, now))
             raise engine_errors.ModelCallError(error.reason) from error
-        self.attempt_usage.append(
-            {
-                "input_tokens": result.usage.input_tokens,
-                "output_tokens": result.usage.output_tokens,
-                "elapsed_ms": result.elapsed_ms,
-            }
-        )
+        record = {**_tokens(result.usage), "elapsed_ms": result.elapsed_ms}
+        if result.response_model:
+            record["response_model"] = result.response_model
+        self.attempt_usage.append(record)
         return result.text
 
-    def _failed(self, reason: str, started: float) -> dict[str, Any]:
+    def _failed(self, error: LlmError, started: float) -> dict[str, Any]:
         return {
-            "error": reason,
+            "error": error.reason,
+            **(_tokens(error.usage) if error.usage is not None else {}),
             "elapsed_ms": int((self._clock() - started) * 1000),
         }
+
+
+def _tokens(usage: LlmUsage) -> dict[str, Any]:
+    """사용량에서 숫자 칸만. 캐시에서 읽은 입력 토큰은 제공자가 알려 준 때만 넣는다."""
+    tokens: dict[str, Any] = {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+    }
+    if usage.cached_input_tokens is not None:
+        tokens["cached_input_tokens"] = usage.cached_input_tokens
+    return tokens

@@ -40,7 +40,9 @@ from app.modules.delay_analysis.infrastructure.repository.stale_change_repositor
       - 다르다고 보는 경우(선택 전 놓치지 않는 쪽): 실행에 서명이 없음, 수집 완료 시각이 없음,
         재계산 입력이 엔진 Hold(엔진 judge 와 같음)나 계산이 지원하지 않는 운영 기준이 됨.
       - 새 입력 순번 저장소는 캐시를 거치지 않는다. 수집 트랜잭션 안(커밋 전)에서 읽으므로, 되돌려지면 같은 순번이
-        다른 내용으로 다시 쓰일 수 있다. 대신 이 재계산기 하나(트랜잭션 하나) 안에서는 순번별로 한 번만 읽는다.
+        다른 내용으로 다시 쓰일 수 있다. 대신 이 재계산기 하나(트랜잭션 하나) 안에서 마지막으로 읽은 순번 하나만 들고 있다가
+        같은 순번이면 다시 쓴다. 저장소 하나가 수백 MB 라(로컬 약 0.45GB, PR #116 리뷰) 순번마다 쌓지 않는다.
+        _judge 는 순번을 오름차순으로 보므로 한 실행 안에서 지난 순번으로 돌아가지 않는다.
         실행의 입력 순번 저장소는 이미 커밋된 순번이라 캐시(#60)를 쓴다.
       - 세션은 그 트랜잭션의 세션(워커 역할)이다. 읽기만 하고 커밋하지 않는다.
       - 엔진 경로가 없는 환경(CI·엔진 없이 띄운 서버)에서는 recalculator_or_none 이 None 을 돌려 지금처럼 1차 판정만 쓴다.
@@ -60,7 +62,8 @@ def recalculator_or_none(session: AsyncSession) -> EngineSignatureRecalculator |
 class EngineSignatureRecalculator:
     def __init__(self, session: AsyncSession):
         self.session = session
-        self._new_stores: dict[tuple, object] = {}
+        self._new_store_key: tuple | None = None
+        self._new_store_value: object | None = None
 
     async def signature_changed(
         self, run: AnalysisRun, changes: Sequence[ScopedChange]
@@ -100,11 +103,13 @@ class EngineSignatureRecalculator:
 
     async def _new_store(self, run: AnalysisRun, applied_seq: int):
         key = (run.company_id, applied_seq)
-        if key not in self._new_stores:
-            self._new_stores[key] = await load_company_engine_store(
+        if key != self._new_store_key:
+            self._new_store_value = None  # 새로 읽기 전에 이전 저장소를 놓는다
+            self._new_store_value = await load_company_engine_store(
                 self.session, run.company_id, applied_seq
             )
-        return self._new_stores[key]
+            self._new_store_key = key
+        return self._new_store_value
 
 
 def _recalculated_sha(

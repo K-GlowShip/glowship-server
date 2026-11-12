@@ -86,7 +86,7 @@ detect_after_sync (판정, 시작만 저장)
 | `CLOSE_RECEIVED` | 실행 없음, 이전 실행 그대로 |
 
 - **이전 실행 STALE 사유:** 단계 변경(`STAGE_CHANGED`)이면 `DELAY_STAGE_CHANGED`, 그 밖은 `DELAY_SCHEDULE_CHANGED`(엔진 하네스 `run_s1_s5.py` `new_run`, 확정 DB 와 같음). 감지 순번 = 이 수집의 적용 순번, 감지 시각 = 수집 완료 시각.
-- **새 실행:** 원인 스냅샷 = 판정한 스냅샷(ck16), **실행 시각 = 이 수집의 확정 시작 시각**(= 고객사 마지막 적재 수집 시작, 이슈 #50), 데이터 버전 기록, 상태 `DETECTED`. 같은 지연·같은 원인 스냅샷의 AUTO 실행은 `create_analysis_run`이 한 건만 만듭니다. 만든 실행 ID 는 `IngestResult.created_run_ids`에 담깁니다.
+- **새 실행:** 원인 스냅샷 = 판정한 스냅샷(ck16), **실행 시각 = 이 수집의 확정 시작 시각**(= 고객사 마지막 적재 수집 시작, 이슈 #50), 상태 `DETECTED`. 데이터 버전은 만들 때가 아니라 입력 검증을 통과한 실행의 결과를 저장할 때 기록합니다(2026-11-11, `analysis-run-creation.md` 4절). 같은 지연·같은 원인 스냅샷의 AUTO 실행은 `create_analysis_run`이 한 건만 만듭니다. 만든 실행 ID 는 `IngestResult.created_run_ids`에 담깁니다.
 - **분석 보류(GLOW-15)는 여기서 판정하지 않습니다**(사용자 결정 11-06). 분석을 시작할 때 엔진 입력(#53 `EngineHold`)이 같은 "차단 검증 오류" 조건으로 정합니다. 분석 시작(`DETECTED` → 분석)은 GLOW-128(#51)입니다.
 - **실행 생성 실패는 수집을 막지 않습니다(#63 리뷰 [권장], 2026-11-09 결정 1안).** serviceflow 5.2절처럼 입력 확정(실행 생성)과 수집 적재를 다른 단계로 봅니다.
   - 판정 하나마다 SAVEPOINT(`begin_nested`)로 감쌉니다. 데이터·운영 조건 오류(`SKIPPABLE`: `OPERATING_RULE_MISSING` 그날 운영 기준 없음, `RUN_CODE_EXHAUSTED` 그날 실행 999건 소진, `EPISODE_START_MISMATCH`)면 그 판정만 되돌리고(이전 실행 STALE 포함) 경고 로그를 남긴 뒤 다음 판정과 수집을 계속합니다. 건너뛴 판정은 `IngestResult.skipped_auto_runs`(지연 ID·오류 코드·메시지)에 담깁니다. 선적·스냅샷·에피소드는 그대로 적재됩니다.
@@ -106,5 +106,5 @@ detect_after_sync (판정, 시작만 저장)
 | `test_episode_service.py` | 초기 적재 건너뜀, 시작(다음 번호·관측 시각), 운영 중 첫 관측 지연 → 1번, 판정은 닫지 않고 `close_episodes`가 입고·회복 종료, 후속은 저장 안 함 (DB 없음) |
 | `test_ingest_episode_sql.py` (data_sync) | 수집 → 지연 선적 에피소드 시작·입고 종료, 초기 적재의 지연 스냅샷은 에피소드 없음·다음 수집에서 시작, 다른 원천은 보지 않음, 판정 → AUTO 실행 생성 → 종료 → STALE 판정 순서 (실제 DB) |
 | `test_ingest_replay_sql.py` (data_sync) | 확정 스냅샷을 수집으로 다시 넣으면 재현 선적의 `delay_events`가 원래와 같고(8건), 판정 사유가 확정 AUTO 실행 19건과 같음 (실제 DB, 실행 생성은 끔) |
-| `test_auto_run_sql.py` | AUTO 실행: 새 지연 v1(실행 시각·입력 순번·원인 스냅샷·데이터 버전), 악화·단계 변경 → 이전 실행 STALE 사유·감지 순번 + v2, 회복 → `DELAY_RECOVERED` 뒤 닫힘, 입고 → 없음, 재수집 → 그대로, 사유 대응표, 실행 없는 열린 지연의 후속 → v1 `EPISODE_STARTED`·회복 → 실행 없음, 운영 기준 없음 → 실행만 건너뛰고 수집 적재, 건너뛴 판정의 이전 실행 STALE 되돌림 (실제 DB) |
+| `test_auto_run_sql.py` | AUTO 실행: 새 지연 v1(실행 시각·입력 순번·원인 스냅샷·만들 때 데이터 버전 0건), 악화·단계 변경 → 이전 실행 STALE 사유·감지 순번 + v2, 회복 → `DELAY_RECOVERED` 뒤 닫힘, 입고 → 없음, 재수집 → 그대로, 사유 대응표, 실행 없는 열린 지연의 후속 → v1 `EPISODE_STARTED`·회복 → 실행 없음, 운영 기준 없음 → 실행만 건너뛰고 수집 적재, 건너뛴 판정의 이전 실행 STALE 되돌림 (실제 DB) |
 | `test_delay_event_write_repository_sql.py` | 첫 SHIPMENT 수집만 초기 적재(롤백 트랜잭션), 이번 수집 스냅샷·직전 스냅샷(관측 시각이 뒤집혀도 적용 순번 순), 선적별 번호·열린 에피소드, 추가·한 번만 종료와 DB 제약 (실제 DB) |

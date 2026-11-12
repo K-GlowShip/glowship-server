@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from app.core.llm_usage import log_model_usage, summarize_usage
 from app.modules.delay_analysis.application.agent.retry import (
     FailureSummary,
     explanation_failure,
@@ -46,12 +47,17 @@ from app.modules.delay_analysis.infrastructure.explanation_models.selection impo
 logger = logging.getLogger(__name__)
 
 
+USAGE_FEATURE = "explain"  # 모델 사용량 기록에 적는 기능 이름
+
+
 class ExplanationTracer(Protocol):
-    """실행 추적기(GLOW-124 RunTracer)의 설명 시도 기록 부분"""
+    """실행 추적기(GLOW-124 RunTracer)의 설명 시도·모델 사용량 기록 부분"""
 
     def explanation_attempts(
         self, attempts: Iterable[Mapping[str, Any]], usage: Iterable[Any] = ()
     ) -> None: ...
+
+    def model_usage(self, feature: str, usage: Mapping[str, Any]) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -153,7 +159,11 @@ async def generate_explanation(
 
     attempts = tuple(result["attempts"])
     # 실제 모델 어댑터는 시도별 토큰 수·걸린 시간을 모은다(mock 은 없음). 추적기의 사용량 칸으로 넘긴다(NFR-008)
-    _trace(tracer, attempts, tuple(getattr(model, "attempt_usage", ())))
+    attempt_usage = tuple(getattr(model, "attempt_usage", ()))
+    _trace(tracer, attempts, attempt_usage)
+    _record_model_usage(
+        tracer, analysis_run_id, result["model_name"], attempts, attempt_usage
+    )
     if result["status"] == "PASSED":
         return ExplanationPassed(
             model_name=result["model_name"],
@@ -185,6 +195,37 @@ def _trace(
         tracer.explanation_attempts(attempts, usage)
     except Exception:
         logger.warning("설명 시도 추적 기록 실패(분석은 계속)", exc_info=True)
+
+
+def _record_model_usage(
+    tracer: ExplanationTracer | None,
+    analysis_run_id: str,
+    model_name: str,
+    attempts: tuple[dict[str, Any], ...],
+    attempt_usage: tuple[Any, ...],
+) -> None:
+    """설명 한 건의 모델 사용량 합계(모델명·호출 수·토큰 수·예상 비용)를 서버 로그와 추적에 남긴다(NFR-008).
+
+    시도 기록(_trace)과 따로 감싼다. 시도 기록이 실패해도 사용량은 남고, 사용량 기록이 실패해도 분석 결과는 같다.
+    사용량을 모으지 않는 어댑터(결정적 mock)는 시도 수만큼 호출한 것으로 센다(토큰 수 없음).
+    """
+    try:
+        calls = attempt_usage if attempt_usage else tuple({} for _ in attempts)
+        summary = summarize_usage(model_name, calls)
+    except Exception:
+        logger.warning("모델 사용량 합계 실패(분석은 계속)", exc_info=True)
+        return
+    try:
+        log_model_usage(USAGE_FEATURE, summary, analysis_run_id=analysis_run_id)
+    except Exception:
+        logger.warning("모델 사용량 로그 기록 실패(분석은 계속)", exc_info=True)
+    record = getattr(tracer, "model_usage", None)
+    if record is None:  # 추적기가 없거나, 사용량 기록을 받지 않는 추적기
+        return
+    try:
+        record(USAGE_FEATURE, summary)
+    except Exception:
+        logger.warning("모델 사용량 추적 기록 실패(분석은 계속)", exc_info=True)
 
 
 # --- 그래프 연결 (GLOW-129 AnalysisRuntime.explain·final_check_input, 인터페이스 문서 2절) ---------------------

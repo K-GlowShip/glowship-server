@@ -73,7 +73,9 @@ async def test_새_지연이면_v1_AUTO_실행을_만든다(db_write_session):
     )
     # 실행 시각 = 이 수집의 확정 시작, 입력 순번 = 이 수집의 적용 순번
     assert (run.started_at, run.input_seq) == (DAY1, result.applied_seq)
-    assert run.data_versions > 0
+    assert (
+        run.data_versions == 0
+    )  # 데이터 버전은 결과 저장 때 기록(만들 때 아님, 2026-11-11)
 
 
 @pytest.mark.parametrize(
