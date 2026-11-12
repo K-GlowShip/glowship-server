@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     analysis_max_concurrent_runs: int = Field(default=4, ge=1)
     # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
     analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
+    # 분석 실행 하나의 시간 제한(초, 이슈 #123, docs/analysis/auto-start.md 2절). dev 사양 측정 전 잠정값.
+    # 분석 = 시작 전이부터 그래프 끝까지(자리를 기다린 시간은 뺌). 넘으면 FAILED(RUN_TIME_LIMIT_EXCEEDED).
+    # 저장 = 결과 저장(저장 직후 재판정의 판정 서명 재계산 포함). 넘으면 재계산 없이 다시 저장(걸린 변경이 있으면 STALE).
+    analysis_run_time_limit_seconds: float = Field(default=120.0, gt=0)
+    analysis_save_time_limit_seconds: float = Field(default=60.0, gt=0)
     # 실행 추적 내부 로그 폴더 (이슈 #51, docs/agent-flow/agent-tracing.md 3절). 실행 사건(노드·도구·설명 시도, 마스킹됨)을
     # <폴더>/agent_trace_outbox/<고객사>/<UTC 날짜>.jsonl 에 한 줄씩 남긴다(agentflow 8.1 "외부 전송 불허 시").
     # 비우면(기본) 추적하지 않는다. 배포 컨테이너는 /app 아래에 쓸 수 없어, 쓸 수 있는 폴더(볼륨)를 정한 뒤 넣는다.

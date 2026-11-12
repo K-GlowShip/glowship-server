@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -14,6 +14,10 @@ from app.core.rls_context import set_rls_context
 from app.modules.delay_analysis.application.agent.graph import (
     UNEXPECTED_ERROR_MESSAGE,
     build_analysis_graph,
+)
+from app.modules.delay_analysis.application.agent.retry import (
+    RUN_TIME_LIMIT_EXCEEDED,
+    RUN_TIME_LIMIT_MESSAGE,
 )
 from app.modules.delay_analysis.application.agent.runtime import (
     RUNTIME_KEY,
@@ -72,6 +76,14 @@ from app.modules.delay_analysis.infrastructure.repository.run_status_repository 
         추적기를 만들거나 닫다 예외가 나도 분석은 계속한다(agentflow 8.1 "장애 영향"). 만들기에 실패하면 추적 없이 돈다.
         없으면(기본) 추적하지 않는다.
       - 메모리(이슈 #123): 그래프가 끝나면(예외 포함) 실행 묶음의 엔진 입력을 놓는다(AnalysisRuntime.release).
+      - 시간 제한(이슈 #123, docs/analysis/auto-start.md 2절): 두 구간. 기본 None(제한 없음), 앱 조립이 설정값을 넘긴다.
+          · 분석 = 시작 전이 ~ 그래프 끝(자리를 기다린 시간은 뺌). 넘으면 그래프를 취소하고 새 세션으로 지금 단계
+            FAILED(RUN_TIME_LIMIT_EXCEEDED). 시작 전이에서 넘으면 실행은 DETECTED 그대로(다음 시작 정리가 다시 시작).
+          · 저장 = 결과 저장(저장 직후 재판정의 판정 서명 재계산 포함). 넘으면 되돌리고 재계산 없이 다시 저장한다.
+            재계산은 걸린 변경이 있을 때만 돌므로 다시 저장은 사실상 STALE(놓치지 않는 쪽). 그것도 넘으면 FAILED.
+          · 넘었는지는 예외 종류가 아니라 제한의 expired() 로 본다(취소 뒤 세션 되돌리기가 다른 예외를 낼 수 있음).
+            서버 종료의 취소(CancelledError)는 제한으로 바꾸지 않는다(다음 시작 정리가 재시작 문구로 FAILED).
+          · 스레드(저장소 읽기·엔진 계산)는 취소돼도 끝까지 돌고 결과는 버린다(캐시에도 안 넣음).
 """
 
 logger = logging.getLogger(__name__)
@@ -85,6 +97,10 @@ TracerFactory = Callable[[StartedRun], RunTracer | None]
 OutcomeSaver = Callable[..., Awaitable[ResultSaveOutcome | None]]
 # 저장 끝난 시각으로 넘길 값. 가상 시각이면 실행 시작 시각, 아니면 None(DB 시각)
 SaveTime = Callable[[StartedRun | AnalysisRun], datetime | None]
+
+# 시간 제한을 켰을 때 뒷정리(재계산 없이 다시 저장, 제한 FAILED 쓰기)에 주는 시간(초). 이것도 막히면 critical 로그만
+# 남기고 자리를 푼다(그 실행은 다음 시작 정리가 끝냄).
+CLEANUP_LIMIT_SECONDS = 30.0
 
 
 def _no_save_time(_: StartedRun | AnalysisRun) -> datetime | None:
@@ -133,6 +149,8 @@ class AnalysisRunner:
         save_outcome: OutcomeSaver = save_graph_outcome,
         graph: CompiledStateGraph | None = None,
         tracer_factory: TracerFactory | None = None,
+        run_time_limit_seconds: float | None = None,
+        save_time_limit_seconds: float | None = None,
     ):
         self.open_session = open_session
         self.runtime_factory = runtime_factory
@@ -143,6 +161,12 @@ class AnalysisRunner:
         self.save_outcome = save_outcome
         self.graph = graph or build_analysis_graph()
         self._semaphore = asyncio.Semaphore(max_concurrent_runs)
+        self.run_time_limit_seconds = run_time_limit_seconds
+        self.save_time_limit_seconds = save_time_limit_seconds
+        limited = (
+            run_time_limit_seconds is not None or save_time_limit_seconds is not None
+        )
+        self._cleanup_limit = CLEANUP_LIMIT_SECONDS if limited else None
         self._tasks: dict[uuid.UUID, asyncio.Task] = {}
 
     # --- 시작 ------------------------------------------------------------------------
@@ -210,20 +234,28 @@ class AnalysisRunner:
             await (db.commit() if changed else db.rollback())
 
     async def _analyze(self, company_id: uuid.UUID, analysis_run_id: uuid.UUID) -> None:
-        run = await self._begin(company_id, analysis_run_id)
-        if run is None:
-            return
-        tracer = self._open_tracer(run)
+        run: StartedRun | None = None
+        tracer: RunTracer | None = None
+        limit = asyncio.timeout(self.run_time_limit_seconds)
         try:
-            final = await self._run_graph(run, tracer)
-            async with self.open_session() as db:
-                await set_rls_context(db, user_id=None, company_id=company_id)
-                saved = await self.save_outcome(
-                    db, run, final or {}, now=self.save_time(run)
+            try:
+                async with limit:
+                    run = await self._begin(company_id, analysis_run_id)
+                    if run is None:
+                        return
+                    tracer = self._open_tracer(run)
+                    final = await self._run_graph(run, tracer)
+            except Exception:
+                if not limit.expired():
+                    raise
+                await self._fail_on_limit(
+                    company_id, analysis_run_id, "분석", self.run_time_limit_seconds
                 )
-                await db.commit()
+                return
+            saved = await self._save(run, final or {})
         finally:
-            await self._close_tracer(run, tracer)
+            if run is not None:
+                await self._close_tracer(run, tracer)
         logger.info(
             "분석 실행 %s 끝: %s (저장 %s)",
             analysis_run_id,
@@ -252,18 +284,21 @@ class AnalysisRunner:
                 }
                 if tracer is not None:
                     config["callbacks"] = [tracer.callback_handler()]
-                async for state in self.graph.astream(
-                    initial_state(run), config, stream_mode="values"
-                ):
-                    final = state
-                    next_step = state.get("step")
-                    if (
-                        next_step in IN_PROGRESS_STEPS
-                        and next_step != step
-                        and "outcome" not in state
-                    ):
-                        step = next_step
-                        await self._advance(run, step)
+                # aclosing: 단계 전이 도중 취소·예외로 빠져도 그래프를 먼저 닫고 나서 그래프 세션을 되돌린다
+                # (그냥 두면 생성기가 나중에 정리돼, 그사이 닫힌 세션을 쓰는 노드 작업이 남을 수 있음, 이슈 #123)
+                async with aclosing(
+                    self.graph.astream(initial_state(run), config, stream_mode="values")
+                ) as stream:
+                    async for state in stream:
+                        final = state
+                        next_step = state.get("step")
+                        if (
+                            next_step in IN_PROGRESS_STEPS
+                            and next_step != step
+                            and "outcome" not in state
+                        ):
+                            step = next_step
+                            await self._advance(run, step)
             finally:
                 # 끝난 실행의 엔진 입력을 놓는다(이슈 #123). 노드 안에서 걸린 타이머가 취소돼도 예정 시각까지 이 실행의
                 # 문맥(그래프 설정 → 실행 묶음)을 붙잡아, 놓지 않으면 엔진 저장소가 실행이 끝난 뒤에도 남는다.
@@ -272,6 +307,85 @@ class AnalysisRunner:
                 # 그래프 세션은 읽기만 한다. 실패한 트랜잭션이어도 되돌리고 닫는다(저장은 새 세션)
                 await graph_db.rollback()
         return final
+
+    async def _save(
+        self, run: StartedRun, final: dict[str, Any]
+    ) -> ResultSaveOutcome | None:
+        """그래프 종료 상태를 저장한다. 저장 제한을 넘으면 재계산 없이 다시 저장하고, 그것도 넘으면 FAILED."""
+        limit = asyncio.timeout(self.save_time_limit_seconds)
+        try:
+            async with limit:
+                return await self._save_once(run, final)
+        except Exception:
+            if not limit.expired():
+                raise
+        logger.warning(
+            "분석 실행 %s 의 저장이 제한 %s초를 넘어 판정 서명 재계산 없이 다시 저장합니다(걸린 변경이 있으면 STALE)",
+            run.analysis_run_id,
+            self.save_time_limit_seconds,
+        )
+        retry = asyncio.timeout(self._cleanup_limit)
+        try:
+            async with retry:
+                return await self._save_once(run, final, recalculate=False)
+        except Exception:
+            if not retry.expired():
+                raise
+        await self._fail_on_limit(
+            run.company_id, run.analysis_run_id, "저장", self.save_time_limit_seconds
+        )
+        return None
+
+    async def _save_once(
+        self, run: StartedRun, final: dict[str, Any], **options: Any
+    ) -> ResultSaveOutcome | None:
+        # options 는 다시 저장할 때만 넘긴다(recalculate=False). 저장 함수를 바꿔 끼운 시험·장치는 처음 저장만 쓴다
+        async with self.open_session() as db:
+            await set_rls_context(db, user_id=None, company_id=run.company_id)
+            saved = await self.save_outcome(
+                db, run, final, now=self.save_time(run), **options
+            )
+            await db.commit()
+            return saved
+
+    async def _fail_on_limit(
+        self,
+        company_id: uuid.UUID,
+        analysis_run_id: uuid.UUID,
+        part: str,
+        seconds: float | None,
+    ) -> None:
+        """제한을 넘은 실행을 새 세션으로 지금 단계 FAILED(RUN_TIME_LIMIT_EXCEEDED). 막히면 critical 로그(다음 시작 정리가 끝냄)."""
+        logger.warning(
+            "분석 실행 %s 의 %s 구간이 제한 %s초를 넘어 중단합니다",
+            analysis_run_id,
+            part,
+            seconds,
+        )
+        try:
+            async with asyncio.timeout(self._cleanup_limit):
+                async with self.open_session() as db:
+                    outcome = await fail_unfinished(
+                        db,
+                        company_id=company_id,
+                        analysis_run_id=analysis_run_id,
+                        message=RUN_TIME_LIMIT_MESSAGE,
+                        code=RUN_TIME_LIMIT_EXCEEDED,
+                        now=await self._save_time_of(db, company_id, analysis_run_id),
+                    )
+                    await db.commit()
+        except Exception:
+            logger.critical(
+                "분석 실행 %s 를 제한 초과 FAILED 로 저장하지 못했습니다. 다음 서버 시작 정리가 끝냅니다",
+                analysis_run_id,
+                exc_info=True,
+            )
+            return
+        if outcome is None:
+            logger.warning(
+                "분석 실행 %s 는 진행 중이 아니라(시작 전이에서 넘었거나 이미 끝남) FAILED 로 바꾸지 않았습니다",
+                analysis_run_id,
+            )
 
     def _open_tracer(self, run: StartedRun) -> RunTracer | None:
         """추적기를 만든다. 만들다 예외가 나면 경고만 남기고 추적 없이 분석한다(agentflow 8.1 장애 영향)."""

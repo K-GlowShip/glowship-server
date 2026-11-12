@@ -25,7 +25,7 @@ MAX_ATTEMPTS = 3  # 최초 1 + 재시도 2 (agentflow 7.1, DDL ck13·ck14)
 # --- failure_code ------------------------------------------------------------------------
 # 근거: API 명세 v6.2 4.5 "FAILED(도구 실패, 예: TOOL_TIMEOUT_EXHAUSTED)", 정답 overlay E3 v2, 엔진 bundle_verify rt1
 TOOL_TIMEOUT_EXHAUSTED = "TOOL_TIMEOUT_EXHAUSTED"
-# 제안(설계 문서에 없음): 시간 초과가 아닌 일시 오류가 3회 이어진 경우
+# 근거: agentflow 7.1 표(서버 PR #28 이 먼저 쓰고 11-05 설계에 반영): 시간 초과가 아닌 일시 오류가 3회 이어진 경우
 TOOL_TEMPORARY_ERROR_EXHAUSTED = "TOOL_TEMPORARY_ERROR_EXHAUSTED"
 # 근거: agentflow 7.1 "재시도해도 같은 오류"
 PERMISSION_DENIED = "PERMISSION_DENIED"
@@ -35,8 +35,10 @@ REQUIRED_DATA_INVALID = (
 MISSING_REQUIRED_DATA = "MISSING_REQUIRED_DATA"  # API 명세 4.5 ON_HOLD 사유
 # 근거: DDL ck26
 EXPLANATION_GENERATION_FAILED = "EXPLANATION_GENERATION_FAILED"
-# 제안(설계 문서에 없음): 분류되지 않은 예외. 코드 오류일 수 있어 재시도하지 않는다
+# 근거: agentflow 7.1 표(서버 PR #28 이 먼저 쓰고 11-05 설계에 반영): 분류되지 않은 예외. 코드 오류일 수 있어 재시도하지 않는다
 UNEXPECTED_TOOL_ERROR = "UNEXPECTED_TOOL_ERROR"
+# 제안(설계 문서에 없음, 이슈 #123): 실행 하나가 실행기의 시간 제한을 넘어 중단됨. 도구 실패가 아니라 시도 1·소진 아님
+RUN_TIME_LIMIT_EXCEEDED = "RUN_TIME_LIMIT_EXCEEDED"
 
 HOLD_CODES = frozenset({REQUIRED_DATA_INVALID, MISSING_REQUIRED_DATA})
 
@@ -184,6 +186,10 @@ class AttemptRecord:
 # 예상하지 못한 오류(UNEXPECTED_TOOL_ERROR)는 원인과 상관없이 이 문장 하나(명세 v6.2 2절 문구, docs/frontend-api.md 실패 코드 표).
 # 자세한 사유는 ToolFailure.detail 로 넘겨 서버 로그에만 남긴다(graph.with_failure_stop).
 UNEXPECTED_ERROR_MESSAGE = "분석 중 예상하지 못한 오류로 멈췄습니다. 재분석을 요청하고, 다시 나오면 담당자에게 알려 주세요."
+# 실행기의 시간 제한을 넘은 실행(RUN_TIME_LIMIT_EXCEEDED, 이슈 #123)
+RUN_TIME_LIMIT_MESSAGE = (
+    "분석이 제한 시간 안에 끝나지 않아 중단했습니다. 잠시 뒤 재분석을 요청하세요."
+)
 
 # 화면에 보일 도구 이름(agentflow 7.1 예 "판매량 조회가 시간 초과로 3번 모두 실패했습니다"). 설계 문서에는 T4 예만 있어 나머지는 같은 꼴로 정함.
 # 키는 ToolName 값(tools/common.py)이다. retry 는 tools 를 import 하지 않으므로 문자열로 둔다.

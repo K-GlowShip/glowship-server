@@ -1,14 +1,21 @@
 import uuid
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
 from app.core.security.auth import CurrentUser
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
     fake_runtime,
+)
+from app.modules.delay_analysis.application.agent.retry import (
+    RUN_TIME_LIMIT_EXCEEDED,
+    RUN_TIME_LIMIT_MESSAGE,
 )
 from app.modules.delay_analysis.application.agent.state import AnalysisStep
 from app.modules.delay_analysis.application.analysis_run_detail_service import (
@@ -27,6 +34,7 @@ from app.modules.delay_analysis.application.run_start.runner import AnalysisRunn
 from app.modules.delay_analysis.application.run_start.transitions import (
     RESTART_FAILURE_MESSAGE,
     RetireOutcome,
+    StartedRun,
     advance_status,
     begin_analysis,
     fail_unfinished,
@@ -644,3 +652,103 @@ async def test_retired_current_run_shows_in_detail_and_list(db_write_session):
     assert delay["closeReason"] == "RECEIVED"
     assert after["analyzing"] == before["analyzing"] - 1
     assert after["needsReanalysis"] == before["needsReanalysis"] + 1
+
+
+async def test_time_limit_failure_passes_checks_and_records_data_versions(
+    db_write_session,
+):
+    """
+    시간 제한 FAILED(이슈 #123): 새 실패 코드가 실제 DB CHECK(ck10~ck14)를 통과하고, 그때 단계·시도 1·소진 아님,
+    입력 데이터 버전 5건, 가상 시각이면 끝난 시각 = 시작 + 1초(다른 그래프 밖 FAILED 와 같은 규칙).
+    """
+    db = db_write_session
+    rid = await _run_of(db, "NO_DELAY")
+    company = await _reset(db, rid, "ANALYZING_OPTIONS")
+    await db.execute(
+        text("DELETE FROM analysis_run_data_versions WHERE analysis_run_id = :id"),
+        {"id": rid},
+    )
+    started = (await _row(db, rid)).started_at
+
+    saved = await fail_unfinished(
+        db,
+        company_id=company,
+        analysis_run_id=rid,
+        message=RUN_TIME_LIMIT_MESSAGE,
+        code=RUN_TIME_LIMIT_EXCEEDED,
+        now=started,
+    )
+    await db.flush()
+    row = await _row(db, rid)
+
+    assert saved is not None and saved.saved
+    assert (row.status, row.failed_step, row.failure_code) == (
+        "FAILED",
+        "ANALYZING_OPTIONS",
+        "RUN_TIME_LIMIT_EXCEEDED",
+    )
+    assert (row.attempt_count, row.retry_exhausted, row.failure_message) == (
+        1,
+        False,
+        RUN_TIME_LIMIT_MESSAGE,
+    )
+    assert row.finished_at == started + timedelta(seconds=1)
+    assert await db.scalar(_DATA_VERSIONS, {"id": rid}) == 5
+
+
+_SAVE_LOCK_KEY = 2026111201  # 아래 시험만 쓰는 advisory 잠금 열쇠(데이터는 쓰지 않음)
+
+
+async def test_save_limit_during_db_query_is_saved_again_on_a_new_session():
+    """
+    저장 제한이 DB 질의 도중 걸리는 경우(이슈 #123). 실제 접속 풀로 본다 — 롤백 세션 하나로는 볼 수 없다.
+    처음 저장이 트랜잭션 잠금을 잡은 채 질의에서 멈추면 제한이 그 접속을 끊고, 다시 저장은 새 세션으로
+    같은 잠금을 잡아 끝난다(끊긴 트랜잭션·접속이 풀에 남지 않음). 실행기가 저장마다 세션을 새로 여는 이유다:
+    세션 하나를 돌려쓰면 다시 저장이 PendingRollbackError 가 된다.
+    """
+    engine = create_async_engine(
+        get_settings().database_url, connect_args={"timeout": 2}
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    resaved = object()
+    calls = []
+
+    async def save(db, run, state, *, now=None, **options):
+        calls.append(options)
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SAVE_LOCK_KEY}
+        )
+        if options.get("recalculate") is False:
+            return resaved
+        await db.execute(text("SELECT pg_sleep(10)"))
+
+    run = StartedRun(
+        analysis_run_id=uuid.uuid4(),
+        company_id=uuid.uuid4(),
+        delay_event_id=uuid.uuid4(),
+        operating_rule_set_id=uuid.uuid4(),
+        input_seq=1,
+        started_at=datetime.now(UTC),
+        trigger_shipment_schedule_snapshot_id=None,
+        is_latest=True,
+    )
+    runner = AnalysisRunner(
+        open_session=factory,
+        runtime_factory=lambda *_: None,
+        save_outcome=save,
+        save_time_limit_seconds=0.3,
+    )
+    try:
+        try:
+            async with factory() as db:
+                await db.execute(text("SELECT 1"))
+        except (OSError, SQLAlchemyError) as error:
+            pytest.skip(f"DB 에 접속할 수 없어 건너뜀: {type(error).__name__}")
+
+        saved = await runner._save(run, {})
+
+        assert saved is resaved
+        assert calls == [{}, {"recalculate": False}]
+        assert engine.pool.checkedout() == 0
+    finally:
+        await engine.dispose()

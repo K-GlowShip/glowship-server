@@ -22,8 +22,9 @@
 | 그 밖의 일시 오류 | 도구가 `TransientToolError` | 함 | FAILED / 그 단계 / `TOOL_TEMPORARY_ERROR_EXHAUSTED` / 3 / true | **제안**(아래 5절) |
 | 권한 오류 | `PermissionDeniedError` | 안 함 | FAILED / 그 단계 / `PERMISSION_DENIED` / 그 시도 / false | agentflow 7.1 |
 | 필수 자료 오류 | `RequiredDataError` | 안 함 | ON_HOLD / `VALIDATING` / `REQUIRED_DATA_INVALID`·`MISSING_REQUIRED_DATA` / 그 시도(첫 시도면 1) / false. **그래프 도구에서 나면 `call_tool`이 FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false로 바꿉니다**(결정 1: 보류는 엔진 입력 단계에서만, `agent-tool-interface.md` 4절) | API 명세 4.5, 정답 E9 v1(첫 시도 보류라 1), agentflow 7.1 |
-| 분류 안 된 예외 | 그 밖의 `Exception` | 안 함 | FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false | **제안**(아래 5절) |
+| 분류 안 된 예외 | 그 밖의 `Exception` | 안 함 | FAILED / 그 단계 / `UNEXPECTED_TOOL_ERROR` / 그 시도 / false | agentflow 7.1(11-05 반영, 아래 5절) |
 | 설명 3회 실패 | 엔진 생성기 결과 | 엔진이 함 | FAILED / `VALIDATING_OUTPUT` / `EXPLANATION_GENERATION_FAILED` / 3 / true | DDL ck26, 정답 E2 v1 |
+| 실행 시간 제한 | 실행기(도구 밖, `docs/analysis/auto-start.md` 2절) | 안 함 | FAILED / 그때 단계 / `RUN_TIME_LIMIT_EXCEEDED` / 1 / false | **제안**(아래 5절, 이슈 #123) |
 
 - 일시 오류 뒤에 재시도하지 않는 오류가 나면, 그 시도 번호를 남기고 소진은 false입니다(예: 시간 초과 1회 → 권한 오류 = 시도 2, 시간 초과 1회 → 필수 자료 오류 = ON_HOLD 시도 2).
 - `backoff_seconds`가 모자라면 마지막 값을 쓰고, 비어 있으면 기다리지 않고 재시도합니다.
@@ -61,7 +62,8 @@
 | 이번에 `state.py`는 고치지 않음 | 상태에 `FailureSummary`를 넣으면 `state.py` ↔ `retry.py`가 서로 import 합니다. LangGraph는 실행 때 상태의 타입 힌트를 읽으므로, 그래프에 끼우는 작업에서 함께 정합니다 |
 
 ## 5. 확인이 필요한 것
-- **설계 문서에 없는 코드 2개(제안):** 시간 초과가 아닌 일시 오류 `TOOL_TEMPORARY_ERROR_EXHAUSTED`, 분류 안 된 예외 `UNEXPECTED_TOOL_ERROR`. DB는 `failure_code`를 자유 문자열로 받으므로 제약에는 걸리지 않습니다.
+- **서버가 먼저 쓴 코드:** 시간 초과가 아닌 일시 오류 `TOOL_TEMPORARY_ERROR_EXHAUSTED`, 분류 안 된 예외 `UNEXPECTED_TOOL_ERROR`는 서버 PR #28이 제안했고 11-05 agentflow 7.1 표에 들어갔습니다(agentflow 변경 기록). DB는 `failure_code`를 자유 문자열로 받으므로 제약에는 걸리지 않습니다.
+- **설계 문서에 없는 코드 1개(제안, 이슈 #123):** 실행기의 시간 제한을 넘은 실행 `RUN_TIME_LIMIT_EXCEEDED`(시도 1, 소진 아님). 도구 실패가 아니라 `TOOL_TIMEOUT_EXHAUSTED`(도구 3회)와 섞지 않았습니다. DDL CHECK(ck10~ck14)를 통과하는 것을 실제 DB 시험으로 확인했습니다. 설계 담당에게 agentflow 7.1 표에 넣어 달라고 요청합니다.
 - **`failure_message` 형식:**
   - agentflow 7.1은 "Client에게 보여 줄 사유와 재실행 방법"(예: "판매량 조회가 시간 초과로 3번 모두 실패했습니다. 잠시 뒤 재분석을 요청하세요.")입니다.
   - 정답 overlay는 기술 기록(예: "도구 시간 초과 3회(RT-1 주입)")입니다.

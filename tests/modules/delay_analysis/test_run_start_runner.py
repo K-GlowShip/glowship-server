@@ -16,6 +16,10 @@ from app.modules.delay_analysis.application.agent.fake_runtime import (
 from app.modules.delay_analysis.application.agent.graph import (
     UNEXPECTED_ERROR_MESSAGE,
 )
+from app.modules.delay_analysis.application.agent.retry import (
+    RUN_TIME_LIMIT_EXCEEDED,
+    RUN_TIME_LIMIT_MESSAGE,
+)
 from app.modules.delay_analysis.application.agent.runtime import RuntimeWiringError
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
@@ -23,6 +27,7 @@ from app.modules.delay_analysis.application.agent.state import (
 )
 from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.application.agent.tracing import RunTracer
+from app.modules.delay_analysis.application.run_start import outcome_save
 from app.modules.delay_analysis.application.run_start import runner as R
 from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
 from app.modules.delay_analysis.application.run_start.transitions import (
@@ -52,16 +57,19 @@ class _Run:
 
 
 class _Session:
-    """세션 가짜: 커밋·롤백 횟수만 센다."""
+    """세션 가짜: 커밋·롤백 횟수만 센다. db.rollback_raises 면 되돌리기에서 예외(취소로 접속이 죽은 경우 흉내)."""
 
-    def __init__(self, log):
+    def __init__(self, log, db=None):
         self.log = log
+        self.db = db
 
     async def commit(self):
         self.log.append("commit")
 
     async def rollback(self):
         self.log.append("rollback")
+        if self.db is not None and self.db.rollback_raises:
+            raise RuntimeError("되돌리기 실패(시험)")
 
     async def get(self, _model, run_id):
         return _Run(run_id)
@@ -75,6 +83,11 @@ class _Db:
         self.advanced: dict[uuid.UUID, list[AnalysisStep]] = {}
         self.saved: dict[uuid.UUID, dict] = {}
         self.failed: dict[uuid.UUID, str] = {}
+        self.failed_code: dict[uuid.UUID, str | None] = {}
+        # 시간 제한 시험: 오래 걸리게 할 시작 전이 실행·단계 전이 단계, 되돌리기 예외
+        self.begin_stalls: set[uuid.UUID] = set()
+        self.advance_stalls: set[AnalysisStep] = set()
+        self.rollback_raises = False
         self.session_log: list[str] = []
         self.unfinished: list[UnfinishedRun] = []
         self.fail_raises = False
@@ -91,23 +104,32 @@ class _Db:
 
     @asynccontextmanager
     async def open_session(self):
-        yield _Session(self.session_log)
+        yield _Session(self.session_log, self)
 
     async def begin(self, db, *, company_id, analysis_run_id):
+        if analysis_run_id in self.begin_stalls:
+            await asyncio.sleep(3600)
         if self.status.get(analysis_run_id) != "DETECTED":
             return None
         self.status[analysis_run_id] = "VALIDATING"
         return _Run(analysis_run_id)
 
     async def advance(self, db, *, company_id, analysis_run_id, to):
+        if to in self.advance_stalls:
+            await asyncio.sleep(3600)
         self.advanced.setdefault(analysis_run_id, []).append(to)
         self.status[analysis_run_id] = to
         return True
 
-    async def fail(self, db, *, company_id, analysis_run_id, message, now=None):
+    async def fail(
+        self, db, *, company_id, analysis_run_id, message, code=None, now=None
+    ):
         if self.fail_raises or analysis_run_id in self.fail_raises_for:
             raise RuntimeError("저장 실패(시험)")
+        if self.status.get(analysis_run_id) == "DETECTED":
+            return  # 실제 fail_unfinished 처럼 시작 전 실행은 그대로
         self.failed[analysis_run_id] = message
+        self.failed_code[analysis_run_id] = code
 
     async def find(self, db):
         return self.unfinished
@@ -120,11 +142,12 @@ class _Db:
             self.status[analysis_run_id] = "STALE"
         return outcome
 
-    async def save(self, db, run, state, *, now=None):
+    async def save(self, db, run, state, *, now=None, **options):
         self.saved[run.analysis_run_id] = {
             "outcome": state.get("outcome"),
             "now": now,
             "failure": state.get("failure"),
+            "options": options,
         }
 
 
@@ -706,3 +729,225 @@ def test_released_runtime_cannot_start_again():
             analysis_run_id=uuid.uuid4(),
             engine=runtime.preparer.engine,
         )
+
+
+# --- 시간 제한 (이슈 #123) ------------------------------------------------------------------
+
+LIMIT = 0.2  # 시험용 제한(초). 멈춘 도구·저장은 3600초를 기다리므로 제한이 없으면 시험이 끝나지 않는다
+
+
+def _stalling_runtime(made, stall_in=frozenset()):
+    """stall_in 에 든 실행은 T1 도구에서 멈춘다(취소될 때까지). 만든 묶음은 made 에 남긴다."""
+
+    def factory(_session, run, _tracer):
+        runtime = fake_runtime()
+        if run.analysis_run_id in stall_in:
+            spec = runtime.registry[ToolName.GET_DELAY_CONTEXT]
+
+            async def stall(ctx, payload):
+                await asyncio.sleep(3600)
+
+            runtime.registry = {
+                **runtime.registry,
+                ToolName.GET_DELAY_CONTEXT: replace(spec, fn=stall),
+            }
+        made.append(runtime)
+        return runtime
+
+    return factory
+
+
+async def _idle(runner):
+    async with asyncio.timeout(10):  # 제한이 안 걸리면 여기서 실패(시험이 멈추지 않게)
+        await runner.wait_idle()
+
+
+async def test_run_over_analysis_limit_is_failed_and_frees_the_slot(db):
+    """분석 제한을 넘은 실행은 지금 단계 FAILED(RUN_TIME_LIMIT_EXCEEDED). 자리가 풀려 기다리던 실행이 끝까지 돈다."""
+    stuck, waiting = db.detected(2)
+    made = []
+    runner = _runner(
+        db,
+        runtime_factory=_stalling_runtime(made, {stuck}),
+        max_concurrent_runs=1,
+        run_time_limit_seconds=LIMIT,
+    )
+
+    runner.start(COMPANY, stuck)
+    runner.start(COMPANY, waiting)
+    await _idle(runner)
+
+    assert (db.failed[stuck], db.failed_code[stuck]) == (
+        RUN_TIME_LIMIT_MESSAGE,
+        RUN_TIME_LIMIT_EXCEEDED,
+    )
+    assert stuck not in db.saved
+    assert db.saved[waiting]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    with pytest.raises(RuntimeWiringError, match="놓은"):
+        made[0].ctx  # noqa: B018 — 제한으로 끝나도 엔진 입력을 놓음
+
+
+async def test_limited_run_closes_its_tracer(db):
+    (run_id,) = db.detected()
+    made = []
+    runner, tracers = _traced_runner(
+        db,
+        [],
+        runtime_factory=_stalling_runtime(made, {run_id}),
+        run_time_limit_seconds=LIMIT,
+    )
+
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    assert tracers[0].closed == 1
+    assert db.failed_code[run_id] == RUN_TIME_LIMIT_EXCEEDED
+
+
+async def test_limit_is_judged_by_expiry_not_by_exception_type(db):
+    """취소 뒤 그래프 세션 되돌리기가 다른 예외를 내도 제한으로 처리한다(마지막 잡기의 '예상하지 못한 오류'가 아님)."""
+    (run_id,) = db.detected()
+    made = []
+
+    def factory(session, run, tracer):
+        db.rollback_raises = True  # 그래프 세션을 되돌릴 때 예외
+        return _stalling_runtime(made, {run_id})(session, run, tracer)
+
+    runner = _runner(db, runtime_factory=factory, run_time_limit_seconds=LIMIT)
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    assert db.failed_code[run_id] == RUN_TIME_LIMIT_EXCEEDED
+
+
+async def test_graph_is_closed_before_its_session_is_rolled_back(db):
+    """단계 전이 도중 제한에 걸려도 그래프 스트림을 먼저 닫고 그래프 세션을 되돌린다(닫힌 세션을 쓰는 노드가 남지 않게)."""
+    (run_id,) = db.detected()
+    db.advance_stalls = {AnalysisStep.ANALYZING_IMPACT}
+    log = db.session_log
+
+    class _Graph:
+        async def astream(self, state, config, stream_mode):
+            try:
+                yield {"step": AnalysisStep.ANALYZING_IMPACT}
+                yield {"outcome": AnalysisOutcome.NO_DELAY}
+            finally:
+                log.append("graph_closed")
+
+    runner = _runner(db, graph=_Graph(), run_time_limit_seconds=LIMIT)
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    closed = log.index("graph_closed")
+    assert log[closed + 1] == "rollback"
+    assert db.failed_code[run_id] == RUN_TIME_LIMIT_EXCEEDED
+
+
+async def test_limit_during_start_transition_leaves_run_detected(db):
+    """시작 전이에서 넘으면 실행은 DETECTED 그대로(FAILED 로 안 바꿈, 다음 시작 정리가 다시 시작). 자리는 풀린다."""
+    stuck, waiting = db.detected(2)
+    db.begin_stalls = {stuck}
+    runner = _runner(db, max_concurrent_runs=1, run_time_limit_seconds=LIMIT)
+
+    runner.start(COMPANY, stuck)
+    runner.start(COMPANY, waiting)
+    await _idle(runner)
+
+    assert db.status[stuck] == "DETECTED"
+    assert stuck not in db.failed
+    assert db.saved[waiting]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+
+
+async def test_shutdown_cancel_is_not_turned_into_limit_failure(db):
+    """서버 종료의 취소는 제한 FAILED 가 아니다(진행 중으로 남아 다음 시작 정리가 재시작 문구로 끝냄)."""
+    (run_id,) = db.detected()
+    runner = _runner(
+        db,
+        runtime_factory=_stalling_runtime([], {run_id}),
+        run_time_limit_seconds=30,
+        shutdown_grace_seconds=0.01,
+    )
+    runner.start(COMPANY, run_id)
+    await asyncio.sleep(0.05)
+    await runner.shutdown()
+
+    assert runner.running == []
+    assert run_id not in db.failed
+
+
+def _slow_save(db, *, fast_retry=True):
+    """처음 저장(재계산 포함)은 멈추고, 재계산 없이 다시 저장(recalculate=False)은 fast_retry 면 바로 끝난다."""
+
+    async def save(session, run, state, *, now=None, **options):
+        if options.get("recalculate") is False and fast_retry:
+            return await db.save(session, run, state, now=now, **options)
+        await asyncio.sleep(3600)
+
+    return save
+
+
+async def test_save_over_limit_is_saved_again_without_recalculation(db):
+    (run_id,) = db.detected()
+    runner = AnalysisRunner(
+        open_session=db.open_session,
+        runtime_factory=lambda s, r, t: fake_runtime(),
+        save_outcome=_slow_save(db),
+        save_time_limit_seconds=LIMIT,
+    )
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
+    assert db.saved[run_id]["options"] == {"recalculate": False}
+    assert run_id not in db.failed
+
+
+async def test_save_again_over_cleanup_limit_is_failed(db, monkeypatch):
+    monkeypatch.setattr(R, "CLEANUP_LIMIT_SECONDS", LIMIT)
+    (run_id,) = db.detected()
+    runner = AnalysisRunner(
+        open_session=db.open_session,
+        runtime_factory=lambda s, r, t: fake_runtime(),
+        save_outcome=_slow_save(db, fast_retry=False),
+        save_time_limit_seconds=LIMIT,
+    )
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    assert db.failed_code[run_id] == RUN_TIME_LIMIT_EXCEEDED
+    assert run_id not in db.saved
+
+
+async def test_first_save_does_not_pass_save_options(db):
+    """처음 저장은 지금처럼 부른다(저장 함수를 바꿔 끼운 시험·장치가 그대로 동작)."""
+    (run_id,) = db.detected()
+    runner = _runner(db, run_time_limit_seconds=30, save_time_limit_seconds=30)
+    runner.start(COMPANY, run_id)
+    await _idle(runner)
+
+    assert db.saved[run_id]["options"] == {}
+
+
+async def test_save_without_recalculation_passes_no_recalculator(monkeypatch):
+    captured = []
+
+    async def no_versions(*_):
+        return None
+
+    async def save_result(db, **kwargs):
+        captured.append(kwargs["recalculator"])
+
+    monkeypatch.setattr(outcome_save, "record_input_data_versions", no_versions)
+    monkeypatch.setattr(
+        outcome_save, "analysis_result_from_state", lambda *_, **__: None
+    )
+    monkeypatch.setattr(outcome_save, "save_analysis_result", save_result)
+    monkeypatch.setattr(outcome_save, "recalculator_or_none", lambda db: "재계산기")
+    state = {"outcome": AnalysisOutcome.READY_FOR_REVIEW}
+
+    await outcome_save.save_graph_outcome(None, _Run(uuid.uuid4()), state)
+    await outcome_save.save_graph_outcome(
+        None, _Run(uuid.uuid4()), state, recalculate=False
+    )
+
+    assert captured == ["재계산기", None]

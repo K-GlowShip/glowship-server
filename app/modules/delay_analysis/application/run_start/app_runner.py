@@ -104,6 +104,8 @@ def build_app_runner(
         shutdown_grace_seconds=settings.analysis_shutdown_grace_seconds,
         save_time=save_time,
         tracer_factory=build_tracer_factory(settings.agent_trace_dir),
+        run_time_limit_seconds=settings.analysis_run_time_limit_seconds,
+        save_time_limit_seconds=settings.analysis_save_time_limit_seconds,
     )
 
 

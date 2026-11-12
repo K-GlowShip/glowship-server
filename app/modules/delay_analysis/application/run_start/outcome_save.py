@@ -98,8 +98,13 @@ async def save_graph_outcome(
     state: Mapping[str, Any],
     *,
     now: datetime | None = None,
+    recalculate: bool = True,
 ) -> ResultSaveOutcome | None:
-    """그래프 종료 상태대로 저장한다. STALE 이면 저장하지 않고 None."""
+    """
+    그래프 종료 상태대로 저장한다. STALE 이면 저장하지 않고 None.
+    recalculate=False: 저장 직후 재판정에 판정 서명 재계산을 쓰지 않는다(걸린 변경이 있으면 STALE, 놓치지 않는 쪽).
+    실행기가 저장 시간 제한을 넘겨 다시 저장할 때만 넘긴다(이슈 #123).
+    """
     outcome = state.get("outcome")
     if outcome is not None and outcome != AnalysisOutcome.ON_HOLD:
         await record_input_data_versions(db, run)
@@ -110,7 +115,7 @@ async def save_graph_outcome(
             db,
             **ids,
             result=analysis_result_from_state(state),
-            recalculator=recalculator_or_none(db),
+            recalculator=recalculator_or_none(db) if recalculate else None,
             now=now,
         )
     if outcome == AnalysisOutcome.NO_DELAY:
