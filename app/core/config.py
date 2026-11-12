@@ -87,15 +87,16 @@ class Settings(BaseSettings):
 
     # Analysis auto start (GLOW-128, 이슈 #51, docs/analysis/auto-start.md)
     # 켜면 지연 감지(AUTO)·재분석(API 20)으로 만든 실행을 서버 안에서 바로 분석하고 저장한다. 서버 시작 때 남은 실행을 정리한다.
-    # 기본은 꺼짐: 실제 실행 묶음(계약 도구 12개)은 만들 수 있지만, 실제 묶음 끝까지 시험(평가 시나리오 정답 대조)과
-    # NFR-001 측정 전이다. 켜는 조건은 docs/analysis/auto-start.md 7절(사용자 결정 11-09·11-10).
+    # 기본은 꺼짐. 실제 묶음 끝까지 시험(평가 시나리오 정답 대조)과 NFR-001 측정은 끝났고(11-12), 켜는 조건과
+    # 서버 메모리별 설정은 docs/analysis/auto-start.md 7절(사용자 결정 11-09·11-10·11-12).
     # 꺼져 있으면 지금처럼 실행이 DETECTED 로 남는다.
     analysis_auto_start_enabled: bool = False
     # 한 서버 프로세스가 동시에 돌리는 분석 실행 수. 넘치면 DETECTED 그대로 기다린다(docs/analysis/auto-start.md 2절).
+    # 메모리 2GB 서버는 1(서로 다른 순번 실행이 2건 이상 동시에 돌면 메모리 부족, 7절 3번). 기본 4는 그대로 둔다(11-12).
     analysis_max_concurrent_runs: int = Field(default=4, ge=1)
     # 서버 종료 때 돌던 분석을 기다리는 시간(초). 넘으면 취소하고, 그 실행은 다음 시작 때 FAILED 로 정리된다.
     analysis_shutdown_grace_seconds: float = Field(default=10.0, ge=0)
-    # 분석 실행 하나의 시간 제한(초, 이슈 #123, docs/analysis/auto-start.md 2절). dev 사양 측정 전 잠정값.
+    # 분석 실행 하나의 시간 제한(초, 이슈 #123, docs/analysis/auto-start.md 2절). 값은 dev 사양 재측정(11-12)으로 정함(7절 3번).
     # 분석 = 시작 전이부터 그래프 끝까지(자리를 기다린 시간은 뺌). 넘으면 FAILED(RUN_TIME_LIMIT_EXCEEDED).
     # 저장 = 결과 저장(저장 직후 재판정의 판정 서명 재계산 포함). 넘으면 재계산 없이 다시 저장(걸린 변경이 있으면 STALE).
     analysis_run_time_limit_seconds: float = Field(default=120.0, gt=0)
