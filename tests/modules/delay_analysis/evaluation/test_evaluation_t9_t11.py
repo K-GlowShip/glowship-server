@@ -27,6 +27,8 @@ from app.modules.delay_analysis.application.agent.tools.option_feasibility impor
       - GS-11 탐침(공여 200): OTHER 는 O2 만 회복, 지연 증분 회복 0.
       - GS-05 동반 SKU(정답표 v6 3절·PASS "위험 단위 1주문/2상세"): 영향 집합 {X, Y}와 출처, 위험 상세 수,
         계획(P)·예상(E) 확보일·배송일. X 만 보면 확보·배송이 더 일러져 깨진다(04_오류검출_대응표 GS-05).
+      - NULL 과 0 구분(정답표 v6 2절): GS-07 OTHER(판정 불가)는 회복 집계·항목·donor 계산 칸이 NULL,
+        GS-08 KR(계산을 끝낸 불가)은 0 / 0 / 1 / 0 과 O1 1행. 불가를 NULL 로 저장하면 GS-08 이 깨진다.
 """
 
 KEEP, PDA, KR, OTHER = (
@@ -196,6 +198,11 @@ ANSWERS = {
                     "supply_quantity": None,
                     "outcome_rows": None,  # 주문별 결과 행 0개
                     "rank": None,
+                    # 정답표 v6 2절: 회복 집계·잔여 준비도 NULL(0 이 아님, G-2)
+                    "fully_recovered_orders": None,
+                    "not_recovered_order_count": None,
+                    "item_secured_blocked_orders": None,
+                    "residual_prepare_total": None,
                 },
             },
         },
@@ -233,6 +240,38 @@ ANSWERS = {
                     "supply_quantity": 0,
                     "residual_prepare_total": 60,
                     "not_recovered_orders": {"O1": "NO_KR_ELIGIBLE_STOCK"},
+                    # 정답표 v6 2절 회복 집계 0 / 0 / 1 / 0: 계산을 끝낸 불가라 NULL 이 아니라 0 (G-3)
+                    "fully_recovered_orders": 0,
+                    "not_recovered_order_count": 1,
+                    "item_secured_blocked_orders": 0,
+                    # 정답표 v6 2절 GS-08 KR: O1 1행, 예상 배송·공급원 NULL
+                    "outcome_rows": [
+                        {
+                            "order": "O1",
+                            "line_no": 1,
+                            "outcome": "NOT_RECOVERED",
+                            "not_recovered_reason": "NO_KR_ELIGIBLE_STOCK",
+                            "line_securement_status": "NOT_SECURED",
+                            "secured_quantity": 0,
+                            "recovered_quantity": 0,
+                            "supply_source": None,
+                            "delivery": None,
+                        }
+                    ],
+                    # LOTION40 항목: NOT_APPLICABLE, 감소 "0.0000"·잔여 "60.0000", 확정 0, 잔여 준비 60, 공급 null
+                    "sku_effects": {
+                        "LOTION40": {
+                            "evaluation_status": "NOT_APPLICABLE",
+                            "not_estimable_reason": None,
+                            "impact_source": "FORECAST_INCREMENT",
+                            "raw_reduction": "0.0000",
+                            "raw_residual_increment": "60.0000",
+                            "reduction_committed_quantity": 0,
+                            "residual_prepare_quantity": 60,
+                            "supply_quantity": None,
+                            "donor": None,
+                        }
+                    },
                 },
             },
         },
@@ -425,6 +464,40 @@ def test_gs05_companion_sku_matches_answer_sheet(glow50, scenario):
     assert got == {
         "P": ("2026-03-22", "2026-03-25"),
         "E": ("2026-03-30", "2026-04-02"),
+    }
+
+
+def test_gs07_other_item_and_donor_are_null_not_zero(glow50, scenario):
+    """정답표 v6 2절 GS-07 OTHER(G-2): CREAM20 항목은 판정 불가, 감소·잔여·확정·공급 NULL, donor 계산 칸 NULL."""
+    snap, _replay, analysis = scenario("GS-07")
+    effect = glow50.summarize(snap, analysis)["options"][OTHER]["sku_effects"]
+    assert list(effect) == ["CREAM20"]
+    item = dict(effect["CREAM20"])
+    donor = dict(item.pop("donor"))
+    assert item == {
+        "evaluation_status": "NOT_ESTIMABLE",
+        "not_estimable_reason": "DONOR_NO_NEXT_INBOUND",
+        "impact_source": "FORECAST_INCREMENT",
+        "raw_reduction": None,
+        "raw_residual_increment": None,
+        "reduction_committed_quantity": None,
+        "residual_prepare_quantity": None,
+        "supply_quantity": None,
+    }
+    donor.pop("source_warehouse_id")  # 정답표에 없는 UUID
+    assert donor == {
+        "next_inbound_basis": "N2",
+        "next_inbound_date": None,
+        "on_hand": 60,
+        "reserved": 0,
+        "open_commitment_net": 0,
+        "safety_stock_quantity": 70,
+        "forecast_until_next_raw": None,
+        "transferable_raw": None,
+        "transferable_quantity": None,
+        "order_layer_used_quantity": None,
+        "forecast_channel_share": None,
+        "forecast_securable_quantity": None,
     }
 
 
