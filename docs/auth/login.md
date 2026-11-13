@@ -1,7 +1,7 @@
 # 로그인과 인증 쿠키
 
-`app/modules/user/`의 로그인·로그아웃 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
-토큰 재발급(refresh)과 토큰 폐기는 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
+`app/modules/user/`의 로그인·로그아웃·재발급 API와 `app/core/security/`의 토큰·쿠키·인증 의존성이 **현재 어떻게 동작하는지** 설명합니다.
+토큰 폐기(jti 폐기 목록)는 구현하지 않았으며, 이 문서는 그 결정과 비워 둔 자리까지만 다룹니다(7절).
 
 ## 1. 전체 흐름
 
@@ -20,10 +20,18 @@ sequenceDiagram
     W->>S: GET /api/v1/... (쿠키 자동 전송)
     S->>S: get_current_user: access_token 검증 (DB 조회 없음)
     S-->>W: 200 또는 401 UNAUTHENTICATED / 403 FORBIDDEN
+
+    Note over W,S: access 만료 뒤 401 을 받으면
+    W->>S: POST /api/v1/auth/refresh (refresh_token 쿠키)
+    S->>S: refresh JWT 검증 (sub 만 있음)
+    S->>DB: set_config('app.user_id', sub) · users 조회 (존재 · ACTIVE)
+    S->>S: DB 의 현재 역할·고객사로 access JWT 발급
+    S-->>W: 204 (본문 없음)<br/>Set-Cookie: access_token (refresh 쿠키는 그대로)
 ```
 
 - 토큰은 응답 본문이 아니라 `HttpOnly` 쿠키로만 전달합니다. 프론트는 토큰을 읽거나 저장하지 않고, 요청에 `credentials: "include"`만 붙입니다.
 - 보호된 API는 요청마다 쿠키의 access 토큰만 검증하며 DB를 조회하지 않습니다(5절).
+- access 토큰이 만료되면 프론트가 `POST /api/v1/auth/refresh`로 access 쿠키만 새로 받습니다(2-2절). refresh 토큰은 회전하지 않으므로 로그인 뒤 7일이 지나면 다시 로그인합니다.
 
 ## 2. 로그인 API
 
@@ -116,16 +124,67 @@ Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path
 - 같은 쿠키 값을 다시 보내면 `GET /me`는 여전히 200입니다. 즉시 무효화가 필요하면 refresh `jti` 폐기 목록이 필요하며, 재발급 API 구현 때 저장소와 함께 정합니다(7절).
 - 폐기 목록을 넣으려면 로그아웃이 refresh `jti`를 읽어야 하는데, refresh 쿠키는 Path가 `/api/v1/auth/refresh`로 좁혀져 로그아웃 요청에 실려 오지 않습니다. 따라서 그때는 **쿠키 Path 조정**(예: `/api/v1/auth`로 넓혀 인증 엔드포인트에만 실리게)이 함께 필요합니다(7절).
 
+## 2-2. 재발급 API
+
+`POST /api/v1/auth/refresh` — `app/modules/user/presentation/auth_api_router.py` (명세 4.1, API 27, GLOW-152)
+
+### 요청
+
+본문·쿼리·경로 변수가 없습니다. 브라우저가 `refresh_token` 쿠키를 보냅니다(Path가 `/api/v1/auth/refresh`라 이 요청에만 실립니다). access 쿠키도 Path `/`라 함께 실리지만 서버는 보지 않습니다.
+
+### 성공 응답
+
+```http
+HTTP/1.1 204 No Content
+Set-Cookie: access_token=...; HttpOnly; Max-Age=28800; Path=/; SameSite=lax; Secure
+```
+
+- `access_token` 쿠키만 새로 내립니다. 로그인 발급분과 같은 이름·Path·속성(`set_access_cookie`)이어서 브라우저가 기존 access 쿠키를 덮어씁니다. `tests/core/test_cookies.py`가 로그인 발급분과 쌍으로 대조합니다.
+- `refresh_token` 쿠키는 **그대로 둡니다(회전하지 않음)**. 로그인 때 받은 7일이 지나면 재발급도 401이 되어 다시 로그인합니다.
+- 프론트는 보호된 API가 401 `UNAUTHENTICATED`를 돌려주면 이 API를 한 번 호출한 뒤 원래 요청을 다시 보내고, 재발급도 401이면 로그인 화면으로 이동합니다. (2026-11-13 기준 `glowship-web`은 아직 재발급을 호출하지 않고 401이면 로그아웃 처리합니다. 연동은 프론트 작업.)
+
+### 실패 응답
+
+모든 실패는 공통 에러 형식 `{"code", "message", "request_id"}`로 응답하며, 쿠키는 내리지 않습니다. 기존 쿠키를 지우지도 않습니다(지우는 것은 로그아웃의 일).
+
+| 상태 | code | 상황 |
+| --- | --- | --- |
+| 401 | `UNAUTHENTICATED` | refresh 쿠키 없음, 서명 불일치, 만료, access 토큰을 refresh 자리에 보냄, 클레임 구성 불일치, **토큰의 사용자가 DB에 없음**. 사유를 구분하지 않습니다 |
+| 403 | `ACCOUNT_DISABLED` | `users.status`가 `DISABLED`. 로그인·`GET /me`와 같은 코드. 401로 주면 프론트가 재발급을 반복할 수 있어 구분합니다 |
+| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청(3-1절) |
+
+### 서비스 로직 (`AuthService.refresh_access_token`)
+
+```
+decode_token(REFRESH) · sub UUID 해석 (실패 401) → set_rls_context(user_id=sub, company_id=None)
+→ users.find_by_id (없음 401 · DISABLED 403) → create_access_token(DB 의 user_id·role_code·company_id)
+```
+
+- **권한의 출처는 토큰이 아니라 DB 행입니다.** refresh 토큰에는 `sub`·`jti`만 있고(4절) 역할·고객사가 없으므로, 재발급 시점에 사용자를 다시 읽어 **현재** 역할로 access 토큰을 만듭니다. 토큰 발급 뒤 역할이 바뀌었으면 새 access 토큰에 반영됩니다. 계정 비활성화도 여기서 막힙니다.
+- **RLS 컨텍스트**: 운영 앱 DB 역할(`glowship_v4_app`)에서는 `users_select_tenant_or_self` 정책(0001)이 `user_id = app.user_id`인 자기 행을 보여 주므로 조회 전에 `set_rls_context(user_id=토큰의 사용자)`를 넣습니다. 고객사 컨텍스트는 필요 없어 비웁니다. `GET /me`(`docs/auth/me.md` 4절)와 같은 경로이며, 로그인처럼 SECURITY DEFINER 함수를 쓰지 않습니다(토큰으로 사용자를 이미 아는 상태).
+- 토큰 검증 실패는 DB를 읽기 전에 거절합니다. 위조 토큰으로 DB 조회를 일으키지 않습니다.
+- 서비스는 access 토큰 문자열 하나를 돌려주고, 쿠키에 싣는 일은 라우터가 `set_access_cookie`로 합니다.
+
+### 결정 사항 (2026-11-13, GLOW-152)
+
+명세 4.1·C35가 "재발급 API 때 함께 정한다"고 둔 항목을 다음과 같이 정했습니다.
+
+| 항목 | 결정 | 이유 |
+| --- | --- | --- |
+| refresh 토큰 회전 | 하지 않음 | 명세 4.1은 "새 `access_token` 쿠키"만 말합니다. 폐기 목록이 없는 상태에서 회전하면 쓸 때마다 7일이 연장되어 세션 상한이 사라지고 D4 "쿠키 수명 고정"과 어긋납니다. 재사용 감지도 저장소 없이는 불가능합니다 |
+| `jti` 폐기 목록 | 도입하지 않음(무상태 유지) | 저장 표가 v6.2 DDL에 없어 데이터 팀 DDL 요청이 선행되어야 합니다. 로그아웃도 무상태로 합의되어 있습니다(C35) |
+| refresh 쿠키 Path | `/api/v1/auth/refresh` 유지 | 폐기 목록을 넣지 않으면 로그아웃이 refresh 쿠키를 받을 이유가 없습니다. 넓히는 일은 폐기 목록 도입 때 전환 처리와 함께 합니다(7절) |
+
 ## 3. 쿠키
 
-`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급·로그아웃(`clear_auth_cookies`)도 같은 값을 씁니다.
+`app/core/security/cookies.py`에 이름·Path·속성이 상수로 정의되어 있으며, 재발급(`set_access_cookie`)·로그아웃(`clear_auth_cookies`)도 같은 값을 씁니다.
 
 | 쿠키 | Path | Max-Age | 속성 |
 | --- | --- | --- | --- |
 | `access_token` | `/` | 28800초 (`ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly; SameSite=Lax; Secure(설정)` |
 | `refresh_token` | `/api/v1/auth/refresh` | 604800초 (`REFRESH_TOKEN_EXPIRE_DAYS`) | 동일 |
 
-- refresh 쿠키는 Path를 재발급 엔드포인트로 좁혀 다른 요청에는 실리지 않습니다. 따라서 재발급 API는 **반드시** `/api/v1/auth/refresh`에 있어야 합니다.
+- refresh 쿠키는 Path를 재발급 엔드포인트로 좁혀 다른 요청에는 실리지 않습니다. 따라서 재발급 API는 **반드시** `/api/v1/auth/refresh`에 있어야 합니다(2-2절).
 - 로컬에서 프론트(`localhost:3000`)와 API(`localhost:8000`)는 포트만 다르므로 `SameSite=Lax`로 쿠키가 전송됩니다. 운영에서 프론트와 API가 **다른 등록 도메인**이면 `COOKIE_SAMESITE`를 `none`으로 바꿔야 합니다.
 - 쿠키 속성 순서와 `SameSite=lax` 소문자 표기는 Starlette의 직렬화 결과이며, 브라우저는 순서·대소문자를 구분하지 않습니다.
 
@@ -164,7 +223,7 @@ Set-Cookie: refresh_token=""; expires=<응답 시각>; HttpOnly; Max-Age=0; Path
 | `role` | ✓ | – | `UserRoleCode` 값 |
 | `company_id` | ✓ | – | 소속 회사. OWNER·ADMIN은 `null`로 **명시** |
 
-- refresh 토큰에 `role`·`company_id`를 넣지 않는 이유: 재발급 시점에 DB에서 사용자를 다시 읽어 **현재** 권한으로 access 토큰을 만들기 위해서입니다. 7일짜리 토큰에 오래된 권한이 복사되는 것을 막습니다.
+- refresh 토큰에 `role`·`company_id`를 넣지 않는 이유: 재발급 시점에 DB에서 사용자를 다시 읽어 **현재** 권한으로 access 토큰을 만들기 위해서입니다(2-2절). 7일짜리 토큰에 오래된 권한이 복사되는 것을 막습니다.
 - `iss`·`aud`는 현재 넣지 않습니다. 검증 서버가 늘어나면 `_create_token`에 상수로 추가하고 `decode_token`에서 함께 검증합니다.
 - `decode_token(token, config, expected_type)`은 서명·만료·필수 클레임(`sub, type, iat, exp, jti`)·용도를 검사하고 실패 시 `TokenError`를 던집니다. HTTP 변환은 호출 측이 합니다.
 
@@ -234,24 +293,26 @@ router = APIRouter(prefix="/api/v1/orders", dependencies=[Depends(get_current_us
 
 | 기능 | 비워 둔 자리 |
 | --- | --- |
-| 토큰 재발급 `POST /api/v1/auth/refresh` | 쿠키 Path가 이 경로로 고정되어 있음. `decode_token(..., TokenType.REFRESH)`로 검증 후 DB에서 사용자를 다시 읽어 `set_auth_cookies`로 재발급. 운영 앱 DB 역할에서 읽으려면 조회 전에 `set_rls_context(user_id=토큰의 사용자)`를 넣는다(본인 행은 `users_select_tenant_or_self`의 `user_id` 조건으로 보임, `GET /me`와 같음) |
+| ~~토큰 재발급~~ | 구현됨. `POST /api/v1/auth/refresh`가 refresh 토큰을 검증하고 DB의 현재 권한으로 access 쿠키만 새로 내린다 (2-2절, GLOW-152) |
 | ~~로그아웃~~ | 구현됨. `POST /api/v1/auth/logout`이 `clear_auth_cookies`로 두 쿠키를 만료시킨다 (2-1절) |
 | ~~로그인 직후 사용자 정보~~ | 구현됨. `GET /api/v1/me`가 DB에서 계정·역할·고객사명을 돌려준다 (`docs/auth/me.md`) |
-| 토큰 폐기·회전 | `jti` 클레임을 식별 키로 사용. 저장소(테이블 또는 Redis)는 재발급 API 구현 때 함께 결정. 로그아웃은 무상태(2-1절 한계)이고 refresh 쿠키가 로그아웃 요청에 실려 오지 않으므로, 폐기 목록을 넣을 때는 `REFRESH_TOKEN_COOKIE_PATH`를 `/api/v1/auth`로 넓히는 것(인증 엔드포인트에만 실림. `cookies.py` 상수 한 곳이면 발급·삭제가 함께 따라가고, 명세 D4·C31의 Path 문구도 같이 고침)을 함께 정한다. 재발급 API 전에 바꾸는 편이 안전하다. Path가 다르면 브라우저가 별개 쿠키로 취급해 이미 로그인한 사용자에게 옛 Path 쿠키가 7일간 남으므로, 전환 기간에는 로그아웃에서 옛·새 Path를 모두 삭제한다. 명세 4.1 `POST /auth/refresh`에도 메모(C35) |
+| 토큰 폐기·회전 | **도입하지 않기로 결정**(2-2절 결정 사항, 2026-11-13). 즉시 무효화가 필요해지면: `jti` 클레임을 식별 키로 폐기 목록 저장소(테이블은 데이터 팀 DDL 요청, 또는 Redis)를 두고, 재발급은 회전(새 refresh 발급 + 옛 `jti` 폐기)하며, 로그아웃이 refresh `jti`를 폐기하도록 `REFRESH_TOKEN_COOKIE_PATH`를 `/api/v1/auth`로 넓힌다(인증 엔드포인트에만 실림. `cookies.py` 상수 한 곳이면 발급·삭제가 함께 따라가고, 명세 D4·C31의 Path 문구도 같이 고침). Path가 다르면 브라우저가 별개 쿠키로 취급해 이미 로그인한 사용자에게 옛 Path 쿠키가 7일간 남으므로, 전환 기간에는 로그아웃에서 옛·새 Path를 모두 삭제하고 재발급은 같은 이름의 쿠키가 둘 실리는 경우를 처리한다 |
 | 서버 간 호출 | 로그인 토큰이 아니라 별도 자격(서비스 토큰·API 키)으로 다룸 |
 
 ## 8. 관련 파일
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/auth_api_router.py` | `/auth/login`·`/auth/logout` 엔드포인트, 쿠키 응답 |
+| `app/modules/user/presentation/auth_api_router.py` | `/auth/login`·`/auth/logout`·`/auth/refresh` 엔드포인트, 쿠키 응답 |
 | `app/modules/user/presentation/signup_api_router.py` | `/auth/signup` 엔드포인트(개발용, 운영 미등록. 등록은 `app/main.py` `include_dev_routers`) |
-| `app/modules/user/application/auth_service.py` | `login` 비즈니스 로직, `TokenPair` |
+| `app/modules/user/application/auth_service.py` | `login`·`refresh_access_token` 비즈니스 로직, `TokenPair` |
 | `app/modules/user/application/exception/user_exceptions.py` | `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED` |
 | `app/core/security/jwt.py` | 토큰 발급·검증, `JwtConfig`, `TokenType`, `TokenError` |
-| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies`, `clear_auth_cookies` |
+| `app/core/security/cookies.py` | 쿠키 상수, `set_auth_cookies`, `set_access_cookie`, `clear_auth_cookies` |
 | `app/core/security/auth.py` | `CurrentUser`, `get_current_user`, `require_roles` |
 | `app/core/security/hashing.py` | bcrypt 해싱·검증, `DUMMY_PASSWORD_HASH`, 72바이트 한도 |
 | `app/core/exceptions.py` | `UNAUTHENTICATED`, `FORBIDDEN`, `INVALID_ORIGIN` 공통 에러 코드 |
+| `app/core/rls_context.py` | `set_rls_context` (재발급의 자기 행 조회) |
+| `tests/modules/user/test_auth_service_refresh.py` · `test_auth_refresh_api.py` | 재발급 서비스·라우터 테스트 (DB 없이 실행) |
 | `app/core/middleware.py` | `OriginCheckMiddleware`(출처 검사), 미들웨어 등록 순서 |
 | `app/core/config.py` | JWT·쿠키 설정 |
