@@ -15,10 +15,12 @@ from real_path_support import (
     reset_to_detected,
     run_to_end,
     state_problems,
+    try_final_decision,
     worker_role,
 )
 from sqlalchemy import text
 
+from app.core.config import APP_DB_ROLE
 from app.modules.data_sync.application.ingest.ingest_service import DataIngestService
 from app.modules.data_sync.infrastructure.data_sync_enums import (
     ConnectionMethod,
@@ -27,6 +29,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
 )
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
+)
+from app.modules.decision.application.exception.decision_exceptions import (
+    DecisionErrorCode,
 )
 from app.modules.delay_analysis.application.agent.graph import (
     UNEXPECTED_ERROR_MESSAGE,
@@ -64,6 +69,9 @@ from tests.modules.delay_analysis.test_result_save import _snapshot
         test_manual_sync_start_runs)은 이미 시험이 있고, 여기서는 실제 STALE 판정·실제 묶음으로 한 번 이어 붙인다.
         수집이 돌려준 실행 ID 를 실행기에 직접 넘긴다(수동 수집의 넘김은 거치지 않음).
         새 선적은 지연 증분이 없어 두 실행 모두 NO_RISK 로 끝난다.
+        흐름 끝에서 이전 실행(v1)에 최종 선택을 요청하면 409 ANALYSIS_STALE 로 거부된다(GLOW-50 오류 검출표
+        GS-10 의 "이전 실행을 그대로 선택 가능하게 둠"을 잡는 자리). v1 은 대응안이 없어 없는 대응안 ID 로 요청한다.
+        STALE 확인이 대응안 확인보다 먼저다. 대응안이 있는 STALE 실행의 거부는 G 연결 확인이 본다.
       - 모두 롤백 세션 하나로 돈다(real_path_support). 분석은 워커 역할이다.
 """
 
@@ -286,7 +294,7 @@ async def _chain(db, company_id, shipment_code):
 
 
 async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch):
-    """B5: 수집 → 자동 실행 → 실제 경로 → 일정 악화 수집 → 이전 실행 STALE·후속 실행 → 실제 경로."""
+    """B5: 수집 → 자동 실행 → 실제 경로 → 일정 악화 수집 → 이전 실행 STALE·후속 실행 → 실제 경로 → 이전 실행 선택 거부."""
     require_engine()
     db = db_write_session
     (anchor,) = await pick_runs(db, NO_DELAY)  # 작은 고객사
@@ -348,3 +356,21 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
         "STALE",
         second.applied_seq,
     )
+
+    # ⑤ STALE 이 된 이전 실행(v1)은 최종 선택할 수 없다: 팀장 요청(앱 역할)으로 409 ANALYSIS_STALE, 남는 것 없음.
+    #    v1 은 현재 버전도 아니지만(NOT_CURRENT_RUN) 판정 순서가 STALE 을 먼저 보므로, 이 거부는 STALE 때문이다.
+    #    에피소드는 열려 있고 시간 경과 거부(같은 코드 문자열)와는 오류 멤버로 가른다.
+    #    현재 버전(v2)은 STALE 로 막히지 않는다(위험이 없어 선택 대기가 아니므로 RUN_NOT_READY)
+    old = await try_final_decision(
+        db, company_id=company_id, analysis_run_id=v1_after.analysis_run_id, at=DAY2
+    )
+    current = await try_final_decision(
+        db, company_id=company_id, analysis_run_id=v2_done.analysis_run_id, at=DAY2
+    )
+
+    assert old.error is DecisionErrorCode.ANALYSIS_STALE
+    assert old.refused_with == ("ANALYSIS_STALE", 409)
+    assert (old.role, old.status, old.decisions) == (APP_DB_ROLE, "STALE", 0)
+    assert current.error is DecisionErrorCode.RUN_NOT_READY
+    assert current.refused_with == ("RUN_NOT_READY", 409)
+    assert (current.status, current.decisions) == ("NO_RISK", 0)

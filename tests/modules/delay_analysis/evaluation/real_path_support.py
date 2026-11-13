@@ -11,7 +11,20 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import MOCK_EXPLANATION_MODEL, get_settings
+from app.core.config import APP_DB_ROLE, MOCK_EXPLANATION_MODEL, get_settings
+from app.core.exceptions import BaseErrorCode
+from app.core.rls_context import set_rls_context
+from app.core.security.tenant import TenantContext
+from app.modules.decision.application.decision_clock import DecisionClock
+from app.modules.decision.application.exception.decision_exceptions import (
+    DecisionException,
+)
+from app.modules.decision.application.final_decision_service import (
+    FinalDecisionService,
+)
+from app.modules.decision.infrastructure.repository.final_decision_repository import (
+    FinalDecisionRepository,
+)
 from app.modules.delay_analysis.application.agent.explanation import make_explainer
 from app.modules.delay_analysis.application.agent.retry import (
     EXPLANATION_GENERATION_FAILED,
@@ -61,6 +74,10 @@ from tests.modules.delay_analysis.test_result_save import _clear, _snapshot
       - 장애 주입(정답 RT-1·RT-2 를 만든 주입과 같음): RT-1 = T5 가 시도별 시간 제한을 넘김, RT-2 = 설명 결함 3개.
       - 비교: 되돌리기 전 행(정답)과 저장 뒤 행을 열 단위로 견준다. 실패 문구(정답은 엔진 하네스의 기술 기록)와
         상태·STALE 열(정답의 STALE·FINALIZED 는 분석 뒤의 일)은 따로 본다.
+      - 최종 선택 시도(try_final_decision): 분석은 워커 역할로 돌지만 최종 선택은 사용자의 요청이다. 그래서 워커 역할을
+        푼 뒤 앱 역할(glowship_v4_app)과 요청자(그 고객사 팀장)·고객사 RLS 문맥으로 최종 선택 서비스(API 19)를 부른다.
+        라우터가 하는 일(팀장 역할 확인, 오류 코드 → HTTP 응답)은 판단 모듈 API 시험이 보고, 여기서는 실제 경로가
+        남긴 실행 행을 서비스가 실제 저장소로 읽어 무엇으로 거부하는지를 본다.
       - 시험은 끝나면 롤백한다(tests/conftest.py db_write_session). 엔진 경로나 정답 실행이 없으면 건너뛴다.
 """
 
@@ -123,6 +140,22 @@ _RUNS = text(
     """
 )
 _ROLE_EXISTS = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
+_LEAD = text(
+    "SELECT user_id FROM users WHERE company_id = :company AND role_code = 'CLIENT_LEAD'"
+    " AND status = 'ACTIVE' ORDER BY user_id LIMIT 1"
+)
+_FEASIBLE_OPTION = text(
+    "SELECT response_option_id FROM response_options"
+    " WHERE analysis_run_id = :id AND feasibility_status = 'FEASIBLE'"
+    " ORDER BY option_type, response_option_id LIMIT 1"
+)
+_SELECTION_STATE = text(
+    "SELECT r.status,"
+    " (SELECT count(*) FROM final_decisions f WHERE f.analysis_run_id = r.analysis_run_id)"
+    " FROM analysis_runs r WHERE r.analysis_run_id = :id"
+)
+# 그 실행에 없는 대응안 ID(대응안이 없는 실행에 요청을 보낼 때)
+NO_SUCH_OPTION = uuid.UUID("00000000-0000-7000-8000-00000000c0de")
 
 
 @dataclass(frozen=True)
@@ -162,6 +195,26 @@ class RealPathRun:
     @property
     def state(self) -> dict[str, Any]:
         return self.states[-1] if self.states else {}
+
+
+@dataclass(frozen=True)
+class SelectionAttempt:
+    """사용자 요청으로 최종 선택을 한 번 시도한 결과."""
+
+    # 거부한 오류 코드(멤버). 받아들였으면 None. STALE 거부와 시간 경과 거부(ANALYSIS_STALE_TIME_ELAPSED)는
+    # 코드 문자열·HTTP 상태가 같아(ANALYSIS_STALE, 409) refused_with 로는 못 가르므로, 사유까지 볼 때는 멤버를 견준다
+    error: BaseErrorCode | None
+    role: str  # 서비스를 부른 순간의 DB 역할
+    feasible_option: (
+        bool  # 그 실행의 FEASIBLE 대응안으로 요청했는지(없으면 없는 대응안 ID)
+    )
+    status: str  # 시도 뒤 실행 상태
+    decisions: int  # 시도 뒤 그 실행의 최종 선택 행 수
+
+    @property
+    def refused_with(self) -> tuple[str, int] | None:
+        """(오류 코드, HTTP 상태). 받아들였으면 None"""
+        return None if self.error is None else (self.error.code, self.error.status_code)
 
 
 def require_engine() -> None:
@@ -320,6 +373,51 @@ async def worker_role(db: AsyncSession):
     finally:
         await db.execute(text("RESET ROLE"))
         db.expire_all()
+
+
+async def try_final_decision(
+    db: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    analysis_run_id: uuid.UUID,
+    at: datetime,
+) -> SelectionAttempt:
+    """
+    그 고객사 팀장의 요청처럼 최종 선택 서비스(API 19)를 부른다: 앱 역할 + 요청자·고객사 RLS 문맥(머리말).
+    그 실행의 FEASIBLE 대응안 하나로 요청하고, 대응안이 없는 실행(NO_RISK 등)이면 없는 대응안 ID 로 요청한다.
+    """
+    if await db.scalar(_ROLE_EXISTS, {"role": APP_DB_ROLE}) is None:
+        pytest.skip(f"{APP_DB_ROLE} 역할이 없는 DB 라 건너뜀")
+    lead_id = await db.scalar(_LEAD, {"company": company_id})
+    assert lead_id is not None, "그 고객사에 활성 팀장이 없음"
+    option_id = await db.scalar(_FEASIBLE_OPTION, {"id": analysis_run_id})
+    await db.execute(text(f"SET LOCAL ROLE {APP_DB_ROLE}"))
+    await set_rls_context(db, user_id=lead_id, company_id=company_id)
+    await db.commit()  # 워커 역할과 같게 바깥 트랜잭션에 남긴다(서비스가 되돌려도 역할·문맥이 풀리지 않게)
+    error = None
+    try:
+        role = await db.scalar(text("SELECT current_user"))
+        service = FinalDecisionService(
+            db, FinalDecisionRepository(db), clock=DecisionClock.fixed(at)
+        )
+        try:
+            await service.decide(
+                TenantContext(user_id=lead_id, company_id=company_id),
+                analysis_run_id=analysis_run_id,
+                response_option_id=option_id or NO_SUCH_OPTION,
+                reason_text="평가 시험: STALE 실행 선택 시도",
+                idempotency_key=f"evaluation-{analysis_run_id}",
+            )
+        except DecisionException as refused:
+            error = refused.error_code
+    finally:
+        await db.execute(text("RESET ROLE"))
+        await db.execute(_EMPTY_RLS_CONTEXT)
+        db.expire_all()
+    status, decisions = (
+        await db.execute(_SELECTION_STATE, {"id": analysis_run_id})
+    ).one()
+    return SelectionAttempt(error, role, option_id is not None, status, decisions)
 
 
 async def run_to_end(
