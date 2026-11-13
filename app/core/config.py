@@ -19,7 +19,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_env: Literal["local", "dev", "prod"] = "local"
+    # 기본값을 두지 않는다. 빠뜨리면 local 로 떠서 개발용 라우터·느슨한 쿠키·출처 검사가 열리므로 서버가 뜨지 않게 한다(이슈 #99).
+    app_env: Literal["local", "dev", "prod"]
     # 앱 로그 수준 (app/core/log_config.py). 앱 로거("app" 아래)만 이 수준이고 라이브러리 로그는 WARNING 그대로다.
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 

@@ -9,7 +9,7 @@ from app.modules.delay_analysis.presentation.agent_schemas import (
     AgentDryRunResponse,
 )
 
-# 개발 확인용 라우터: prod 환경에서는 main.py 에서 등록하지 않습니다.
+# 개발 확인용 라우터: main.py 에서 local 환경에만 등록합니다.
 router = APIRouter(prefix="/api/v1/dev/agent", tags=["Dev (에이전트 확인)"])
 
 

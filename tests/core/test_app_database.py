@@ -11,6 +11,7 @@ from app.core.config import APP_DB_ROLE, Settings
 """
 
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "app_login",
