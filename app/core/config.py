@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: Literal["local", "dev", "prod"] = "local"
+    # 앱 로그 수준 (app/core/log_config.py). 앱 로거("app" 아래)만 이 수준이고 라이브러리 로그는 WARNING 그대로다.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     # 쿠키(credentials)를 쓰는 CORS 에서는 "*" 를 쓸 수 없으므로 허용 오리진을 명시한다.
     # .env 예시: CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
@@ -185,6 +187,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "VIRTUAL_CLOCK_START 는 시간대가 있는 시각이어야 합니다 (예: 2026-07-02T00:00:00Z)"
             )
+        return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _log_level_upper(cls, value: object) -> object:
+        # LOG_LEVEL=info 처럼 소문자로 넣어도 받고, `LOG_LEVEL=` 처럼 비워 두면 기본(INFO)으로 본다
+        if isinstance(value, str):
+            return value.strip().upper() or "INFO"
         return value
 
     @field_validator("postgres_role", mode="before")
