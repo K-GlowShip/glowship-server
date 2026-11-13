@@ -22,7 +22,8 @@ from app.modules.delay_analysis.infrastructure.analysis_enums import (
         변경 B(재고 50 → 45) → RELEVANT_INVENTORY_CHANGED, 서명 같음 → READY_FOR_REVIEW 유지.
       - 재계산 값(A: 111·111, 222, 110, O1·O2 DELAY_INDUCED, KR 회복 2)은 test_evaluation_t9_t11.py GS-09A.
       - 엔진 1차 필터(stale.first_filter)와 서명 비교까지만 본다. 서버 StaleJudgmentService 대조는 2단계(DB 필요).
-      - 정답표 "R1 에 대한 최종 선택 시도는 거부"(변경 A): 엔진이 낸 R1 상태를 서버 최종 선택 판정
+      - "R1 에 대한 최종 선택 시도는 거부"(변경 A)의 출처는 02 5절 GS-09 기대 줄이다(v6 1·2절 표에는 이 칸이 없어
+        v6 기계 대조가 보지 않는다). 엔진이 낸 R1 상태를 서버 최종 선택 판정
         (selection_policy.selection_rejection, API 19 재확인)에 넣는다. A·B 는 상태만 다르고 나머지 입력은 같은
         "선택할 수 있는 값"이라, 거부가 갈리는 이유는 STALE 하나다. 실제 경로가 남긴 STALE 실행을 서비스가
         거부하는 것은 2단계(test_evaluation_stale_answer 연결 확인, test_evaluation_runner_gaps B5)가 본다.

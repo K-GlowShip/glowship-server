@@ -12,6 +12,9 @@ from real_path_support import (
 from sqlalchemy import text
 
 from app.core.config import APP_DB_ROLE
+from app.modules.decision.application.exception.decision_exceptions import (
+    DecisionErrorCode,
+)
 from app.modules.delay_analysis.application.run_creation.auto_run_service import (
     previous_run_stale_reason,
 )
@@ -213,8 +216,8 @@ async def test_follow_up_runs_stale_only_at_next_version(db_write_session, key):
     assert previous_run_stale_reason(TriggerReason(row.next_version_reason)) == reason
 
 
-async def _saved_through_real_path(db, monkeypatch) -> dict:
-    """연결 확인 실행을 에피소드를 다시 연 채 실제 경로로 저장한 뒤의 STALE 열."""
+async def _save_then_try_selection(db, monkeypatch) -> dict:
+    """연결 확인 실행을 에피소드를 다시 연 채 실제 경로로 저장한 뒤의 STALE 열과, 그 실행에 최종 선택을 시도한 결과."""
     require_engine()
     runs = await answer_runs(db)
     if CONNECTION_PROBE not in runs:
@@ -241,12 +244,15 @@ async def test_saved_result_goes_stale_where_signature_changes(
 ):
     """연결 확인: 앱의 저장 경로(save_graph_outcome → 저장 직후 재판정)가 재계산기를 넘겨 정답 순번에서 STALE, 결과는 남긴다.
     그 실행의 FEASIBLE 대응안으로 최종 선택을 요청하면 409 ANALYSIS_STALE, 최종 선택 행 없음."""
-    saved = await _saved_through_real_path(db_write_session, monkeypatch)
+    saved = await _save_then_try_selection(db_write_session, monkeypatch)
     selection = saved["selection"]
 
     assert saved["stale"] == RECHECK[CONNECTION_PROBE]  # 재계산기가 없으면 173
     assert (saved["status"], saved["completed_status"]) == ("STALE", "READY_FOR_REVIEW")
     assert saved["impacts"] > 0
     assert selection.feasible_option and selection.role == APP_DB_ROLE
+    assert (
+        selection.error is DecisionErrorCode.ANALYSIS_STALE
+    )  # 시간 경과 거부(같은 코드 문자열)가 아님
     assert selection.refused_with == ("ANALYSIS_STALE", 409)
     assert (selection.status, selection.decisions) == ("STALE", 0)

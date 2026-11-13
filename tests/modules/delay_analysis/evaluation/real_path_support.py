@@ -142,7 +142,7 @@ _RUNS = text(
 _ROLE_EXISTS = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
 _LEAD = text(
     "SELECT user_id FROM users WHERE company_id = :company AND role_code = 'CLIENT_LEAD'"
-    " ORDER BY user_id LIMIT 1"
+    " AND status = 'ACTIVE' ORDER BY user_id LIMIT 1"
 )
 _FEASIBLE_OPTION = text(
     "SELECT response_option_id FROM response_options"
@@ -201,7 +201,9 @@ class RealPathRun:
 class SelectionAttempt:
     """사용자 요청으로 최종 선택을 한 번 시도한 결과."""
 
-    error: BaseErrorCode | None  # 거부한 오류 코드. 받아들였으면 None
+    # 거부한 오류 코드(멤버). 받아들였으면 None. STALE 거부와 시간 경과 거부(ANALYSIS_STALE_TIME_ELAPSED)는
+    # 코드 문자열·HTTP 상태가 같아(ANALYSIS_STALE, 409) refused_with 로는 못 가르므로, 사유까지 볼 때는 멤버를 견준다
+    error: BaseErrorCode | None
     role: str  # 서비스를 부른 순간의 DB 역할
     feasible_option: (
         bool  # 그 실행의 FEASIBLE 대응안으로 요청했는지(없으면 없는 대응안 ID)
@@ -387,7 +389,7 @@ async def try_final_decision(
     if await db.scalar(_ROLE_EXISTS, {"role": APP_DB_ROLE}) is None:
         pytest.skip(f"{APP_DB_ROLE} 역할이 없는 DB 라 건너뜀")
     lead_id = await db.scalar(_LEAD, {"company": company_id})
-    assert lead_id is not None, "그 고객사에 팀장이 없음"
+    assert lead_id is not None, "그 고객사에 활성 팀장이 없음"
     option_id = await db.scalar(_FEASIBLE_OPTION, {"id": analysis_run_id})
     await db.execute(text(f"SET LOCAL ROLE {APP_DB_ROLE}"))
     await set_rls_context(db, user_id=lead_id, company_id=company_id)

@@ -30,6 +30,9 @@ from app.modules.data_sync.infrastructure.data_sync_enums import (
 from app.modules.data_sync.infrastructure.repository.ingest_repository import (
     IngestRepository,
 )
+from app.modules.decision.application.exception.decision_exceptions import (
+    DecisionErrorCode,
+)
 from app.modules.delay_analysis.application.agent.graph import (
     UNEXPECTED_ERROR_MESSAGE,
 )
@@ -354,7 +357,9 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
         second.applied_seq,
     )
 
-    # ⑤ 후속 실행이 생긴 이전 실행(v1)은 최종 선택할 수 없다: 팀장 요청(앱 역할)으로 409 ANALYSIS_STALE, 남는 것 없음.
+    # ⑤ STALE 이 된 이전 실행(v1)은 최종 선택할 수 없다: 팀장 요청(앱 역할)으로 409 ANALYSIS_STALE, 남는 것 없음.
+    #    v1 은 현재 버전도 아니지만(NOT_CURRENT_RUN) 판정 순서가 STALE 을 먼저 보므로, 이 거부는 STALE 때문이다.
+    #    에피소드는 열려 있고 시간 경과 거부(같은 코드 문자열)와는 오류 멤버로 가른다.
     #    현재 버전(v2)은 STALE 로 막히지 않는다(위험이 없어 선택 대기가 아니므로 RUN_NOT_READY)
     old = await try_final_decision(
         db, company_id=company_id, analysis_run_id=v1_after.analysis_run_id, at=DAY2
@@ -363,7 +368,9 @@ async def test_ingest_to_saved_result_in_one_flow(db_write_session, monkeypatch)
         db, company_id=company_id, analysis_run_id=v2_done.analysis_run_id, at=DAY2
     )
 
+    assert old.error is DecisionErrorCode.ANALYSIS_STALE
     assert old.refused_with == ("ANALYSIS_STALE", 409)
     assert (old.role, old.status, old.decisions) == (APP_DB_ROLE, "STALE", 0)
+    assert current.error is DecisionErrorCode.RUN_NOT_READY
     assert current.refused_with == ("RUN_NOT_READY", 409)
     assert (current.status, current.decisions) == ("NO_RISK", 0)

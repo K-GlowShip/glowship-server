@@ -16,7 +16,8 @@ import test_evaluation_t9_t11 as T
         (다른 시험 파일이 보거나 아직 견주지 않는 칸). 다름은 0 이어야 하고, 같음은 SAME_AT_LEAST 아래로 줄면 실패한다.
         시험이 None 을 단정한 칸(NULL·순위 없음)은 "같음/다름"으로 센다(없음이 아님).
       - v6 3절(서술형: H_end·회복 배송일·공여 객체 등)은 표가 아니라 여기서 견주지 않는다. 그 값은 3.1절 시험이 본다.
-      - 대조가 "같음"만 내는 것이 아닌지: v6 표의 값을 한 칸씩 바꿔 넣으면 그 칸만 "다름"으로 잡는다(아래 음성 3건).
+      - 대조가 "같음"만 내는 것이 아닌지: v6 표의 값을 한 칸씩 바꿔 넣으면 그 칸만 "다름"으로 잡는다(아래 음성 4건: 대응안 표 3,
+        요약표 ④ 의 주문 여럿 귀속 1).
 """
 
 ENV = "GLOWSHIP_ANSWER_SHEET_V6"
@@ -80,6 +81,17 @@ def _plain(value: str) -> str:
 
 def _number(value: str) -> int | None:
     return None if value == "NULL" else int(value)
+
+
+def _risks(cell: str) -> dict[str, str]:
+    """④ 칸 → {주문: 귀속}. "A: O1·O2 DELAY_INDUCED" 처럼 주문 여럿이 한 귀속을 나누면 주문마다 같은 귀속."""
+    risks = {}
+    for orders, kind in re.findall(
+        r"((?:O\d)(?:·O\d)*)\s+(PRE_EXISTING|DELAY_INDUCED)", cell
+    ):
+        for order in orders.split("·"):
+            risks[order] = kind
+    return risks
 
 
 class Comparison:
@@ -167,18 +179,10 @@ def _compare_summary(found: Comparison, row: list[str]) -> None:
                 if got is None
                 else "/".join(str(got[k]) for k in T.SKU_KEYS[-3:]),
             )
-    risks = dict(
-        re.findall(
-            r"(O\d)[·]?(?:O\d )?\s*(PRE_EXISTING|DELAY_INDUCED)",
-            row[4].replace("A: ", ""),
-        )
-    )
-    if "O1·O2" in row[4]:
-        risks = {"O1": "DELAY_INDUCED", "O2": "DELAY_INDUCED"}
     found.add(
         gid,
         "④ 위험 주문",
-        sorted(risks.items()),
+        sorted(_risks(row[4]).items()),
         sorted(summary["at_risk"].items()) if "at_risk" in summary else MISSING,
     )
     recovered = summary.get("delay_recovered", {})
@@ -301,3 +305,15 @@ def test_comparison_catches_a_changed_cell(v6_tables, gid, name, column, value, 
     target[column] = value
 
     assert compare(summary, changed).different() == [(gid, cell)]
+
+
+def test_comparison_reads_shared_attribution_from_v6(v6_tables):
+    """④ "O1·O2 DELAY_INDUCED"(GS-09)를 v6 글자에서 읽는다: 귀속을 PRE_EXISTING 으로 바꾸면 GS-09 ④ 만 '다름'.
+    (주문 여럿 칸을 글자로 읽지 않고 값을 정해 두면 이 바꿈을 못 잡는다)"""
+    summary, options = v6_tables
+    changed = [list(row) for row in summary]
+    (target,) = [row for row in changed if row[0] == "GS-09"]
+    assert target[4] == "A: O1·O2 DELAY_INDUCED"
+    target[4] = "A: O1·O2 PRE_EXISTING"
+
+    assert compare(changed, options).different() == [("GS-09", "④ 위험 주문")]
