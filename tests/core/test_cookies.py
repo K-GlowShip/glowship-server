@@ -8,6 +8,7 @@ from app.core.security.cookies import (
     ACCESS_TOKEN_COOKIE,
     REFRESH_TOKEN_COOKIE,
     clear_auth_cookies,
+    set_access_cookie,
     set_auth_cookies,
 )
 
@@ -63,3 +64,34 @@ def test_삭제_쿠키는_빈_값과_Max_Age_0_이다():
         assert cookie[name]["max-age"] == "0"
         # 과거 시각 (Starlette delete_cookie 가 expires=0 으로 넣음)
         assert cookie[name]["expires"]
+
+
+@pytest.mark.parametrize("secure", [True, False])
+def test_재발급_access_쿠키는_로그인_발급분과_이름_Path_속성이_같다(secure):
+    """재발급(set_access_cookie)이 로그인(set_auth_cookies)과 다른 Path 를 쓰면 access 쿠키가 둘이 되어 덮어쓰지 못한다."""
+    issued = Response()
+    set_auth_cookies(
+        issued,
+        access_token="access",
+        refresh_token="refresh",
+        access_max_age=timedelta(minutes=30),
+        refresh_max_age=timedelta(days=7),
+        secure=secure,
+    )
+    refreshed = Response()
+    set_access_cookie(
+        refreshed, access_token="access2", max_age=timedelta(minutes=30), secure=secure
+    )
+
+    refreshed_cookies = _cookies(refreshed)
+    assert set(refreshed_cookies) == {
+        ACCESS_TOKEN_COOKIE
+    }  # refresh 쿠키는 내리지 않는다
+    a = _cookies(issued)[ACCESS_TOKEN_COOKIE][ACCESS_TOKEN_COOKIE]
+    b = refreshed_cookies[ACCESS_TOKEN_COOKIE][ACCESS_TOKEN_COOKIE]
+    assert b.value == "access2"
+    assert a["path"] == b["path"]
+    assert a["max-age"] == b["max-age"]
+    assert a["samesite"] == b["samesite"]
+    assert bool(a["httponly"]) == bool(b["httponly"]) is True
+    assert bool(a["secure"]) == bool(b["secure"]) == secure

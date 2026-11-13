@@ -52,7 +52,9 @@ async def _user(status: UserStatus = UserStatus.ACTIVE) -> LoginUser:
 
 
 def _service(repo: FakeUserRepository) -> AuthService:
-    return AuthService(user_repo=repo, jwt_config=get_settings().jwt_config)
+    return AuthService(
+        db=object(), user_repo=repo, jwt_config=get_settings().jwt_config
+    )
 
 
 async def test_login_uses_login_lookup_and_issues_tokens():

@@ -30,9 +30,10 @@ def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
 
 
 def get_auth_service(
+    db: AsyncSession = Depends(get_db),
     user_repo: UserRepository = Depends(get_user_repository),
 ) -> AuthService:
-    return AuthService(user_repo=user_repo, jwt_config=get_settings().jwt_config)
+    return AuthService(db=db, user_repo=user_repo, jwt_config=get_settings().jwt_config)
 
 
 def get_client_account_service(

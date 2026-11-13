@@ -1,7 +1,11 @@
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import UnauthenticatedException
+from app.core.rls_context import set_rls_context
 from app.core.security.hashing import (
     BCRYPT_MAX_PASSWORD_BYTES,
     DUMMY_PASSWORD_HASH,
@@ -10,8 +14,11 @@ from app.core.security.hashing import (
 )
 from app.core.security.jwt import (
     JwtConfig,
+    TokenError,
+    TokenType,
     create_access_token,
     create_refresh_token,
+    decode_token,
 )
 from app.modules.user.application.exception.user_exceptions import (
     AccountDisabledException,
@@ -23,7 +30,7 @@ from app.modules.user.application.password import (
     validate_password_policy,
 )
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
-from app.modules.user.infrastructure.user_enums import UserStatus
+from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
 
 
 @dataclass(frozen=True)
@@ -35,7 +42,11 @@ class TokenPair:
 
 
 class AuthService:
-    def __init__(self, user_repo: UserRepository, jwt_config: JwtConfig):
+    def __init__(
+        self, db: AsyncSession, user_repo: UserRepository, jwt_config: JwtConfig
+    ):
+        # 리포지토리와 같은 요청 단위 세션. 재발급의 RLS 컨텍스트 설정에만 사용한다.
+        self.db = db
         self.user_repo = user_repo
         self.jwt_config = jwt_config
 
@@ -107,4 +118,42 @@ class AuthService:
                 user_id=user.user_id,
                 config=self.jwt_config,
             ),
+        )
+
+    async def refresh_access_token(self, refresh_token: str) -> str:
+        """
+        refresh 토큰을 검증하고 DB 의 현재 권한으로 access 토큰 하나를 새로 발급합니다 (API 27, GLOW-152).
+
+        refresh 토큰에는 role·company_id 가 없으므로 사용자를 DB 에서 다시 읽는다. 발급 뒤 역할·고객사가
+        바뀌었으면 새 access 토큰에는 바뀐 값이 들어간다. refresh 토큰은 회전하지 않는다(쿠키 수명 고정, D4).
+
+        Args:
+            refresh_token (str): refresh_token 쿠키 값
+
+        Raises:
+            UnauthenticatedException: 서명 불일치·만료·access 토큰을 보냄·클레임 구성 불일치, 또는 토큰의 사용자가
+                DB 에 없음 (401, 사유를 구분하지 않음. 프론트는 로그인 화면으로 이동)
+            AccountDisabledException: 계정이 DISABLED (403). 401 과 구분해 비활성 계정이 재발급을 반복하지 않게 한다
+        """
+        try:
+            payload = decode_token(refresh_token, self.jwt_config, TokenType.REFRESH)
+            user_id = uuid.UUID(payload["sub"])
+        except (TokenError, KeyError, ValueError, TypeError) as e:
+            raise UnauthenticatedException() from e
+
+        # 운영 앱 DB 역할에서는 users 의 self 정책(users_select_tenant_or_self 의 user_id 조건)이 app.user_id 로
+        # 자기 행을 보여 준다. 고객사 컨텍스트는 필요 없으므로 비운다. (로컬 superuser 는 정책을 우회)
+        await set_rls_context(self.db, user_id=user_id, company_id=None)
+
+        user = await self.user_repo.find_by_id(user_id)
+        if user is None:
+            raise UnauthenticatedException()
+        if user.status != UserStatus.ACTIVE:
+            raise AccountDisabledException()
+
+        return create_access_token(
+            user_id=user.user_id,
+            role_code=UserRoleCode(user.role_code).value,
+            company_id=user.company_id,
+            config=self.jwt_config,
         )
