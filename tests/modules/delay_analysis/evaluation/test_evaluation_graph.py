@@ -77,7 +77,8 @@ def _fixed_canary(glow50, monkeypatch):
 
 
 # 아래 _engine_input·_ScenarioPreparer·_runtime·_state 와 KEYS·RUN_ID·COMPANY_ID·SHIPMENT_ID 는
-# test_evaluation_external_instruction.py 도 가져다 쓴다(같은 구성을 두 벌 두지 않음). 이름·인자를 바꾸면 그 파일도 함께 고친다.
+# test_evaluation_external_instruction.py·test_evaluation_recommendation_linkage.py 도 가져다 쓴다(같은 구성을 두 벌 두지 않음).
+# 이름·인자를 바꾸면 그 파일들도 함께 고친다.
 def _engine_input(snap: dict, analysis: dict) -> EngineInput:
     day = snap["D"] if isinstance(snap["D"], date) else date.fromisoformat(snap["D"])
     return EngineInput(
