@@ -35,7 +35,7 @@ GLOW-50 에서 만든 평가 시나리오 10건(공유 자료 `평가시나리�
 | `test_evaluation_explanation_negative.py` | 음성 짝(NFR-003): 같은 9건에서 통과한 설명의 SKU 증분 수량 하나(문장)·근거 참조 값 하나를 +1 → T12 가 `RETRY`·`VALUE_MISMATCH` 하나만 냄. 대조군(바꾸지 않으면 PASSED)·바꿀 값 찾기 장치(코드·날짜 속 숫자는 안 바꿈) 포함 |
 | `test_evaluation_recommendation_linkage.py` | 추천 연결률(NFR-004): 개발 DB 실행 전부를 실행 상세 응답으로 만들어, 설명을 통과한 실행의 추천(13건)이 계산 결과·적용 기준·설명 근거에 모두 이어지는지 셈(분모는 따로 쓴 SQL). 설명 실패 실행(1건)은 추천 행이 남지만 제시한 추천이 아니라 따로 고정(기준일만 비어 있음). 시나리오 9건은 서버가 만드는 저장 행에서 같은 고리를 셈. 고리 18가지를 하나씩 끊은 사본을 잡는지도 봄 |
 
-실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움). 11-12(3.1절 정답표 PASS 항목 추가, develop `47470cc` 위): 이 폴더 전체 **136 통과·17 건너뜀**(추가 전 132·17, 새 시험 4건).
+실행: `uv run pytest tests/modules/delay_analysis/evaluation`. 저장 검사는 `docker` 와 컨테이너 `glowship-db` 의 자기 DB(`.env` POSTGRES_*)가 있어야 하고 없으면 건너뜁니다. 11-06 결과: **79 통과, 8 xfail**(전체 2236 통과·2 건너뜀·8 xfail). 11-11(엔진 수정판, develop `1e6fe6e`): **91 통과, xfail 0**(실패 모양 고정 시험 8건은 지움). 11-12(3.1절 정답표 PASS 항목 추가, develop `47470cc` 위): 이 폴더 전체 **136 통과·17 건너뜀**(추가 전 132·17, 새 시험 4건). 11-13(develop `fd802df` 위, #138·리뷰 후속 뒤): 이 폴더 **213 통과·22 건너뜀·1 xfail**(자세한 것은 8.2절).
 
 ## 3. 정답표 대조 결과 (11-06)
 
