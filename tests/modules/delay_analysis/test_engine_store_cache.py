@@ -99,6 +99,23 @@ async def test_least_recently_used_entry_is_evicted_over_limit():
     assert loader.calls.count((COMPANY_B, 10)) == 2
 
 
+async def test_evict_company_drops_only_that_company_and_next_call_reads_again():
+    """수집 없이 저장소 표가 바뀐 고객사(운영 기준 새 버전 저장, GLOW-153)만 버린다"""
+    loader = _FakeLoader()
+    cache = EngineStoreCache(4, loader)
+    a10 = await cache.get(None, COMPANY_A, 10)
+    await cache.get(None, COMPANY_A, 11)
+    b10 = await cache.get(None, COMPANY_B, 10)
+
+    assert cache.evict_company(str(COMPANY_A)) == 2  # 문자열 고객사 ID 도 같은 열쇠
+    assert cache.evict_company(COMPANY_A) == 0
+
+    assert cache.stats().size == 1
+    assert await cache.get(None, COMPANY_B, 10) is b10
+    assert await cache.get(None, COMPANY_A, 10) is not a10
+    assert loader.calls.count((COMPANY_A, 10)) == 2
+
+
 async def test_failed_load_is_not_cached_and_next_call_reads_again():
     loader = _FakeLoader(fail=True)
     cache = EngineStoreCache(2, loader)

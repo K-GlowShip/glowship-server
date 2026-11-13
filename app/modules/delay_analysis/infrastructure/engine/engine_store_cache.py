@@ -123,6 +123,20 @@ class EngineStoreCache:
             size=len(self._entries),
         )
 
+    def evict_company(self, company_id: uuid.UUID) -> int:
+        """한 고객사의 항목을 모두 버리고 버린 수를 돌려준다. 수집 없이 저장소 표가 바뀌었을 때 부른다
+        (운영 기준 새 버전 저장, GLOW-153: 입력 순번은 그대로인데 operating_rule_sets·operating_lead_times 가 달라짐).
+        읽는 중인 호출은 그대로 끝나고 그 결과가 들어간다."""
+        company_id = uuid.UUID(str(company_id))
+        keys = [key for key in self._entries if key[0] == company_id]
+        for key in keys:
+            del self._entries[key]
+        if keys:
+            logger.info(
+                "엔진 저장소 캐시에서 고객사 %s 항목 %d개를 버림", company_id, len(keys)
+            )
+        return len(keys)
+
     def clear(self) -> None:
         """항목과 횟수를 비운다(시험 사이, 운영 데이터를 수집 밖에서 고쳤을 때). 읽는 중인 호출은 그대로 끝난다."""
         self._entries.clear()

@@ -51,6 +51,9 @@ from app.modules.inventory.presentation.inventory_status_api_router import (
     router as inventory_status_router,
 )
 from app.modules.master_data.presentation.sku_api_router import router as sku_router
+from app.modules.operating_rule.presentation.operating_rule_api_router import (
+    router as operating_rule_router,
+)
 from app.modules.order.presentation.order_api_router import router as order_router
 from app.modules.shipment.presentation.shipment_api_router import (
     router as shipment_router,
@@ -100,6 +103,7 @@ app.include_router(health_router)  # GET /health (배포 확인용, 인증 없�
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(client_account_router)
+app.include_router(operating_rule_router)
 app.include_router(dashboard_router)
 app.include_router(data_sync_run_router)
 app.include_router(decision_router)
