@@ -27,6 +27,9 @@ from app.modules.delay_analysis.application.agent.state import (
 )
 from app.modules.delay_analysis.application.agent.tools.common import ToolName
 from app.modules.delay_analysis.application.agent.tracing import RunTracer
+from app.modules.delay_analysis.application.result_save.result_save_service import (
+    ResultSaveOutcome,
+)
 from app.modules.delay_analysis.application.run_start import outcome_save
 from app.modules.delay_analysis.application.run_start import runner as R
 from app.modules.delay_analysis.application.run_start.runner import AnalysisRunner
@@ -35,6 +38,7 @@ from app.modules.delay_analysis.application.run_start.transitions import (
     RetireOutcome,
     UnfinishedRun,
 )
+from app.modules.delay_analysis.infrastructure.analysis_enums import AnalysisRunStatus
 
 """
     분석 실행기 단위 시험 (GLOW-128, DB 없음)
@@ -900,6 +904,61 @@ async def test_save_over_limit_is_saved_again_without_recalculation(db):
     assert db.saved[run_id]["outcome"] == AnalysisOutcome.READY_FOR_REVIEW
     assert db.saved[run_id]["options"] == {"recalculate": False}
     assert run_id not in db.failed
+
+
+def _marked(caplog):
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if R.SAVE_RETRY_LOG_MARK in r.getMessage()
+    ]
+
+
+async def test_save_retry_logs_mark_with_run_and_result(db, caplog):
+    """다시 저장은 앞·뒤 두 줄에 같은 표시를 남겨 셀 수 있다: 앞 줄에 실행·고객사·입력 순번, 뒤 줄에 결과 상태."""
+    slow = _slow_save(db)
+
+    async def save(session, run, state, *, now=None, **options):
+        await slow(session, run, state, now=now, **options)
+        return ResultSaveOutcome(saved=True, status=AnalysisRunStatus.STALE)
+
+    (run_id,) = db.detected()
+    runner = AnalysisRunner(
+        open_session=db.open_session,
+        runtime_factory=lambda s, r, t: fake_runtime(),
+        save_outcome=save,
+        save_time_limit_seconds=LIMIT,
+    )
+    with caplog.at_level(logging.WARNING):
+        runner.start(COMPANY, run_id)
+        await _idle(runner)
+
+    before, after = _marked(caplog)
+    assert str(run_id) in before
+    assert f"고객사 {COMPANY}" in before
+    assert "입력 순번 1)" in before
+    assert str(run_id) in after
+    assert "상태 STALE(결과 저장 True)" in after
+
+
+async def test_save_retry_over_cleanup_limit_logs_only_start_mark(
+    db, monkeypatch, caplog
+):
+    monkeypatch.setattr(R, "CLEANUP_LIMIT_SECONDS", LIMIT)
+    (run_id,) = db.detected()
+    runner = AnalysisRunner(
+        open_session=db.open_session,
+        runtime_factory=lambda s, r, t: fake_runtime(),
+        save_outcome=_slow_save(db, fast_retry=False),
+        save_time_limit_seconds=LIMIT,
+    )
+    with caplog.at_level(logging.WARNING):
+        runner.start(COMPANY, run_id)
+        await _idle(runner)
+
+    (only,) = _marked(caplog)
+    assert "다시 저장합니다" in only
+    assert db.failed_code[run_id] == RUN_TIME_LIMIT_EXCEEDED
 
 
 async def test_save_again_over_cleanup_limit_is_failed(db, monkeypatch):

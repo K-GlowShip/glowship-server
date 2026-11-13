@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, aclosing, asynccontextmanager
@@ -95,6 +96,10 @@ RuntimeFactory = Callable[[AsyncSession, StartedRun, RunTracer | None], Analysis
 TracerFactory = Callable[[StartedRun], RunTracer | None]
 # 그래프 종료 상태를 저장한다(save_graph_outcome 과 같은 모양, 시험에서 바꿈)
 OutcomeSaver = Callable[..., Awaitable[ResultSaveOutcome | None]]
+# 저장 제한을 넘어 재계산 없이 다시 저장한 경우를 로그에서 셀 수 있게 붙이는 표시. 다시 저장 앞·뒤 두 줄에 같은 값이 붙고,
+# 실행 ID·입력 순번으로 그 실행의 STALE 순번·뒤 수집 수를 DB 에서 찾는다(docs/analysis/auto-start.md 시간 제한 행)
+SAVE_RETRY_LOG_MARK = "SAVE_RETRY_NO_RECALC"
+
 # 저장 끝난 시각으로 넘길 값. 가상 시각이면 실행 시작 시각, 아니면 None(DB 시각)
 SaveTime = Callable[[StartedRun | AnalysisRun], datetime | None]
 
@@ -320,17 +325,34 @@ class AnalysisRunner:
             if not limit.expired():
                 raise
         logger.warning(
-            "분석 실행 %s 의 저장이 제한 %s초를 넘어 판정 서명 재계산 없이 다시 저장합니다(걸린 변경이 있으면 STALE)",
+            "분석 실행 %s(고객사 %s, 입력 순번 %s)의 저장이 제한 %s초를 넘어 판정 서명 재계산 없이 다시 저장합니다"
+            "(걸린 변경이 있으면 STALE) [%s]",
             run.analysis_run_id,
+            run.company_id,
+            run.input_seq,
             self.save_time_limit_seconds,
+            SAVE_RETRY_LOG_MARK,
         )
         retry = asyncio.timeout(self._cleanup_limit)
+        started = time.perf_counter()
         try:
             async with retry:
-                return await self._save_once(run, final, recalculate=False)
+                saved = await self._save_once(run, final, recalculate=False)
         except Exception:
             if not retry.expired():
                 raise
+        else:
+            # 다시 저장의 결과도 같은 표시로 남긴다. STALE 이면 재계산했으면 STALE 이 아니었을 수도 있는 실행이다.
+            # 저장 함수를 바꿔 끼운 시험·장치는 ResultSaveOutcome 이 아닌 값을 돌려줄 수 있어 칸을 getattr 로 읽는다(로그가 저장을 깨지 않게)
+            logger.warning(
+                "분석 실행 %s 를 재계산 없이 다시 저장했습니다: 상태 %s(결과 저장 %s), %.1f초 [%s]",
+                run.analysis_run_id,
+                getattr(saved, "status", None),
+                getattr(saved, "saved", None),
+                time.perf_counter() - started,
+                SAVE_RETRY_LOG_MARK,
+            )
+            return saved
         await self._fail_on_limit(
             run.company_id, run.analysis_run_id, "저장", self.save_time_limit_seconds
         )
