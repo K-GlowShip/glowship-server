@@ -348,6 +348,5 @@ sysctl -p /etc/sysctl.d/90-glowship-swap.conf
 - 엔진 폴더를 EC2에 두고 `DEV_ENGINE_DIR` 설정(분석 기능 활성). 데이터 팀과 전달 방식 합의가 필요합니다.
 - 운영 배포(main → 운영 서버) 워크플로. dev와 같은 모양에 Environment 승인자를 더하는 것을 권장합니다.
 - 운영에서는 `/docs`·`/openapi.json`을 CloudFront 동작에서 빼거나 앱에서 끕니다. dev는 합성데이터라 열어 두었습니다.
-- 앱 DB 엔진의 `echo=True`(`app/core/database.py`)를 local에서만 켜거나 `hide_parameters=True`로 바꾸기. 지금은 모든 환경에서 SQL과 바인딩 값이 INFO 로그에 남습니다. 배포 스크립트는 그 로그를 Actions로 보내지 않지만 서버 로그 자체의 노출 범위를 줄이는 후속 과제입니다.
 - 베이스 이미지(`python:3.14-slim`, uv)를 digest로 고정하기.
 - Docker 이미지 크기(약 460MB) 축소, CloudFront 접근 로그.

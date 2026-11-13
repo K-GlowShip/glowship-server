@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     app_env: Literal["local", "dev", "prod"] = "local"
     # 앱 로그 수준 (app/core/log_config.py). 앱 로거("app" 아래)만 이 수준이고 라이브러리 로그는 WARNING 그대로다.
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # SQLAlchemy 가 실행하는 SQL 을 로그에 낼지 (app/core/database.py). 기본은 끔. 켜도 바인드 값은 숨긴다(이슈 #141).
+    db_echo: bool = False
 
     # 쿠키(credentials)를 쓰는 CORS 에서는 "*" 를 쓸 수 없으므로 허용 오리진을 명시한다.
     # .env 예시: CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
@@ -187,6 +189,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "VIRTUAL_CLOCK_START 는 시간대가 있는 시각이어야 합니다 (예: 2026-07-02T00:00:00Z)"
             )
+        return value
+
+    @field_validator("db_echo", mode="before")
+    @classmethod
+    def _blank_db_echo_is_off(cls, value: object) -> object:
+        # `DB_ECHO=` 처럼 비워 두면 끈 것으로 본다.
+        if isinstance(value, str) and not value.strip():
+            return False
         return value
 
     @field_validator("log_level", mode="before")
