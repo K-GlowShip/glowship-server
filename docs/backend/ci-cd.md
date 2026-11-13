@@ -280,7 +280,7 @@ flowchart LR
 | IAM 역할 `glowship-github-deploy` | Actions용. 신뢰 정책은 이 저장소의 `develop`(ref)과 `environment:dev` 토큰만 허용. 권한은 ECR 저장소 `glowship-server` push, dev EC2 한 대에 대한 `ssm:SendCommand`(문서 `AWS-RunShellScript`), `ssm:GetCommandInvocation` |
 | ECR 저장소 `glowship-server` | 태그 가변(`dev-latest` 덮어쓰기), push 시 취약점 스캔 |
 | EC2 인스턴스 역할 `glowship-ec2-role` | `AmazonSSMManagedInstanceCore`, `AmazonEC2ContainerRegistryReadOnly`, RDS 마스터 비밀번호(Secrets Manager) 읽기 |
-| EC2 `glowship-backend` | Amazon Linux 2023 arm64. docker, aws cli, `/etc/glowship/server.env`. SSM으로 설치·작성 |
+| EC2 `glowship-backend` | Amazon Linux 2023 arm64, t4g.small(메모리 2GB) + 스왑 파일 2GB(8.4절). docker, aws cli, `/etc/glowship/server.env`. SSM으로 설치·작성 |
 | RDS `glowship-dev-postgres` | PostgreSQL 17. 마스터 비밀번호는 Secrets Manager 관리형. SSL 강제(`rds.force_ssl=1`) |
 | 보안 그룹 | backend: CloudFront VPC 오리진 관리형 그룹 → 8000. DB: backend → 5432 |
 | CloudFront 배포 | VPC 오리진(EC2 8000, http-only) + S3 오리진(OAC). 경로별 동작은 6절 |
@@ -300,6 +300,31 @@ flowchart LR
 - dev는 데모(합성데이터) 환경이라 `VIRTUAL_CLOCK_START`는 기본값을 씁니다. 실제 원천을 붙이는 환경에서는 비웁니다(`.env.example`).
 - 역할 분리(`POSTGRES_ROLE`, 워커 계정)는 dev에서 쓰지 않습니다. 운영 단계에서 도입합니다.
 
+### 8.4 dev 서버 메모리와 스왑
+
+dev EC2는 t4g.small(메모리 약 1.8GiB)입니다. 분석 실행 하나가 최고 1.53GB(재계산이 끼면 1.69GB)를 쓰므로(`docs/analysis/auto-start.md` 7절 3번) 분석 자동 시작을 켜면 여유가 거의 없습니다. 메모리가 바닥나면 커널이 컨테이너 프로세스를 죽여(OOM) 서버가 재시작됩니다. 그래서 자동 시작을 켜기 전에 **스왑 파일 2GB**를 두었습니다(2026-11-13).
+
+- 스왑은 디스크를 메모리처럼 쓰는 것이라 RAM보다 훨씬 느립니다. 평소 쓰라고 둔 것이 아니라, 순간적으로 넘칠 때 죽지 않게 하는 안전 여유입니다. 분석 동시 실행 수는 그대로 1입니다(`ANALYSIS_MAX_CONCURRENT_RUNS=1`, `ENGINE_STORE_CACHE_MAX_ENTRIES=1`).
+- `vm.swappiness`를 기본 60에서 10으로 낮춰 RAM이 거의 찼을 때만 스왑으로 넘어가게 했습니다.
+- 서버 컨테이너에는 메모리 제한을 두지 않았으므로(`docker run`에 `--memory` 없음) 컨테이너가 호스트 스왑을 그대로 씁니다.
+- 루트 디스크는 gp3 20GB이고 스왑 파일을 넣은 뒤 약 15GB가 남습니다.
+
+SSM `AWS-RunShellScript`로 root 권한에서 실행한 내용입니다(루트 파일시스템이 XFS라 `fallocate` 대신 `dd`로 실제 기록).
+
+```bash
+dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab          # 재부팅 뒤에도 유지
+printf 'vm.swappiness = 10\n' > /etc/sysctl.d/90-glowship-swap.conf
+sysctl -p /etc/sysctl.d/90-glowship-swap.conf
+```
+
+확인은 `free -m`(Swap total 2047), `swapon --show`, `swapon -a`(fstab 항목이 올바르면 오류 없음)입니다. 컨테이너 재시작은 필요 없습니다.
+
+**켠 뒤 볼 것.** 분석이 돌 때 `free -m`의 Swap used 와 `docker stats --no-stream`을 봅니다. 스왑 사용량이 수백 MB 넘게 꾸준히 남으면 스왑만으로는 분석이 느려지므로 인스턴스를 t4g.medium(4GB)으로 바꾸는 것을 검토합니다(그때는 `docs/analysis/auto-start.md` 7절 3번 표의 4GB 값으로 설정을 되돌릴 수 있습니다).
+
 ---
 
 ## 9. 운영 절차
@@ -313,6 +338,7 @@ flowchart LR
 | **빌드 실패** | `Dockerfile`, `uv.lock`. 로컬 `docker build`로 재현 |
 | **롤백** | 커밋 SHA 태그가 ECR에 남아 있음. EC2에서 `IMAGE=<ECR 주소>:<이전 SHA> AWS_REGION=<리전> scripts/deploy/deploy-dev.sh`를 SSM으로 실행 |
 | **설정 변경** | `/etc/glowship/server.env`를 SSM으로 고친 뒤 재배포(또는 컨테이너 재시작). 비밀값은 출력에 찍지 않음 |
+| **메모리 부족·OOM** | `free -m`, `docker stats --no-stream`, `dmesg -T`에서 `oom`·`Killed process` 검색으로 확인. 스왑 2GB와 설정값(동시 1·캐시 1)은 8.4절. 그래도 반복되면 인스턴스 크기 변경 |
 
 ---
 
