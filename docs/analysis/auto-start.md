@@ -37,7 +37,7 @@
 | 시작 전이 `begin_analysis` | `DETECTED → VALIDATING` | L2만 | `DETECTED`일 때만. **에피소드 열림·현재 실행 여부는 보지 않음**: 회복(`DELAY_RECOVERED`) 실행은 수집이 실행을 만든 뒤 같은 트랜잭션에서 에피소드를 닫으므로(#63) 닫힌 에피소드에서 시작해 `NO_DELAY`로 끝나야 함(확정 DB E8 v2). 현재 실행이 아니면 경고 로그만 남기고 시작(건너뛰면 영원히 `DETECTED`) |
 | 단계 전이 `advance_status` | 그래프 상태의 `step`이 바뀔 때마다 `ANALYZING_IMPACT`·`ANALYZING_OPTIONS`·`VALIDATING_OUTPUT`으로 | L2만 | 진행 중이고 앞으로 가는 전이만. 그 사이 `STALE`이 됐으면 아무것도 바꾸지 않음(명세 8절 "진행 중일 때만 상태 전이") |
 | 저장 `save_graph_outcome` | 종료 상태별 저장 함수(아래 표) | L2 | 저장 함수가 진행 중일 때만 씀 |
-| 입력 데이터 버전 | 보류(`ON_HOLD`)가 아니면 저장과 같은 트랜잭션에서 `record_input_data_versions`. 그래프 밖에서 끝내는 `FAILED`(마지막 잡기·시작 정리, `fail_unfinished`)도 같음 | — | 입력 검증을 통과한 실행에만 기록하는 규칙(`run_creation_service` 머리말, 사용자 결정 11-10). 확정 DB는 보류 실행만 0건, 나머지는 도메인 5건. 재분석 실행은 만들 때 기록하지 않아 여기서 채워짐. 이미 있으면 다시 넣지 않음 |
+| 입력 데이터 버전 | 보류(`ON_HOLD`)가 아니면 저장과 같은 트랜잭션에서 `record_input_data_versions`. 그래프 밖에서 끝내는 `FAILED`(마지막 잡기·시작 정리, `fail_unfinished`)도 같음 | — | 입력 검증을 통과한 실행에만 기록하는 규칙(`run_creation_service` 머리말, 사용자 결정 11-10). 확정 DB는 보류 실행만 0건, 나머지는 도메인 5건. 재분석·자동 실행 모두 만들 때 기록하지 않아 여기서 채워짐. 이미 있으면 다시 넣지 않음 |
 
 **데이터 버전 기록 시점이 문서·경로마다 다릅니다(11-10 확인).**
 
