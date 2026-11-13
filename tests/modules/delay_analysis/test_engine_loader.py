@@ -163,6 +163,7 @@ def test_blank_engine_dir_setting_means_not_configured(monkeypatch, raw):
     monkeypatch.setenv("GLOWSHIP_ENGINE_DIR", raw)
     settings = Settings(
         _env_file=None,
+        app_env="local",
         postgres_host="h",
         postgres_port=5432,
         postgres_user="u",

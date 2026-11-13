@@ -2,7 +2,7 @@
 #   - 2단계 빌드: builder 에서 uv 로 의존성을 .venv 에 설치하고, runtime 은 그 .venv 와 코드만 복사한다 (uv·빌드 캐시 제외).
 #   - pyproject 의 requires-python 이 3.14 이상이라 python:3.14-slim 을 쓴다 (.python-version 과 같은 판).
 #   - 설정은 .env 를 굽지 않고 환경변수로 받는다 (app/core/config.py, .dockerignore 가 .env 를 제외).
-#     필수: POSTGRES_HOST·PORT·USER·PASSWORD·DB, JWT_SECRET_KEY(32자 이상). 운영은 APP_ENV=prod, VIRTUAL_CLOCK_START= (비움).
+#     필수: APP_ENV(local·dev·prod), POSTGRES_HOST·PORT·USER·PASSWORD·DB, JWT_SECRET_KEY(32자 이상). 운영은 APP_ENV=prod, VIRTUAL_CLOCK_START= (비움).
 #   - 엔진 코드(GLOWSHIP_ENGINE_DIR)는 저장소에 없어 이미지에 넣지 않는다. 운영에서 분석 기능이 필요하면
 #     배포 시 볼륨으로 붙이고 GLOWSHIP_ENGINE_DIR 을 그 경로로 준다 (docs/analysis/engine-local-path.md).
 #   - 마이그레이션은 이미지에 포함한다. 배포 스크립트가 같은 이미지로 `alembic upgrade head` 를 먼저 실행한다.

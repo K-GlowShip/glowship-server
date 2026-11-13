@@ -295,7 +295,7 @@ flowchart LR
 
 ### 8.3 dev 서버 설정 파일 (`/etc/glowship/server.env`)
 
-- `APP_ENV=dev`, RDS 접속 정보(마스터 계정), `CORS_ORIGINS=["https://<CloudFront 도메인>"]`, 서버 안에서 생성한 `JWT_SECRET_KEY`.
+- `APP_ENV=dev`(필수. 없으면 서버가 뜨지 않고, 개발용 회원가입·dry-run은 local에서만 열려 dev에는 없음 — 이슈 #99), RDS 접속 정보(마스터 계정), `CORS_ORIGINS=["https://<CloudFront 도메인>"]`, 서버 안에서 생성한 `JWT_SECRET_KEY`.
 - RDS 비밀번호는 EC2가 Secrets Manager에서 읽어 파일에 썼습니다. 사람 손을 거치지 않았고 로그에도 남기지 않았습니다.
 - dev는 데모(합성데이터) 환경이라 `VIRTUAL_CLOCK_START`는 기본값을 씁니다. 실제 원천을 붙이는 환경에서는 비웁니다(`.env.example`).
 - 역할 분리(`POSTGRES_ROLE`, 워커 계정)는 dev에서 쓰지 않습니다. 운영 단계에서 도입합니다.
