@@ -494,6 +494,27 @@ def test_masker_hides_codes_followed_by_korean_text(text_in, secret):
     assert "ORD#" in masked or "[EMAIL]" in masked
 
 
+def test_masker_hides_sku_codes_in_evidence_paths():
+    """설명 검증 실패 위치의 SKU 경로 조각(/sku/<코드>/)을 가린다(사용자 결정 11-13, 실측 실패 기록에 그대로 남음).
+
+    같은 실행 안에서는 같은 값(같은 SKU 에서 몇 번 틀렸는지 묶어 봄), 다른 실행이면 다른 값, 다른 경로는 그대로.
+    """
+    first, second = TraceMasker(), TraceMasker()
+    path = "risk_summary:missing /sku/TONER20/increment_prepare_quantity"
+    masked = first.text(path)
+    assert "TONER20" not in masked
+    assert masked.startswith("risk_summary:missing /sku/SKU#")
+    assert masked.endswith("/increment_prepare_quantity")
+    assert first.text("/sku/TONER20/x").split("/")[2] == masked.split("/")[2]
+    assert second.text(path) != masked
+    assert first.text("/sku/CREAM-30ML/a") != first.text("/sku/TONER20/a")
+    for kept in (
+        "run_summary:missing /run/delayed_shipment_code",
+        "option_explanations[KEEP_PLAN]#s2",
+    ):
+        assert first.text(kept) == kept
+
+
 def test_masker_keeps_version_and_location_codes():
     masker = TraceMasker()
 

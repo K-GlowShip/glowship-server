@@ -24,8 +24,9 @@ from langchain_core.callbacks import BaseCallbackHandler
           · 분석 쪽은 사건을 줄에 넣기만 하고, 쓰기는 실행마다 하나인 쓰기 스레드가 한다.
           · 쓰기 예외는 세기만 하고 올리지 않는다.
       - 보내지 않는 것: 비밀번호·API 키·토큰, 프롬프트 전문, 원본 업무 데이터 전체. 상태는 키 이름과 안전한 값만 요약한다.
-        주문 코드는 실행마다 다른 키로 HMAC 해 바꾸고(같은 실행 안에서만 같은 값), 이메일은 지운다.
-      - LangSmith 전송은 기본 꺼짐이다. 외부 전송이 승인되기 전에는 전송기를 두지 않고 내부 로그(outbox)에만 쓴다.
+        주문 코드·SKU 경로 조각(/sku/<코드>/)은 실행마다 다른 키로 HMAC 해 바꾸고(같은 실행 안에서만 같은 값), 이메일은 지운다.
+      - LangSmith 전송은 기본 꺼짐이다. 켜면(AGENT_TRACE_LANGSMITH_ENABLED, 외부 전송 승인 11-13) 이 추적기가 가린 사건만
+        전송기(infrastructure/agent_trace_langsmith.py)가 보내고, 꺼져 있으면 내부 로그(outbox)에만 쓴다.
         LangChain 자동 추적 환경 변수가 켜져 있으면 마스킹 없이 상태 전체가 나갈 수 있으므로 추적기를 만들 때 멈춘다.
       - 사건 ID 는 uuid5(실행 ID, 순번)라 같은 사건을 다시 보내도 중복이 생기지 않는다.
 """
@@ -68,6 +69,9 @@ _REMOVED_KEY = re.compile(
 # re.ASCII: Python 의 \b·\w 는 기본으로 한글도 단어 글자로 봐서, "…-0040이"처럼 조사가 붙으면 경계가 없어 안 가려졌다(PR #42 리뷰).
 # 주문 코드는 날짜·번호 형식 밖의 키(B-ORD-ERR-0001 등)도 가린다.
 _ORDER_CODE = re.compile(r"\b[A-Z]-ORD-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.ASCII)
+# 설명 검증 실패 위치의 SKU 경로 조각("/sku/<SKU 코드>/…", 엔진 근거 경로). 코드 자리만 실행별 HMAC 으로 바꾼다
+# (사용자 결정 11-13: 11-13 실측 실패 기록에 SKU 코드가 그대로 남음 — LangSmith 를 켜면 밖으로 나감)
+_SKU_PATH = re.compile(r"(?<=/sku/)[^/\s:#\[\]()]+", re.ASCII)
 # 도메인 끝이 글자여야 이메일로 본다(판 번호 explain_ready_v1@1.0.0 은 이메일이 아님)
 _EMAIL = re.compile(
     r"[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b", re.ASCII
@@ -115,6 +119,8 @@ class TraceEvent:
 
 
 class TraceSink(Protocol):
+    """사건을 받는 곳. end_trace(trace_id) 가 있으면 추적기를 닫을 때 한 번 부른다(실행 단위로 모아 보내는 전송기용)."""
+
     def write(self, event: TraceEvent) -> None: ...
 
 
@@ -124,14 +130,19 @@ class TraceMasker:
     def __init__(self, key: bytes | None = None):
         self._key = key or secrets.token_bytes(32)
 
+    def _digest(self, value: str) -> str:
+        return hmac.new(self._key, value.encode(), hashlib.sha256).hexdigest()[:8]
+
     def _order(self, match: re.Match) -> str:
-        digest = hmac.new(
-            self._key, match.group(0).encode(), hashlib.sha256
-        ).hexdigest()
-        return f"ORD#{digest[:8]}"
+        return f"ORD#{self._digest(match.group(0))}"
+
+    def _sku(self, match: re.Match) -> str:
+        return f"SKU#{self._digest('sku:' + match.group(0))}"
 
     def text(self, value: str) -> str:
-        masked = _EMAIL.sub("[EMAIL]", _ORDER_CODE.sub(self._order, value))
+        masked = _EMAIL.sub(
+            "[EMAIL]", _SKU_PATH.sub(self._sku, _ORDER_CODE.sub(self._order, value))
+        )
         return masked if len(masked) <= _MAX_TEXT else masked[:_MAX_TEXT] + "…"
 
     def value(self, value: Any) -> Any:
@@ -203,6 +214,7 @@ class RunTracer:
             max_workers=1, thread_name_prefix="agent-trace"
         )
         self._pending: list[Future] = []
+        self._ended = False
 
     # --- 사건 남기기 -----------------------------------------------------------------
     def emit(
@@ -272,6 +284,7 @@ class RunTracer:
     def close(self, timeout: float = 2.0) -> bool:
         """쓰기를 기다린다(최대 timeout 초). 다 썼으면 True. 동기 코드용이다. async 코드에서는 aclose() 를 쓴다."""
         try:
+            self._submit_end_trace()
             _, not_done = wait_futures(self._pending, timeout=timeout)
             self._writer.shutdown(wait=False, cancel_futures=False)
             return not not_done
@@ -280,6 +293,26 @@ class RunTracer:
                 "추적 쓰기 마무리에 실패했습니다(분석은 계속)", exc_info=True
             )
             return False
+
+    def _submit_end_trace(self) -> None:
+        # 쓰기 스레드 줄의 맨 뒤에 넣어 앞의 사건을 다 쓴 뒤 부른다(끝 사건 없이 닫힌 실행도 보내게). 한 번만.
+        if self._ended:
+            return
+        self._ended = True
+        for sink in self._sinks:
+            if callable(getattr(sink, "end_trace", None)):
+                self._pending.append(self._writer.submit(self._end_trace, sink))
+
+    def _end_trace(self, sink: Any) -> None:
+        try:
+            sink.end_trace(self.trace_id)
+        except Exception:
+            self.sink_failures += 1
+            logger.warning(
+                "추적 기록을 마무리하지 못했습니다: %s (분석은 계속)",
+                type(sink).__name__,
+                exc_info=True,
+            )
 
     # --- 재시도·설명 시도 연결 --------------------------------------------------------
     def tool_attempt(self, record: Any) -> None:

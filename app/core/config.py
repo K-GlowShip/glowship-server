@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # <폴더>/agent_trace_outbox/<고객사>/<UTC 날짜>.jsonl 에 한 줄씩 남긴다(agentflow 8.1 "외부 전송 불허 시").
     # 비우면(기본) 추적하지 않는다. 배포 컨테이너는 /app 아래에 쓸 수 없어, 쓸 수 있는 폴더(볼륨)를 정한 뒤 넣는다.
     agent_trace_dir: Path | None = None
+    # LangSmith 전송 (agentflow 8.1, docs/agent-flow/agent-tracing.md 3절). 기본 꺼짐. 켜면 추적기가 가린 사건만 실행이 끝날 때
+    # LangSmith 로 따로 보낸다. 사건은 켜도 AGENT_TRACE_DIR 내부 로그에 전부 남는다(비어 있으면 내부 로그 없음 — 시작 때 경고).
+    # 켜려면 키가 있어야 한다.
+    # LANGSMITH_TRACING 같은 LangChain 자동 추적은 이것과 별개이며 여전히 켜면 안 된다(가리지 않은 상태가 나감).
+    agent_trace_langsmith_enabled: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = Field(default="glowship-agent-trace", min_length=1)
+    langsmith_endpoint: str | None = (
+        None  # 비우면 langsmith 기본(미국). EU 등은 그 지역 주소
+    )
 
     # Language model (GLOW-150, docs/agent-flow/explanation.md 8절)
     # AI 설명을 만드는 모델. "제공자/모델 ID" 한 줄이다(예: openai/<모델 ID>). 기본은 엔진 mock 이라 외부 호출이 없다.
@@ -148,7 +158,12 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "openai_api_key", "gemini_api_key", "anthropic_api_key", mode="before"
+        "openai_api_key",
+        "gemini_api_key",
+        "anthropic_api_key",
+        "langsmith_api_key",
+        "langsmith_endpoint",
+        mode="before",
     )
     @classmethod
     def _blank_api_key_is_unset(cls, value: object) -> object:
@@ -221,6 +236,15 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _langsmith_needs_key(self) -> Settings:
+        # 켰는데 키가 없으면 실행마다 전송 실패 경고가 쌓이므로 시작에서 멈춘다.
+        if self.agent_trace_langsmith_enabled and self.langsmith_api_key is None:
+            raise ValueError(
+                "AGENT_TRACE_LANGSMITH_ENABLED 를 켜면 LANGSMITH_API_KEY 도 넣어야 합니다(docs/agent-flow/agent-tracing.md 3절)."
+            )
+        return self
 
     @model_validator(mode="after")
     def _worker_credentials_come_together(self) -> Settings:
