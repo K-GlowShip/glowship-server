@@ -1,7 +1,7 @@
 # 에이전트 실행 추적 (LangSmith 기본 꺼짐 · 내부 로그)
 
-- 대상: `app/modules/delay_analysis/application/agent/tracing.py`, `app/modules/delay_analysis/infrastructure/agent_trace_outbox.py`, 시험 `tests/modules/delay_analysis/test_agent_tracing.py`
-- 티켓: GLOW-124. 상위 스토리 AIR-008 "실행 ID로 분석 시작부터 도구 호출, 설명 생성과 종료 상태까지 추적할 수 있다"
+- 대상: `app/modules/delay_analysis/application/agent/tracing.py`, `app/modules/delay_analysis/infrastructure/agent_trace_outbox.py`, `app/modules/delay_analysis/infrastructure/agent_trace_langsmith.py`(LangSmith 전송기), 시험 `tests/modules/delay_analysis/test_agent_tracing.py`·`test_agent_trace_langsmith.py`
+- 티켓: GLOW-124(추적기·내부 로그), GLOW-154(LangSmith 전송기). 상위 스토리 AIR-008 "실행 ID로 분석 시작부터 도구 호출, 설명 생성과 종료 상태까지 추적할 수 있다"
 - 근거: agentflow 7.1절(호출별 시도 이력은 업무 DB가 아니라 추적에), 8절, 8.1절 LangSmith 경계, serviceflow 5.3절
 
 ## 1. 무엇을 남기나
@@ -69,7 +69,7 @@ finally:
 - **돌다가 쓰기가 막히면(디스크 가득·권한 바뀜):** 분석은 그대로 끝나지만 사건마다 경고 한 줄(스택 포함)이 남아, 실행 하나에 수십 줄이 쌓입니다(실제 묶음 실행 1건 = 사건 약 43건). 시작 확인은 시작 때 한 번만 봅니다. 첫 실패만 스택을 남기고 나머지는 세는 방식은 후속입니다.
 - `explanation_attempts`도 예외를 올리지 않습니다(엔진과 다른 모양이면 세기만 함).
 
-## 5. 시험 (26건 + 전송기 14건, 매개변수 포함)
+## 5. 시험 (추적기 + 전송기 15건, 매개변수 포함)
 | 시험 | 내용 |
 | --- | --- |
 | 처음부터 끝까지 | 뼈대 그래프 실행 하나에서 `RUN_START` → 노드·갈림길 → `RUN_END(outcome)`. 노드 순서 = 그래프의 `visited_nodes`, 순번 연속, 모든 사건의 실행·고객사·추적 ID가 같음 |
@@ -100,7 +100,8 @@ finally:
 - **재시도 기록 연결(완료):** #28이 머지되어(develop `634ff99`) 실제 `call_with_retry`로 시험했습니다. 도구를 노드에 붙일 때 `on_attempt=tracer.tool_attempt`를 넘기면 됩니다.
 - **실패 갈래의 장애 독립성(완료):** 5절의 장애 독립성 시험은 정상 갈래와 쓰기 장애만 봅니다. 실패 갈래(재시도 소진·권한·설명 3회 실패·보류·STALE)에서 추적기·콜백 자체가 예외를 내는 경우까지 본 통합 시험 T20은 `docs/agent-flow/integration-tests-t13-t20.md` 4절에 있습니다.
 - **그래프에 끼우기(실행기 쪽 완료, GLOW-128 실행 묶음 채우기):** 자동 시작 실행기(`run_start/runner.py`)가 `tracer_factory`로 실행마다 추적기를 만들어 실행 도구 묶음과 그래프 콜백(`callback_handler()`)에 같이 넘기고, 끝나면 `aclose()`로 닫습니다. 만들기·닫기 예외는 경고만 남깁니다. **앱 실행기 연결(완료, 이슈 #51):** 앱 실행기(`run_start/app_runner.py`)가 `AGENT_TRACE_DIR`가 있으면 `build_run_tracer` + `TraceOutboxSink`로 `tracer_factory`를 만듭니다(3절). 실제 묶음으로 재분석 실행을 끝까지 돌려 내부 로그에 그 실행의 처음부터 끝까지가 남는 것을 시험합니다(`test_run_start_reanalysis_end_to_end_sql.py`, 실행 1건 사건 43건·약 20KB). 남은 것은 서버에 쓸 수 있는 폴더를 정해 넣는 배포 일입니다.
-- **운영 확인 항목(8.1):** 보존 기간(제안 400일), 외부 전송 승인, 마스킹 범위, 서버 로그의 운영 주체·회전·암호화. 정해지기 전에는 내부 로그만 쓰고 지우지 않습니다.
+- **운영 확인 항목(8.1):** 보존 기간(제안 400일), 외부 전송 승인 범위(마스킹·요금 등급·서버 지역), 서버 로그의 운영 주체·회전·암호화. 정해지기 전에는 LangSmith 를 켜지 않고(기본 꺼짐), 내부 로그는 지우지 않습니다.
+- **LangSmith 재전송:** 전송이 실패한 실행을 내부 로그에서 다시 보내는 일은 아직 없습니다(실패 경고의 실행 ID 로 찾음).
 
 ## 7. 작업 중 실패와 결정
 - **PR #42 리뷰 크리티컬 2건(11-05, euncheol-kim):**
@@ -110,7 +111,9 @@ finally:
 - **칸 이름 필터가 너무 넓었음(11-05):** 처음에는 칸 이름에 `prompt`·`token`이 들어가면 모두 지웠습니다. 시험에서 판 번호 `prompt_version`이 지워졌고, 토큰 수 `input_tokens`도 지워질 상황이었습니다. 프롬프트 원문 칸과 인증 토큰 칸만 지우는 패턴으로 좁혔습니다.
 - **이메일 패턴이 판 번호를 가림(11-05):** `explain_ready_v1@1.0.0`이 이메일 모양으로 잡혔습니다. 도메인 끝이 글자(TLD)일 때만 이메일로 봅니다.
 - **고치다 넣은 백스페이스 문자(11-05):** 셸에서 정규식을 바꾸다 `\b`가 실제 백스페이스 문자로 들어가, 이메일을 하나도 못 잡았습니다. 시험이 잡았고, 파일 전체에 제어 문자가 없는지 확인했습니다.
-- **LangSmith 설정을 넣지 않음:** 켜기·끄기 설정을 `config.py`·`.env.example`에 두려 했지만, 전송기가 승인 전이라 쓸 곳이 없고 두 파일은 다른 PR과 겹치는 공용 파일이라 뺐습니다.
+- **LangSmith 설정을 넣지 않음(GLOW-124 때, 11-05):** 켜기·끄기 설정을 `config.py`·`.env.example`에 두려 했지만, 전송기가 승인 전이라 쓸 곳이 없고 두 파일은 다른 PR과 겹치는 공용 파일이라 뺐습니다. → **GLOW-154(11-15)에서 전송기와 함께 설정 4개를 넣음**(3절).
+- **처음 전송기가 응답 없는 주소에 묶임(GLOW-154, 11-13 독립 검토):** 처음 판은 추적기 쓰기 스레드에서 보냈고, langsmith 기본 재시도(HTTP 3번 × 클라이언트 3번)로 응답 없는 주소면 보내기 하나가 133초, 서버 종료도 그만큼 기다렸습니다(로컬 재현). 또 켜면 실패분만 내부 로그에 남겨 실행 도중 서버가 죽으면 그 실행 추적이 통째로 사라졌습니다. 전송기 데몬 스레드·HTTP 재시도 끔·켜도 내부 로그에 전부로 바꿨습니다.
+- **SKU 코드가 추적에 그대로 남음(GLOW-154, 11-13 실측 기록에서 발견):** 설명 검증 실패 위치(`/sku/<코드>/…`)를 가리지 않았습니다. 주문 코드와 같은 방식으로 가립니다(2절).
 
 ## 8. 모델 사용 기록 (NFR-008, GLOW-65)
 요구사항 NFR-008 "실행별 모델명·호출 수·토큰 사용량과 적용 단가 기준 예상 비용을 기록한다"(Should, 검증: 모델 사용 로그 확인)를 이 추적과 서버 로그로 채웁니다. agentflow 8.1절이 정한 대로 추적에 남기고, 업무 DB와 ERD는 바꾸지 않습니다. 합계·비용 계산과 단가는 `docs/agent-flow/explanation.md` 8.10절에 있습니다.
