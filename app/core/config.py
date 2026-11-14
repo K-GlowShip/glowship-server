@@ -13,6 +13,8 @@ APP_DB_ROLE = "glowship_v4_app"
 # AI 설명 기본 모델: 엔진의 결정적 mock (외부 호출 없음). 실제 모델은 "제공자/모델 ID" 로 적는다
 MOCK_EXPLANATION_MODEL = "mock/mock-template-v1"
 
+DEFAULT_LANGSMITH_PROJECT = "glowship-agent-trace"
+
 
 class Settings(BaseSettings):
     """env 파일에 작성되어진 정적 파일 관리"""
@@ -113,10 +115,9 @@ class Settings(BaseSettings):
     # LANGSMITH_TRACING 같은 LangChain 자동 추적은 이것과 별개이며 여전히 켜면 안 된다(가리지 않은 상태가 나감).
     agent_trace_langsmith_enabled: bool = False
     langsmith_api_key: SecretStr | None = None
-    langsmith_project: str = Field(default="glowship-agent-trace", min_length=1)
-    langsmith_endpoint: str | None = (
-        None  # 비우면 langsmith 기본(미국). EU 등은 그 지역 주소
-    )
+    langsmith_project: str = DEFAULT_LANGSMITH_PROJECT
+    # 비우면 langsmith 기본(미국) 주소. EU 등은 그 지역 주소를 넣는다
+    langsmith_endpoint: str | None = None
 
     # Language model (GLOW-150, docs/agent-flow/explanation.md 8절)
     # AI 설명을 만드는 모델. "제공자/모델 ID" 한 줄이다(예: openai/<모델 ID>). 기본은 엔진 mock 이라 외부 호출이 없다.
@@ -235,6 +236,14 @@ class Settings(BaseSettings):
         # `WORKER_POSTGRES_USER=` 처럼 비워 두면 설정하지 않은 것(None)으로 본다.
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("langsmith_project", mode="before")
+    @classmethod
+    def _blank_langsmith_project_is_default(cls, value: object) -> object:
+        # `LANGSMITH_PROJECT=` 처럼 비워 두면 기본 이름으로 본다(꺼져 있는데 빈 값 때문에 서버가 안 뜨지 않게).
+        if isinstance(value, str) and not value.strip():
+            return DEFAULT_LANGSMITH_PROJECT
         return value
 
     @model_validator(mode="after")

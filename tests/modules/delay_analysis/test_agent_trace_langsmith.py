@@ -250,6 +250,35 @@ async def test_send_failure_is_counted_by_sender_and_analysis_is_unchanged(
     assert "down" not in caplog.text  # 오류 문장은 남기지 않음(종류만)
 
 
+def test_full_queue_drops_new_traces_instead_of_growing():
+    """LangSmith 가 오래 응답하지 않아도 보낼 줄이 끝없이 자라지 않는다 — 넘는 실행은 세기만 한다."""
+    gate = threading.Event()
+
+    class BlockedClient:
+        calls = 0
+
+        def batch_ingest_runs(self, *, create):
+            type(self).calls += 1
+            gate.wait(10)
+
+    sink = LangSmithTraceSink(BlockedClient(), "p", max_queued=2)
+    tracers = []
+    for _ in range(6):
+        tracer = RunTracer(uuid.uuid4(), uuid.uuid4(), [sink])
+        tracer.emit("RUN_START", "LangGraph", "STARTED")
+        tracer.emit("RUN_END", "LangGraph", "OK")
+        assert tracer.close()  # 줄이 차도 닫기는 막히지 않음
+        tracers.append(tracer)
+
+    assert (
+        sink.dropped_traces >= 3
+    )  # 보내는 중 1 + 줄 2 까지만 받음(먼저 꺼낸 시점에 따라 3 또는 4 버림)
+    assert all(t.sink_failures == 0 for t in tracers)
+    gate.set()
+    assert sink.flush()
+    assert sink.sent_traces + sink.dropped_traces == 6
+
+
 def test_client_built_from_settings_reports_errors_through_callback():
     """langsmith.Client 는 전송 오류를 올리지 않고 tracing_error_callback 으로만 알린다 — 그 길로도 실패를 잡는다."""
     seen = {}
@@ -411,6 +440,13 @@ def test_enabling_langsmith_without_key_fails_at_startup(monkeypatch):
         _settings(agent_trace_langsmith_enabled=True)
     with pytest.raises(ValidationError, match="LANGSMITH_API_KEY"):
         _settings(agent_trace_langsmith_enabled=True, langsmith_api_key="  ")
+
+
+def test_blank_optional_langsmith_settings_fall_back():
+    """`LANGSMITH_PROJECT=`·`LANGSMITH_ENDPOINT=` 처럼 비워 두어도 서버가 뜬다(꺼져 있어도, 켜도)."""
+    settings = _settings(langsmith_project="  ", langsmith_endpoint="")
+    assert settings.langsmith_project == "glowship-agent-trace"
+    assert settings.langsmith_endpoint is None
 
 
 def test_trace_sink_choice(tmp_path):

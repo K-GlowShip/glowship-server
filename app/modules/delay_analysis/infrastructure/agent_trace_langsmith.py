@@ -25,6 +25,9 @@ from app.modules.delay_analysis.application.agent.tracing import TraceEvent
 logger = logging.getLogger(__name__)
 
 ROOT_RUN_NAME = "delay_analysis"
+# 보낼 줄에 쌓아 둘 수 있는 실행 수. LangSmith 가 오래 응답하지 않으면(보내기 하나에 약 18~24초) 줄이 끝없이 자라지 않게
+# 넘는 실행은 보내지 않고 센다(사건은 내부 로그에 있음). 실행 하나가 사건 40개쯤이라 메모리는 작다.
+MAX_QUEUED_TRACES = 200
 _END_KINDS = frozenset({"RUN_END", "RUN_ERROR"})
 _LEAF_RUN_TYPE = {"TOOL_ATTEMPT": "tool", "EXPLANATION_ATTEMPT": "llm"}
 # 끝 사건이 오지 않은 채 닫힌 실행·노드(취소·시간 초과 등)에 붙이는 오류 표시
@@ -176,13 +179,22 @@ class LangSmithTraceSink:
       LangSmith 응답을 기다리지 않는다. 종료 때 아직 못 보낸 것은 버려지지만 같은 사건이 내부 로그에 이미 있다
       (실행기가 내부 로그 싱크를 함께 둠, 사용자 결정 11-13). 응답 없는 주소에 2분 넘게 묶이던 문제(검토 11-13) 대응.
     - 실패는 세고(failed_traces) 경고 한 줄(실행 ID·오류 종류)만 남긴다. 분석·추적기에는 알리지 않는다.
+    - 보낼 줄이 가득 차면(MAX_QUEUED_TRACES) 그 실행은 보내지 않고 센다(dropped_traces).
     """
 
-    def __init__(self, client: RunBatchClient | None, project: str):
+    def __init__(
+        self,
+        client: RunBatchClient | None,
+        project: str,
+        *,
+        max_queued: int = MAX_QUEUED_TRACES,
+    ):
         self._client = client
         self.project = project
         self.sent_traces = 0
         self.failed_traces = 0
+        self.dropped_traces = 0
+        self._max_queued = max_queued
         self._buffers: dict[uuid.UUID, list[TraceEvent]] = {}
         self._lock = threading.Lock()
         self._local = threading.local()
@@ -240,8 +252,20 @@ class LangSmithTraceSink:
         """모은 사건을 보낼 줄에 넣는다. 끝 사건 뒤에 다시 불러도(추적기 닫기) 넣을 것이 없으면 아무것도 하지 않는다."""
         with self._lock:
             events = self._buffers.pop(trace_id, None)
-        if events:
-            self._queue.put(events)
+        if not events:
+            return
+        # qsize 는 정확하지 않아도 된다(상한을 조금 넘겨도 무방). flush 표지는 세지 않을 만큼 드물다
+        if self._queue.qsize() >= self._max_queued:
+            with self._lock:
+                self.dropped_traces += 1
+            logger.warning(
+                "LangSmith 로 보낼 줄이 가득 차(%d) 이 실행은 보내지 않습니다: 실행 %s"
+                " (AGENT_TRACE_DIR 을 넣었으면 내부 로그에 남아 있음)",
+                self._max_queued,
+                trace_id,
+            )
+            return
+        self._queue.put(events)
 
     def flush(self, timeout: float = 10.0) -> bool:
         """줄에 넣은 것을 다 보낼 때까지 기다린다(시험·도구용). 다 보냈으면 True."""
@@ -263,7 +287,8 @@ class LangSmithTraceSink:
             except Exception as error:  # noqa: BLE001
                 self.failed_traces += 1
                 logger.warning(
-                    "LangSmith 로 추적을 보내지 못했습니다: 실행 %s, 사건 %d건, %s (내부 로그에는 남아 있음 — AGENT_TRACE_DIR)",
+                    "LangSmith 로 추적을 보내지 못했습니다: 실행 %s, 사건 %d건, %s"
+                    " (AGENT_TRACE_DIR 을 넣었으면 내부 로그에 남아 있음)",
                     events[0].trace_id,
                     len(events),
                     type(error).__name__,

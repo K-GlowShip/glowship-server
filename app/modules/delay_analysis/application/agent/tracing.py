@@ -25,8 +25,9 @@ from langchain_core.callbacks import BaseCallbackHandler
           · 쓰기 예외는 세기만 하고 올리지 않는다.
       - 보내지 않는 것: 비밀번호·API 키·토큰, 프롬프트 전문, 원본 업무 데이터 전체. 상태는 키 이름과 안전한 값만 요약한다.
         주문 코드·SKU 경로 조각(/sku/<코드>/)은 실행마다 다른 키로 HMAC 해 바꾸고(같은 실행 안에서만 같은 값), 이메일은 지운다.
-      - LangSmith 전송은 기본 꺼짐이다. 켜면(AGENT_TRACE_LANGSMITH_ENABLED, 외부 전송 승인 11-13) 이 추적기가 가린 사건만
-        전송기(infrastructure/agent_trace_langsmith.py)가 보내고, 꺼져 있으면 내부 로그(outbox)에만 쓴다.
+      - LangSmith 전송은 기본 꺼짐이다. 켜면(AGENT_TRACE_LANGSMITH_ENABLED) 이 추적기가 가린 사건만
+        전송기(infrastructure/agent_trace_langsmith.py)가 보낸다. 내부 로그(outbox)에는 켜든 끄든 사건마다 바로 쓴다.
+        외부 전송 승인 범위(마스킹·보존·요금·지역)는 확인 중이라 켜는 것은 그 뒤다(docs/agent-flow/agent-tracing.md 3절).
         LangChain 자동 추적 환경 변수가 켜져 있으면 마스킹 없이 상태 전체가 나갈 수 있으므로 추적기를 만들 때 멈춘다.
       - 사건 ID 는 uuid5(실행 ID, 순번)라 같은 사건을 다시 보내도 중복이 생기지 않는다.
 """
