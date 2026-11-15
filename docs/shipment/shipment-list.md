@@ -97,7 +97,7 @@ HTTP/1.1 200 OK
 
 | 필드 | 설명 |
 | --- | --- |
-| `shipmentId`·`shipmentCode` | 선적 ID와 화면의 선적 코드. 상세 API(`GET /shipments/{shipmentId}`, 미구현)의 경로 값 |
+| `shipmentId`·`shipmentCode` | 선적 ID와 화면의 선적 코드. 상세 API(`GET /shipments/{shipmentId}`, [문서](shipment-detail.md))의 경로 값 |
 | `transportMode` | `OCEAN`(해상)·`AIR`(항공). 명세 2절에 표시명이 없어 해상·항공을 권함 |
 | `route` | **추가 필드.** "KR → LOS ANGELES" 형식(명세 D13). 출발은 고객사의 한국 출고 창고(`KR_ORIGIN`) 지역, 도착은 선적이 가리키는 시장 리드타임 기준의 항구 이름(`us_port_name`, 주 약칭 제외). 지연 목록의 `route`와 같은 함수 |
 | `warehouse` | 도착 창고 요약 객체. `regionCode` 표시명은 명세 2절(`WEST` 서부(LA)·`EAST` 동부(NJ)·`KR` 한국) |
@@ -150,7 +150,7 @@ HTTP/1.1 200 OK
 | `isDelayed`를 열린 에피소드 기준으로 | 바꾸지 않음 | 대시보드 지연 선적(C22)은 열린 에피소드만 세지만, 선적 탭은 입고 완료 선적의 지연 입고도 보여 줘야 합니다(2절 "지연 판정 기준"). 차이는 문서에 적고 설계 담당에게 명세 4.3 반영을 요청합니다 |
 | `isDelayed=true` 필터 | 넣지 않음 | 명세 4.3의 필터는 `stage`·`transportMode`·`warehouseId`·`q`뿐입니다. 지연 선적을 모아 보는 곳은 지연 대응 센터입니다 |
 | `q`의 SKU 검색 | 넣지 않음 | 명세 4.3이 `q(선적 코드)`입니다. 주문 탭의 SKU 검색은 명세 자체가 `q(주문 번호·SKU)`였기 때문입니다 |
-| `expectedPortArrivalDate`·`lines[]`·`plannedBasis`·`scheduleHistory[]`·데이터 기준 시각 | 상세 API 몫 | 명세 4.3 `GET /shipments/{shipmentId}`(미구현, 별도 티켓) |
+| `expectedPortArrivalDate`·`lines[]`·`plannedBasis`·`scheduleHistory[]`·데이터 기준 시각 | 상세 API 몫 | 명세 4.3 `GET /shipments/{shipmentId}`([shipment-detail.md](shipment-detail.md), GLOW-156) |
 
 ## 4. SQL
 
@@ -176,7 +176,6 @@ HTTP/1.1 200 OK
 
 ## 6. 아직 없는 것
 
-- `GET /shipments/{shipmentId}`(상세: 상세 줄·계획 근거·일정 변경 이력·데이터 기준 시각)
 - `GET /validation-issues`(하단 오류 배너)
 - 명세 4.3 `GET /shipments`에 추가 필드 4개와 `isDelayed` 정의(대시보드 지연 선적 C22와 다른 기준임을 포함) 반영(설계 담당 확인 뒤)
 

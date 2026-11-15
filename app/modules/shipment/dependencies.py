@@ -2,6 +2,9 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.modules.shipment.application.shipment_detail_service import (
+    ShipmentDetailService,
+)
 from app.modules.shipment.application.shipment_list_service import (
     ShipmentListService,
 )
@@ -24,3 +27,9 @@ def get_shipment_list_service(
     repo: ShipmentRepository = Depends(get_shipment_repository),
 ) -> ShipmentListService:
     return ShipmentListService(repo=repo)
+
+
+def get_shipment_detail_service(
+    repo: ShipmentRepository = Depends(get_shipment_repository),
+) -> ShipmentDetailService:
+    return ShipmentDetailService(repo=repo)
