@@ -52,8 +52,10 @@ MATRIX = [
     if (branch, fault) not in SKIPPED
 ]
 MODEL_USAGE_KEYS = {
+    "provider",
     "model",
     "response_models",
+    "model_check",
     "calls",
     "calls_failed",
     "calls_without_usage",

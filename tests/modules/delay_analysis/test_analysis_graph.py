@@ -9,6 +9,7 @@ from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph import END
 from langgraph.types import Command
 
+from app.core.llm import LlmModelMismatchError
 from app.modules.delay_analysis.application.agent.fake_runtime import (
     FakeScenario,
     fake_runtime,
@@ -605,6 +606,29 @@ async def test_도구_밖_함수가_예외를_내면_그_노드에서_FAILED_실
     assert len(logged) == 1
     assert node in logged[0].getMessage()
     assert isinstance(logged[0].exc_info[1], ConnectionError)
+
+
+async def test_다른_모델이_답해_설명이_멈추면_예상하지_못한_오류_FAILED_로_끝난다():
+    """설정과 다른 모델이 답하면 설명 함수가 LlmModelMismatchError 를 올린다(docs/agent-flow/explanation.md 8.12절).
+    실행은 예상하지 못한 오류로 끝나고 설명은 없다. 계산 결과는 그래프 상태에만 남는다
+    (이 실패 코드는 실행 상태와 실패 요약만 저장한다, outcome_save.py)."""
+    error = LlmModelMismatchError(
+        model="openai/gpt-x", response_model="another-model-9"
+    )
+    reader, runtime = await _broken_runtime("explain", error)
+
+    result, _, _ = await _run(runtime=runtime, reader=reader)
+
+    failure = result["failure"]
+    assert (result["outcome"], failure.failed_step, failure.failure_code) == (
+        AnalysisOutcome.FAILED,
+        AnalysisStep.VALIDATING_OUTPUT,
+        UNEXPECTED_TOOL_ERROR,
+    )
+    assert (failure.attempt_count, failure.retry_exhausted) == (1, False)
+    assert "decision" in result
+    assert "explanation" not in result
+    assert "validate" not in result["visited_nodes"]
 
 
 async def test_도구_밖_예외로_끝난_실패_요약은_저장_열_5개를_채운다():

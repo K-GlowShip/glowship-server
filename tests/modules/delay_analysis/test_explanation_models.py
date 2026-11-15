@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -15,13 +16,16 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app import main as app_main
+from app.core import llm as L
 from app.core import llm_usage as U
 from app.core.config import MOCK_EXPLANATION_MODEL, Settings, get_settings
 from app.core.llm import (
+    MODEL_CHECK_MATCH,
     REASON_RATE_LIMIT,
     REASON_TIMEOUT,
     REASON_TRUNCATED,
     LlmCallError,
+    LlmModelMismatchError,
     LlmResult,
     LlmTimeoutError,
     LlmUsage,
@@ -247,6 +251,7 @@ def test_adapter_calls_model_with_prompt_only(engine_errors):
             "input_tokens": 1200,
             "output_tokens": 900,
             "elapsed_ms": 0,
+            "model_check": "UNVERIFIED",
             "response_model": "answered-model",
         }
     ]
@@ -346,6 +351,7 @@ def test_adapter_records_cached_tokens_when_reported(engine_errors):
             "output_tokens": 300,
             "cached_input_tokens": 1536,
             "elapsed_ms": 7,
+            "model_check": "UNVERIFIED",
         }
     ]
 
@@ -371,6 +377,136 @@ def test_adapter_keeps_token_counts_of_billed_failures(engine_errors):
             "elapsed_ms": 3000,
         }
     ]
+
+
+def test_adapter_records_which_model_answered(engine_errors):
+    def answer(**kwargs):
+        return LlmResult(
+            text="{}",
+            model=kwargs["model"],
+            response_model="gpt-x-2026-03-17",
+            usage=LlmUsage(input_tokens=10, output_tokens=5),
+            elapsed_ms=3,
+            model_check=MODEL_CHECK_MATCH,
+        )
+
+    adapter = _adapter(answer)
+    adapter.complete("PROMPT", REQUEST)
+
+    (record,) = adapter.attempt_usage
+    assert (record["response_model"], record["model_check"]) == (
+        "gpt-x-2026-03-17",
+        "MATCH",
+    )
+
+
+def _other_model_answered(called=True):
+    return LlmModelMismatchError(
+        model="openai/gpt-x",
+        response_model="another-model-9",
+        usage=LlmUsage(input_tokens=10, output_tokens=5) if called else None,
+        called=called,
+    )
+
+
+def test_adapter_does_not_turn_a_model_mismatch_into_an_engine_attempt(engine_errors):
+    """다른 모델이 답한 것은 엔진이 잡는 두 오류로 바꾸지 않는다(바꾸면 엔진이 시도로 세고 또 부른다)."""
+    llm = FakeLlm([_other_model_answered(), '{"ok": true}'])
+    adapter = _adapter(llm)
+
+    with pytest.raises(LlmModelMismatchError) as e:
+        adapter.complete("PROMPT", REQUEST)
+
+    assert not isinstance(e.value, (_EngineTimeout, _EngineCallError))
+    assert len(llm.calls) == 1
+    assert adapter.attempt_usage == [
+        {
+            "error": "MODEL_MISMATCH",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "elapsed_ms": 0,
+            "model_check": "MISMATCH",
+            "response_model": "another-model-9",
+        }
+    ]
+
+
+def test_adapter_marks_a_blocked_model_as_not_requested(engine_errors):
+    adapter = _adapter(FakeLlm([_other_model_answered(called=False)]))
+
+    with pytest.raises(LlmModelMismatchError):
+        adapter.complete("PROMPT", REQUEST)
+
+    assert adapter.attempt_usage == [
+        {
+            "error": "MODEL_MISMATCH",
+            "elapsed_ms": 0,
+            "model_check": "MISMATCH",
+            "response_model": "another-model-9",
+            "requested": False,
+        }
+    ]
+
+
+def test_adapter_refuses_a_model_other_than_the_configured_one(engine_errors, caplog):
+    """부르려는 모델이 서버 설정과 다르면 제공자에게 나가기 전에 멈춘다."""
+    llm = FakeLlm(['{"ok": true}'])
+    adapter = A.ExplanationModelAdapter(
+        provider="openai",
+        model_id="gpt-x",
+        api_key=SecretStr(API_KEY),
+        call_timeout_seconds=12.0,
+        total_budget_seconds=20.0,
+        configured_model="openai/gpt-configured",
+        complete=llm,
+        clock=Clock(),
+    )
+
+    with caplog.at_level(logging.CRITICAL), pytest.raises(LlmModelMismatchError) as e:
+        adapter.complete("PROMPT", REQUEST)
+
+    assert llm.calls == []
+    assert (e.value.model, e.value.response_model, e.value.called) == (
+        "openai/gpt-configured",
+        "openai/gpt-x",
+        False,
+    )
+    (record,) = adapter.attempt_usage
+    assert (record["error"], record["requested"], record["model_check"]) == (
+        "MODEL_MISMATCH",
+        False,
+        "MISMATCH",
+    )
+    assert "openai/gpt-configured" in caplog.text
+    assert API_KEY not in caplog.text + str(e.value)
+
+
+def test_adapter_calls_when_model_is_the_configured_one(engine_errors):
+    llm = FakeLlm(['{"ok": true}'])
+    adapter = A.ExplanationModelAdapter(
+        provider="openai",
+        model_id="gpt-x",
+        api_key=SecretStr(API_KEY),
+        call_timeout_seconds=12.0,
+        total_budget_seconds=20.0,
+        configured_model="openai/gpt-x",
+        complete=llm,
+        clock=Clock(),
+    )
+
+    assert adapter.complete("PROMPT", REQUEST) == '{"ok": true}'
+
+
+def test_adapter_built_from_settings_checks_against_the_server_setting(engine_errors):
+    """앱 조립(selection)이 만든 어댑터는 서버 설정과 대조한다: 이름이 바뀌면 부르지 않는다."""
+    adapter = S.new_explanation_adapter(_real_settings())
+    adapter.model_id = "some-other-model"
+
+    with pytest.raises(LlmModelMismatchError) as e:
+        adapter.complete("PROMPT", REQUEST)
+
+    assert (e.value.model, e.value.called) == (TEST_MODEL, False)
+    assert S.configured_explanation_model(_real_settings()) == TEST_MODEL
 
 
 def test_budget_starts_at_first_call_not_at_creation(engine_errors):
@@ -670,7 +806,14 @@ def test_registered_real_model_passes_through_engine(
     # 시도별 사용량이 추적기의 사용량 칸으로 간다
     ((attempts, usage),) = tracer.calls
     assert len(attempts) == 1
-    assert usage == [{"input_tokens": 1200, "output_tokens": 900, "elapsed_ms": 2000}]
+    assert usage == [
+        {
+            "input_tokens": 1200,
+            "output_tokens": 900,
+            "elapsed_ms": 2000,
+            "model_check": "UNVERIFIED",
+        }
+    ]
 
 
 def test_call_failures_count_as_engine_attempts(
@@ -711,7 +854,7 @@ def test_failure_then_success_passes_on_second_attempt(
     ((_, usage),) = tracer.calls
     assert [sorted(item) for item in usage] == [
         ["elapsed_ms", "error"],
-        ["elapsed_ms", "input_tokens", "output_tokens"],
+        ["elapsed_ms", "input_tokens", "model_check", "output_tokens"],
     ]
     assert len(models.calls) == 2
 
@@ -853,6 +996,8 @@ def test_real_model_usage_goes_to_tracer_and_server_log(
     assert summary["estimated_cost_usd"] == "0.004950"  # 1200*0.75 + 900*4.50 = 4950
     assert summary["cost_complete"] is True
     assert summary["price"]["source"] == U.PRICE_SOURCE
+    # 어떤 모델로 불렀는지: 제공자·요청한 모델·대조 결과(가짜 호출은 답한 이름을 주지 않아 UNVERIFIED)
+    assert (summary["provider"], summary["model_check"]) == ("openai", "UNVERIFIED")
     (line,) = _usage_lines(capsys)
     assert line["analysis_run_id"] == RUN_ID
     assert line["feature"] == "explain"
@@ -907,8 +1052,10 @@ def test_mock_usage_is_recorded_with_zero_cost(engine, gs05, capsys):
     assert summary["input_tokens"] is None
     assert summary["estimated_cost_usd"] == "0.000000"
     assert summary["price"]["source"] == U.PRICE_SOURCE_MOCK
+    assert (summary["provider"], summary["model_check"]) == ("mock", "MOCK")
     (line,) = _usage_lines(capsys)
     assert line["analysis_run_id"] == RUN_ID
+    assert (line["provider"], line["model"]) == ("mock", MOCK_EXPLANATION_MODEL)
 
 
 class AttemptsBrokenTracer(FakeTracer):
@@ -978,3 +1125,120 @@ def test_usage_never_reaches_the_saved_explanation(
         "input_document",
         "attempts",
     }
+
+
+# --- 5. 설정한 모델만 쓴다 (엔진과 함께) --------------------------------------------------------
+
+
+def test_other_model_answer_stops_the_explanation_after_one_call(
+    engine, gs05, registered_model, monkeypatch, capsys
+):
+    """다른 모델이 답하면 엔진은 그것을 시도로 세지 않는다: 남은 두 번을 부르지 않고 그대로 올라온다."""
+    mismatch = LlmModelMismatchError(
+        model=TEST_MODEL,
+        response_model="another-model-9",
+        usage=LlmUsage(input_tokens=1200, output_tokens=900),
+    )
+    models = ScriptedModels(engine, monkeypatch, [mismatch, "ok", "ok"])
+    _use_settings(monkeypatch, _real_settings())
+    tracer = FakeTracer()
+
+    with pytest.raises(LlmModelMismatchError):
+        asyncio.run(_explain(gs05, tracer))
+
+    assert len(models.calls) == 1
+    assert tracer.calls == []  # 엔진 시도 기록은 없다(시도로 세지 않음)
+    # 누가 답했는지는 사용량 기록(추적 사건 + 서버 로그 한 줄)에 남는다
+    ((feature, summary),) = tracer.usage_calls
+    assert feature == "explain"
+    assert (summary["provider"], summary["model"]) == ("openai", TEST_MODEL)
+    assert summary["response_models"] == ["another-model-9"]
+    assert summary["model_check"] == "MISMATCH"
+    assert (summary["calls"], summary["calls_failed"]) == (1, 1)
+    assert (summary["input_tokens"], summary["output_tokens"]) == (1200, 900)
+    (line,) = _usage_lines(capsys)
+    assert line["analysis_run_id"] == RUN_ID
+    assert (line["model_check"], line["response_models"]) == (
+        "MISMATCH",
+        ["another-model-9"],
+    )
+
+
+def test_blocked_model_fails_the_next_explanation_without_a_call(
+    engine, gs05, registered_model, monkeypatch
+):
+    """막아 둔 모델: 다음 설명은 제공자에게 나가지 않고 바로 멈춘다(공용 층을 그대로 씀)."""
+    _use_settings(monkeypatch, _real_settings())
+    L.block_model(TEST_MODEL, "another-model-9")
+    monkeypatch.setattr(L, "load_llm_library", _raise)  # 불리면 안 된다
+    tracer = FakeTracer()
+
+    with pytest.raises(LlmModelMismatchError) as e:
+        asyncio.run(_explain(gs05, tracer))
+
+    assert e.value.called is False
+    ((_, summary),) = tracer.usage_calls
+    assert summary["model_check"] == "MISMATCH"
+    assert (summary["calls"], summary["calls_failed"]) == (0, 0)
+
+
+def test_recorded_model_must_be_the_server_setting(engine, gs05, monkeypatch, caplog):
+    """엔진이 설명에 기록한 모델이 서버 설정과 다르면 그 설명을 쓰지 않는다(여기서는 설정만 다른 값으로 바꿔 본다)."""
+    monkeypatch.setattr(X, "configured_explanation_model", lambda: "openai/gpt-set")
+    tracer = FakeTracer()
+
+    with (
+        caplog.at_level(logging.CRITICAL),
+        pytest.raises(X.ExplanationModelMismatchError) as e,
+    ):
+        asyncio.run(_explain(gs05, tracer))
+
+    assert (e.value.configured, e.value.recorded) == (
+        "openai/gpt-set",
+        MOCK_EXPLANATION_MODEL,
+    )
+    assert "openai/gpt-set" in caplog.text
+    # 실제 모델 쪽은 호출도 막는다. 사용량은 멈추기 전에 남았다
+    assert L.blocked_models() == {"openai/gpt-set": MOCK_EXPLANATION_MODEL}
+    ((_, summary),) = tracer.usage_calls
+    # 기록의 model 은 실제로 쓰인 쪽(mock), 대조 결과는 MISMATCH. 호출 수는 그대로(표시는 호출로 세지 않음)
+    assert (summary["model"], summary["model_check"]) == (
+        MOCK_EXPLANATION_MODEL,
+        "MISMATCH",
+    )
+    assert summary["calls"] == 1
+
+
+def test_real_model_recorded_while_setting_is_mock_is_blocked(
+    engine, gs05, registered_model, monkeypatch
+):
+    """설정은 mock 인데 실제 모델이 설명을 만들었으면: 그 설명을 쓰지 않고, 그 실제 모델을 막는다."""
+    ScriptedModels(engine, monkeypatch, ["ok"])
+    _use_settings(monkeypatch, _real_settings())
+    monkeypatch.setattr(
+        X, "configured_explanation_model", lambda: MOCK_EXPLANATION_MODEL
+    )
+
+    with pytest.raises(X.ExplanationModelMismatchError):
+        asyncio.run(_explain(gs05))
+
+    assert L.blocked_models() == {TEST_MODEL: MOCK_EXPLANATION_MODEL}
+
+
+def test_injected_adapter_is_not_compared_with_the_setting(engine, gs05):
+    """시험이 어댑터를 직접 넘기면 설정과 대조하지 않는다(설정이 고른 어댑터일 때만 대조)."""
+    snap, analysis = gs05
+    adapter = engine["mock"].MockAdapter(engine["labels"])
+
+    result = asyncio.run(
+        X.generate_explanation(
+            snap=snap,
+            analysis=analysis,
+            analysis_run_id=RUN_ID,
+            shipment_code=SHIP,
+            now=NOW,
+            adapter=adapter,
+        )
+    )
+
+    assert isinstance(result, X.ExplanationPassed)

@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from app.core.llm_usage import log_model_usage, summarize_usage
+from app.core.llm import (
+    MODEL_CHECK_MISMATCH,
+    LlmModelMismatchError,
+    block_model,
+    safe_model_name,
+)
+from app.core.llm_usage import MOCK_PROVIDER, log_model_usage, summarize_usage
 from app.modules.delay_analysis.application.agent.retry import (
     FailureSummary,
     explanation_failure,
@@ -27,6 +33,7 @@ from app.modules.delay_analysis.infrastructure.engine.explanation_assets import 
     ExplanationAssetError,
 )
 from app.modules.delay_analysis.infrastructure.explanation_models.selection import (
+    configured_explanation_model,
     new_explanation_adapter,
 )
 
@@ -39,6 +46,9 @@ from app.modules.delay_analysis.infrastructure.explanation_models.selection impo
         어댑터는 설명 한 건마다 새로 만든다(시간 예산·시도별 사용량이 건별 상태).
       - 설명은 READY_FOR_REVIEW 실행만 만든다(엔진 input_doc.build 규칙). 그 밖의 상태면 모델을 부르지 않고 ValueError.
       - 자산 오류(ExplanationAssetError)는 시도로 세지 않고 실행 상태를 바꾸지 않는다. 호출자에게 그대로 올린다.
+      - 설정한 모델만 쓴다(docs/agent-flow/explanation.md 8.12절). 다른 모델이 답했거나(LlmModelMismatchError) 엔진이 기록한
+        모델 이름이 서버 설정과 다르면(ExplanationModelMismatchError) 그 설명을 쓰지 않고 올린다. 남은 시도는 하지 않는다.
+        실행은 예상하지 못한 오류(FAILED)로 끝난다. 누가 답했는지는 사용량 기록(model_check·response_models)에 남긴다.
       - 실패 원문·canary 는 결과·추적 어디에도 남기지 않는다. 시도 기록 = 사유 코드·위치·모델·프롬프트 판뿐(엔진과 같음).
       - 그래프 연결(GLOW-129 AnalysisRuntime): make_explainer() 가 노드가 부르는 explain(ctx, now) 를,
         final_check_input 이 결과 검증 노드의 T12 입력을 만든다. 실행 묶음에 끼우는 것은 "실제 도구 교체" 작업이다.
@@ -48,6 +58,17 @@ logger = logging.getLogger(__name__)
 
 
 USAGE_FEATURE = "explain"  # 모델 사용량 기록에 적는 기능 이름
+
+
+class ExplanationModelMismatchError(RuntimeError):
+    """엔진이 설명에 기록한 모델 이름이 서버 설정(EXPLANATION_MODEL)과 다르다. 그 설명은 쓰지 않는다."""
+
+    def __init__(self, configured: str, recorded: str):
+        super().__init__(
+            f"설명에 기록된 모델이 서버 설정과 다릅니다 (설정 {configured}, 기록 {recorded})"
+        )
+        self.configured = configured
+        self.recorded = recorded
 
 
 class ExplanationTracer(Protocol):
@@ -145,6 +166,8 @@ async def generate_explanation(
 
     document = input_doc.build(snap, analysis, analysis_run_id, shipment_code)
     model = adapter if adapter is not None else default_adapter()
+    # 설정이 고른 어댑터로 돌 때(시험이 어댑터를 넘기지 않을 때)만 엔진이 기록한 모델을 서버 설정과 대조한다
+    configured = configured_explanation_model() if adapter is None else None
     try:
         result = await asyncio.to_thread(
             generator.generate,
@@ -156,14 +179,33 @@ async def generate_explanation(
         )
     except assets.SystemConfigError as error:
         raise ExplanationAssetError(error.code, error.detail) from error
+    except LlmModelMismatchError:
+        # 다른 모델이 답했다(또는 막아 둔 모델). 엔진은 시도로 세지 않고 여기까지 올린다. 누가 답했는지 남기고 그대로 올린다
+        _record_model_usage(
+            tracer,
+            analysis_run_id,
+            f"{getattr(model, 'provider', None)}/{getattr(model, 'model_id', None)}",
+            (),
+            tuple(getattr(model, "attempt_usage", ())),
+        )
+        raise
 
     attempts = tuple(result["attempts"])
     # 실제 모델 어댑터는 시도별 토큰 수·걸린 시간을 모은다(mock 은 없음). 추적기의 사용량 칸으로 넘긴다(NFR-008)
     attempt_usage = tuple(getattr(model, "attempt_usage", ()))
     _trace(tracer, attempts, attempt_usage)
+    # 엔진이 기록한 모델이 서버 설정과 다르면 사용량 기록에 MISMATCH 로 남긴 뒤 멈춘다(기록의 model 은 실제로 쓰인 쪽)
+    differs = configured is not None and result["model_name"] != configured
     _record_model_usage(
-        tracer, analysis_run_id, result["model_name"], attempts, attempt_usage
+        tracer,
+        analysis_run_id,
+        result["model_name"],
+        attempts,
+        attempt_usage,
+        mismatch=differs,
     )
+    if differs:
+        _stop_on_recorded_model(configured, result["model_name"])
     if result["status"] == "PASSED":
         return ExplanationPassed(
             model_name=result["model_name"],
@@ -181,6 +223,24 @@ async def generate_explanation(
         failure_message=result["failure_message"],
         attempts=attempts,
     )
+
+
+def _stop_on_recorded_model(configured: str, recorded: Any) -> None:
+    """엔진이 기록한 모델 이름이 서버 설정과 다르면 그 설명을 쓰지 않고 멈춘다.
+
+    둘 가운데 실제 모델(제공자가 mock 이 아닌 것)은 호출도 막는다. 설정은 mock 인데 실제 모델이 기록된 경우에도
+    그 실제 모델이 다시 불리지 않는다.
+    """
+    recorded_name = safe_model_name(recorded)
+    logger.critical(
+        "설명에 기록된 모델이 서버 설정과 다릅니다: 설정 %s, 기록 %s. 이 설명을 쓰지 않고 실행을 멈춥니다",
+        safe_model_name(configured),
+        recorded_name,
+    )
+    for name, other in ((configured, recorded_name), (recorded_name, configured)):
+        if name.partition("/")[0] != MOCK_PROVIDER:
+            block_model(name, other)
+    raise ExplanationModelMismatchError(safe_model_name(configured), recorded_name)
 
 
 def _trace(
@@ -203,14 +263,20 @@ def _record_model_usage(
     model_name: str,
     attempts: tuple[dict[str, Any], ...],
     attempt_usage: tuple[Any, ...],
+    *,
+    mismatch: bool = False,
 ) -> None:
     """설명 한 건의 모델 사용량 합계(모델명·호출 수·토큰 수·예상 비용)를 서버 로그와 추적에 남긴다(NFR-008).
+
+    mismatch: 기록된 모델이 서버 설정과 다른 경우. 호출 수에는 넣지 않는 표시 하나를 더해 합계의 model_check 가 MISMATCH 가 된다.
 
     시도 기록(_trace)과 따로 감싼다. 시도 기록이 실패해도 사용량은 남고, 사용량 기록이 실패해도 분석 결과는 같다.
     사용량을 모으지 않는 어댑터(결정적 mock)는 시도 수만큼 호출한 것으로 센다(토큰 수 없음).
     """
     try:
         calls = attempt_usage if attempt_usage else tuple({} for _ in attempts)
+        if mismatch:
+            calls = (*calls, {"requested": False, "model_check": MODEL_CHECK_MISMATCH})
         summary = summarize_usage(model_name, calls)
     except Exception:
         logger.warning("모델 사용량 합계 실패(분석은 계속)", exc_info=True)

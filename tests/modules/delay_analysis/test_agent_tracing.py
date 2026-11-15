@@ -337,6 +337,55 @@ def test_model_usage_event_keeps_numbers_and_stays_one_line(tmp_path):
     assert json.loads(text)["analysis_run_id"] == str(run_id)
 
 
+def test_model_usage_event_says_which_model_was_called(tmp_path):
+    """내부 로그의 사용량 사건에 제공자·요청한 모델·답한 모델·대조 결과가 그대로 남는다(mock 은 mock 으로)."""
+    run_id, company_id = uuid.uuid4(), uuid.uuid4()
+    tracer = RunTracer(run_id, company_id, [TraceOutboxSink(tmp_path)])
+    real = summarize_usage(
+        "openai/gpt-5.4-mini",
+        [
+            {
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "response_model": "gpt-5.4-mini-2026-03-17",
+                "model_check": "MATCH",
+            }
+        ],
+    )
+    stopped = summarize_usage(
+        "openai/gpt-5.4-mini",
+        [
+            {
+                "error": "MODEL_MISMATCH",
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "response_model": "another-model-9",
+                "model_check": "MISMATCH",
+            }
+        ],
+    )
+    mock = summarize_usage("mock/mock-template-v1", [{}])
+
+    for usage in (real, stopped, mock):
+        tracer.model_usage("explain", usage)
+    assert tracer.close()
+
+    (path,) = tmp_path.rglob("*.jsonl")
+    lines = [
+        json.loads(line)["summary"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    picked = [
+        (s["provider"], s["model"], s["response_models"], s["model_check"])
+        for s in lines
+    ]
+    assert picked == [
+        ("openai", "openai/gpt-5.4-mini", ["gpt-5.4-mini-2026-03-17"], "MATCH"),
+        ("openai", "openai/gpt-5.4-mini", ["another-model-9"], "MISMATCH"),
+        ("mock", "mock/mock-template-v1", [], "MOCK"),
+    ]
+
+
 def test_model_usage_failure_is_counted_not_raised():
     class Broken(RunTracer):
         def emit(self, *args, **kwargs):

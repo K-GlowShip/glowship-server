@@ -22,6 +22,9 @@ if TYPE_CHECKING:
         제공자 오류 문구에는 키·프롬프트 일부가 섞일 수 있어 버리고, 사유 코드·상태 코드만 남긴다.
       - 키·프롬프트·모델 출력은 로그에 남기지 않는다. LiteLLM 의 콜백(외부 기록)이 켜져 있으면 호출하지 않는다.
       - 키는 제공자마다 하나(설정의 SecretStr)이고 호출할 때 직접 넘긴다. 모델은 기능마다 자기 설정으로 고른다.
+      - 답한 모델 대조: 제공자가 답한 모델 이름이 요청한 모델(또는 그 날짜판)이 아니면 그 응답을 쓰지 않고
+        LlmModelMismatchError 를 올린다. 그 모델은 서버를 다시 시작할 때까지 막아 두어, 다시 불러도 제공자에게 나가지 않는다
+        (설정과 다른 모델에 비용을 계속 쓰지 않게). 이름을 알려 주지 않은 응답은 대조하지 못한 것으로만 적는다(UNVERIFIED).
       - 사용량(토큰 수)은 제공자가 준 값이라 그대로 믿지 않는다. 범위를 벗어난 수가 하나라도 있으면 그 호출은 "사용량 없음"이다.
         제공자가 답한 모델 이름도 허용한 글자만 받는다(로그·추적 기록에 그대로 쓰이는 값). 합계·예상 비용은 app/core/llm_usage.py.
 """
@@ -48,6 +51,16 @@ REASON_BAD_REQUEST = "BAD_REQUEST"
 REASON_TRUNCATED = "TRUNCATED"
 REASON_EMPTY = "EMPTY"
 REASON_UNEXPECTED = "UNEXPECTED"
+REASON_MODEL_MISMATCH = (
+    "MODEL_MISMATCH"  # 요청한 모델과 다른 모델이 답함(LlmModelMismatchError)
+)
+
+# 답한 모델 대조 결과 (LlmResult.model_check, 사용량 기록의 model_check)
+MODEL_CHECK_MATCH = "MATCH"  # 답한 이름이 요청한 모델이거나 그 날짜판
+MODEL_CHECK_UNVERIFIED = (
+    "UNVERIFIED"  # 제공자가 모델 이름을 알려 주지 않아 대조하지 못함
+)
+MODEL_CHECK_MISMATCH = "MISMATCH"  # 다른 모델이 답함 → 호출을 멈춤
 
 # 토큰 수 상한. 이보다 크면 제공자 값이 잘못된 것으로 보고 버린다(가장 큰 문맥 창의 수백 배)
 MAX_TOKEN_COUNT = 1_000_000_000
@@ -100,6 +113,30 @@ class LlmCallError(LlmError):
     """시간 초과가 아닌 호출 실패(연결·인증·한도·서버 오류·거부·잘린 응답·빈 응답 등)"""
 
 
+class LlmModelMismatchError(LlmError):
+    """요청한 모델과 다른 모델이 답했거나, 그래서 막아 둔 모델을 다시 부르려 했다.
+
+    시간 초과·호출 실패와 달리 다시 불러 볼 실패가 아니다(같은 모델이 또 답한다). 부르는 쪽은 시도로 세지 않고 멈춘다.
+    response_model: 답한 모델 이름(기록에 남겨도 되는 글자만, 아니면 "INVALID"). called: 이번에 제공자에게 요청이 나갔는지
+    (막아 둔 모델을 다시 부른 경우 False — 비용 없음).
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        response_model: str | None,
+        usage: LlmUsage | None = None,
+        called: bool = True,
+    ):
+        super().__init__(REASON_MODEL_MISMATCH, model=model, usage=usage)
+        self.args = (
+            f"모델 호출 중단 {REASON_MODEL_MISMATCH} (요청한 모델 {model}, 답한 모델 {response_model})",
+        )
+        self.response_model = response_model
+        self.called = called
+
+
 @dataclass(frozen=True)
 class LlmResult:
     text: str  # 모델이 쓴 글 전체(잘리거나 거부된 응답은 결과가 아니라 LlmCallError)
@@ -108,6 +145,8 @@ class LlmResult:
     response_model: str | None
     usage: LlmUsage
     elapsed_ms: int
+    # 답한 모델 대조 결과: MATCH 또는 UNVERIFIED (MISMATCH 는 결과가 아니라 LlmModelMismatchError)
+    model_check: str = MODEL_CHECK_UNVERIFIED
 
 
 def split_model(model: str) -> tuple[str, str]:
@@ -116,6 +155,57 @@ def split_model(model: str) -> tuple[str, str]:
     if not provider or not model_id:
         raise LlmConfigError(f'모델은 "제공자/모델 ID" 여야 합니다 (받은 값: {model})')
     return provider, model_id
+
+
+# 같은 모델의 날짜판 이름에 붙는 꼬리: -2026-03-17 · -20261001 · -0613 · -001
+_SNAPSHOT_SUFFIX = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8}|\d{3,4})")
+
+
+def check_response_model(model: str, answered: Any) -> str:
+    """요청한 "제공자/모델 ID" 와 제공자가 답한 모델 이름을 대조한다 → MATCH · UNVERIFIED · MISMATCH.
+
+    같은 모델로 보는 것: 모델 ID 와 같은 이름, 그 뒤에 날짜판 꼬리가 붙은 이름("gpt-x" → "gpt-x-2026-03-17"),
+    앞에 "제공자/"·"models/" 가 붙은 이름. "-latest" 로 요청했으면 그 앞부분으로 본다.
+    "gpt-x" 로 요청했는데 "gpt-x-mini" 가 답한 것처럼 꼬리가 날짜판 모양이 아니면 다른 모델이다.
+    이름이 없으면(None·빈 글) 대조하지 못한 것(UNVERIFIED)이고, 글이 아니면 다른 모델로 본다.
+    """
+    if answered is None or answered == "":
+        return MODEL_CHECK_UNVERIFIED
+    if not isinstance(answered, str):
+        return MODEL_CHECK_MISMATCH
+    provider, model_id = split_model(model)
+    name = answered.removeprefix(f"{provider}/").removeprefix("models/")
+    for base in (model_id, model_id.removesuffix("-latest")):
+        if not base:
+            continue
+        if name == base:
+            return MODEL_CHECK_MATCH
+        if name.startswith(base) and _SNAPSHOT_SUFFIX.fullmatch(name[len(base) :]):
+            return MODEL_CHECK_MATCH
+    return MODEL_CHECK_MISMATCH
+
+
+_blocked_lock = threading.Lock()
+# 다른 모델이 답해 막아 둔 요청 모델 → 그때 답한 이름. 서버 프로세스가 사는 동안 유지한다(다시 시작하면 풀림)
+_blocked_models: dict[str, str] = {}
+
+
+def block_model(model: str, response_model: str | None) -> None:
+    """이 요청 모델의 호출을 서버를 다시 시작할 때까지 막는다. 이미 막혀 있으면 처음 기록을 둔다."""
+    with _blocked_lock:
+        _blocked_models.setdefault(model, safe_model_name(response_model))
+
+
+def blocked_models() -> dict[str, str]:
+    """막아 둔 요청 모델 → 그때 답한 이름(사본)"""
+    with _blocked_lock:
+        return dict(_blocked_models)
+
+
+def reset_blocked_models() -> None:
+    """막아 둔 모델을 모두 푼다. 시험에서만 쓴다(운영에서는 원인을 고치고 서버를 다시 시작한다)."""
+    with _blocked_lock:
+        _blocked_models.clear()
 
 
 def api_key_for(settings: Settings, provider: str) -> SecretStr | None:
@@ -149,6 +239,10 @@ def load_llm_library() -> Any:
                 # LiteLLM 은 import 할 때 가격표를 원격에서 받아 온다(5초 제한). 이 값이 있어야 묶음에 든 표만 쓴다.
                 # 외부로 나갈 길이 없는 서버에서 시작이 늦어지지 않게, 그리고 시작 때 외부 조회를 하지 않게 끈다.
                 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+                # LiteLLM 은 기본(DEV) 방식이면 import 할 때 .env 파일을 찾아 그 줄을 모두 프로세스 환경 변수로 올린다
+                # (load_dotenv). .env 는 Settings 만 읽게 한다: Settings 가 쓰지 않는 줄까지 환경 변수가 되면 환경 변수를
+                # 읽는 다른 라이브러리가 그 값을 보고, 시험에서는 뒤에 도는 시험의 설정에 개발자 .env 값이 섞인다.
+                os.environ["LITELLM_MODE"] = "PRODUCTION"
                 try:
                     import litellm
                 except ImportError as error:
@@ -270,9 +364,22 @@ def complete_text(
     결과는 글(JSON 문자열일 수 있음)이며 Pydantic 모델로 읽는 것은 부르는 쪽이 한다(Model.model_validate_json).
     시간 제한은 HTTP 호출에 건다. 응답이 오지 않는 시간을 재는 것이라, 조금씩 흘려 보내는 응답은 더 걸릴 수 있다.
     """
-    split_model(model)
+    provider, _ = split_model(model)
+    if provider not in API_KEY_FIELDS and provider not in KEYLESS_PROVIDERS:
+        # mock 을 포함해 모르는 제공자는 라이브러리에 넘기지 않는다(엉뚱한 곳으로 요청이 나가지 않게)
+        raise LlmConfigError(f"모르는 모델 제공자라 부르지 않습니다: {provider}")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds 는 0보다 커야 합니다")
+    answered_before = blocked_models().get(model)
+    if answered_before is not None:
+        logger.error(
+            "막아 둔 모델이라 부르지 않습니다: 요청한 모델 %s, 앞서 답한 모델 %s (원인을 고친 뒤 서버를 다시 시작하세요)",
+            safe_model_name(model),
+            answered_before,
+        )
+        raise LlmModelMismatchError(
+            model=model, response_model=answered_before, called=False
+        )
     litellm = load_llm_library()
     if _external_logging_enabled(litellm):
         raise LlmConfigError(
@@ -311,7 +418,24 @@ def complete_text(
                 )
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
+    model_check = MODEL_CHECK_UNVERIFIED
     if failure is None:
+        # 글을 읽기 전에 누가 답했는지부터 본다. 다른 모델의 답은 거부·잘림이어도 결과로도 시도로도 쓰지 않는다
+        answered = getattr(response, "model", None)
+        model_check = check_response_model(model, answered)
+        if model_check == MODEL_CHECK_MISMATCH:
+            response_model = safe_model_name(answered)
+            block_model(model, response_model)
+            logger.critical(
+                "요청한 모델과 다른 모델이 답했습니다: 요청한 모델 %s, 답한 모델 %s (%dms)."
+                " 이 응답을 쓰지 않고, 이 모델 호출을 서버를 다시 시작할 때까지 막습니다",
+                safe_model_name(model),
+                response_model,
+                elapsed_ms,
+            )
+            raise LlmModelMismatchError(
+                model=model, response_model=response_model, usage=_read_usage(response)
+            )
         failure, text = _read_text(response, model)
         if failure is not None:
             # 거부·잘림·빈 응답도 제공자가 청구한다
@@ -326,14 +450,22 @@ def complete_text(
         )
         raise failure
 
-    logger.info("모델 호출 완료: 모델 %s, %dms", model, elapsed_ms)
     response_model = getattr(response, "model", None)
+    response_model = safe_model_name(response_model) if response_model else None
+    logger.info(
+        "모델 호출 완료: 요청한 모델 %s, 답한 모델 %s (%s), %dms",
+        model,
+        response_model,
+        model_check,
+        elapsed_ms,
+    )
     return LlmResult(
         text=text,
         model=model,
-        response_model=safe_model_name(response_model) if response_model else None,
+        response_model=response_model,
         usage=_read_usage(response),
         elapsed_ms=elapsed_ms,
+        model_check=model_check,
     )
 
 

@@ -38,6 +38,11 @@ def uses_mock_model(settings: Settings) -> bool:
     return settings.explanation_model == MOCK_EXPLANATION_MODEL
 
 
+def configured_explanation_model(settings: Settings | None = None) -> str:
+    """서버 설정의 설명 모델("제공자/모델 ID"). 실제로 쓰인 모델을 이것과 대조한다."""
+    return (settings or get_settings()).explanation_model
+
+
 def new_explanation_adapter(settings: Settings | None = None) -> Any:
     """설명 한 건에 쓸 새 어댑터. mock 이면 엔진 MockAdapter(라벨은 해시를 대조한 자산에서 읽는다)."""
     settings = settings or get_settings()
@@ -59,6 +64,7 @@ def new_explanation_adapter(settings: Settings | None = None) -> Any:
         api_key=api_key,
         call_timeout_seconds=settings.explanation_model_timeout_seconds,
         total_budget_seconds=settings.explanation_total_budget_seconds,
+        configured_model=settings.explanation_model,
     )
 
 
