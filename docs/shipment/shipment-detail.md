@@ -56,7 +56,7 @@ sequenceDiagram
 | `expectedPortArrivalDate` | 현재 예상 항구 도착일(`shipments.current_expected_port_arrival_date`). 3PL 입고일과 다른 날짜(BR-007). 값이 없으면 `null` |
 | `lines[]` | 상세 줄 전부, 줄 번호 순. `sku` 는 공통 상품 요약 `{skuId, skuCode, productName}` |
 | `plannedBasis` | 계획 3PL 입고일을 정한 시장 리드타임 기준(`market_leadtime_references`): 기준 달, 도착 항구 이름(표의 값 그대로, 예 `LOS ANGELES, CA`), 총 리드타임 p50·p90(일, JSON 숫자), 신뢰도(원천 값 그대로) |
-| `scheduleHistory[]` | 일정 관측 전부(`shipment_schedule_snapshots`). **관측 시각 오래된 순**, 같으면 관측 ID 순 |
+| `scheduleHistory[]` | 일정 관측 전부(`shipment_schedule_snapshots`). **관측 시각 오래된 순**, 같으면 관측 ID 순. 관측이 없는 선적은 `[]`(로컬 개발 DB 선적 166건 중 104건) |
 | `dataBasisAt` | 데이터 기준 시각 = 이 선적 행을 마지막으로 바꾼 수집(`shipments.data_sync_run_id`)의 **종료 시각**(`finished_at`) |
 
 ## 3. 명세에 없어 정한 것
@@ -85,9 +85,11 @@ sequenceDiagram
 | 파일 | 내용 |
 | --- | --- |
 | `test_shipment_detail_api.py`(DB 없음, 서비스 가짜) | 401, OWNER·ADMIN 403, UUID 아님 422, 404 `SHIPMENT_NOT_FOUND`, 토큰 고객사·경로 선적 전달과 RLS 먼저, camelCase 응답 모양(목록 필드·`3pl` 별칭·요약 객체·숫자로 나가는 p50·p90·이력·`dataBasisAt`) |
-| `test_shipment_detail_sql.py`(실제 DB, 롤백) | 관측 둘 이상인 선적으로 — 목록 행과 같은 칸이 같음, 항구 도착일·계획 근거·`dataBasisAt`(= 그 수집 `finished_at`)이 원천 표 값과 같음, 상세 줄 수·순서, 이력 전부·오래된 순, 다른 고객사·없는 선적 404 |
+| `test_shipment_detail_sql.py`(실제 DB, 롤백) | 관측 둘 이상인 선적으로 — 목록 행과 같은 칸이 같음, 항구 도착일·계획 근거·`dataBasisAt`(= 그 수집 `finished_at`)이 원천 표 값과 같음, 상세 줄 전부(줄 번호·상품·수량이 원천과 같음, 줄 번호 순), 이력 전부(관측 시각·단계·두 날짜가 원천과 같음, 오래된 순), 관측이 없는 선적은 빈 이력, 다른 고객사·없는 선적 404 |
 
 시험이 실패를 잡는지 변이 8종으로 확인(모두 잡힘): 상세 고객사 조건 뺌, 이력 순서 뒤집음, `dataBasisAt`을 `started_at`으로, 항구 도착일을 `NULL`로, 없는 선적에 404 안 냄, 목록 계산에 상세 줄 안 넘김, 기준 숫자를 문자열로, 이력 한 건만. "이력 SQL 의 고객사 조건 뺌"은 선적 ID 가 고객사를 넘어 고유해서 결과가 같아(동치 변이) 넣지 않았습니다.
+
+push 전 점검에서 변이 12종을 더 넣었습니다: 이력·상세 SQL 의 선적 조건 뺌, 상세 줄 비움, 이력 `expected3plInboundDate` 별칭 뺌, p50 에 p90, `dataBasisAt`을 고객사 최신 수집으로, `dataBasisAt`을 `null`로, 이력 동점 정렬 기준 뺌, 이력 항구 도착일을 `null`로, 이력 단계 고정, 줄 수량 0, 이력 3PL 입고일에 항구 도착일. 처음에는 이력·상세 줄의 **값**을 바꾼 4종을 잡지 못했습니다(실제 DB 시험이 건수·순서만 봄). 값까지 원천과 비교하게 고친 뒤 11종을 잡습니다. 남은 1종(이력 동점 정렬 기준 뺌)은 로컬 DB 에 관측 시각이 같은 관측이 없어 시험으로 확인하지 못했습니다(유일 제약은 `(shipment_id, data_sync_run_id)`라 같은 시각이 생길 수는 있음).
 
 ## 6. 관련 파일
 

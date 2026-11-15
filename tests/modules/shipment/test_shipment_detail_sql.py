@@ -101,17 +101,24 @@ async def test_상세_칸은_원천_표_값과_같다(db_session):
             {"c": company_id, "s": shipment_id},
         )
     ).one()
-    line_count = await db_session.scalar(
-        text(
-            "SELECT count(*) FROM shipment_lines WHERE company_id = :c AND shipment_id = :s"
-        ),
-        {"c": company_id, "s": shipment_id},
-    )
+    src_lines = (
+        await db_session.execute(
+            text(
+                """
+                SELECT line_no, sku_id, shipped_quantity
+                  FROM shipment_lines
+                 WHERE company_id = :c AND shipment_id = :s
+                """
+            ),
+            {"c": company_id, "s": shipment_id},
+        )
+    ).all()
     observed = (
         await db_session.execute(
             text(
                 """
-                SELECT observed_at, shipment_schedule_snapshot_id
+                SELECT observed_at, shipment_schedule_snapshot_id, stage,
+                       expected_port_arrival_date, expected_3pl_inbound_date
                   FROM shipment_schedule_snapshots
                  WHERE company_id = :c AND shipment_id = :s
                 """
@@ -136,19 +143,63 @@ async def test_상세_칸은_원천_표_값과_같다(db_session):
         src.total_leadtime_p90,
         src.confidence_leadtime,
     )
-    assert len(detail.lines) == line_count
-    assert [line.line_no for line in detail.lines] == sorted(
-        line.line_no for line in detail.lines
+    # 상세 줄: 전부, 줄 번호 순, 값이 원천과 같음
+    assert [
+        (line.line_no, line.sku_id, line.shipped_quantity) for line in detail.lines
+    ] == sorted(
+        (line.line_no, line.sku_id, line.shipped_quantity) for line in src_lines
     )
-    # 이력: 관측 전부, 관측 시각 오래된 순(같으면 관측 ID 순)
-    expected_order = [
-        o.observed_at
+    assert len(detail.lines) >= 1
+    # 이력: 관측 전부, 관측 시각 오래된 순(같으면 관측 ID 순), 값이 원천과 같음
+    expected_history = [
+        (
+            o.observed_at,
+            o.stage,
+            o.expected_port_arrival_date,
+            o.expected_3pl_inbound_date,
+        )
         for o in sorted(
             observed, key=lambda o: (o.observed_at, o.shipment_schedule_snapshot_id)
         )
     ]
-    assert [h.observed_at for h in detail.schedule_history] == expected_order
-    assert len(detail.schedule_history) == len(observed) >= 2
+    assert [
+        (
+            h.observed_at,
+            h.stage,
+            h.expected_port_arrival_date,
+            h.expected_3pl_inbound_date,
+        )
+        for h in detail.schedule_history
+    ] == expected_history
+    assert len(expected_history) >= 2
+
+
+async def test_관측이_없는_선적은_이력이_빈_목록이다(db_session):
+    row = (
+        await db_session.execute(
+            text(
+                """
+                SELECT s.company_id, s.shipment_id
+                  FROM shipments s
+                 WHERE NOT EXISTS (
+                           SELECT 1 FROM shipment_schedule_snapshots h
+                            WHERE h.company_id = s.company_id AND h.shipment_id = s.shipment_id)
+                 ORDER BY s.shipment_id
+                 LIMIT 1
+                """
+            )
+        )
+    ).first()
+    if row is None:
+        pytest.skip("일정 관측이 없는 선적이 없는 DB")
+
+    detail = await ShipmentDetailService(ShipmentRepository(db_session)).get(
+        _tenant(row.company_id), row.shipment_id
+    )
+
+    assert detail.schedule_history == []
+    assert detail.item.shipment_id == row.shipment_id
+    assert len(detail.lines) >= 1
 
 
 async def test_다른_고객사의_선적은_404(db_session):
