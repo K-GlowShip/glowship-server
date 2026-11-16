@@ -73,11 +73,11 @@ final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # A
 ## 3. 설명 자산 확인
 
 자산은 다섯 가지입니다(엔진 `explain/assets/`).
-- 프롬프트 `explain_ready_v1@1.0.0`
+- 프롬프트 `explain_ready_v1@1.0.0`(mock), 실제 모델은 `explain_ready_v1@1.1.1`(8.13절)
 - 스키마 `explanation.v1`
 - 금지 표현 `ko-v2`
 - 라벨 `ko-v1`
-- 모델 설정 `mock-template-v1`(실제 모델을 고르면 그 모델의 설정도 시작 단계에서 확인, 8.5절)
+- 모델 설정 `mock-template-v1`(실제 모델을 고르면 그 모델의 설정도 시작 단계에서 확인, 8.5절. 등록된 실제 모델은 `gpt-6-luna`)
 
 엔진 `assets.load`가 등록부 `registry_v2.json`의 SHA-256과 파일을 하나씩 대조합니다. 파일이 없거나 해시가 다르면 `SystemConfigError`이고, 서버는 `ExplanationAssetError`(같은 `code`)로 바꿔 올립니다.
 
@@ -145,7 +145,7 @@ final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # A
 
 ## 8. 실제 언어 모델 연결 준비 (GLOW-150)
 
-설명 모델을 설정으로 고를 수 있게 서버 쪽을 준비했습니다. **기본은 mock이고, 이 작업만으로는 실제 모델이 켜지지 않습니다.** 엔진 등록부에 등록된 모델 설정이 mock 하나뿐이라, 실제 모델을 고르면 서버가 시작 단계에서 멈춥니다(의도한 안전장치).
+설명 모델을 설정으로 고를 수 있게 서버 쪽을 준비했습니다. **기본은 mock입니다.** 11-16 엔진 판부터 실제 모델 `openai/gpt-6-luna`(생각 강도 medium)가 등록부에 있어 `EXPLANATION_MODEL=openai/gpt-6-luna`와 키로 켤 수 있습니다(8.13절). 등록부에 없는 모델을 고르면 서버가 시작 단계에서 멈춥니다(의도한 안전장치).
 
 - 코드
   - 공용 모델 호출: `app/core/llm.py`
@@ -172,12 +172,13 @@ final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # A
 | --- | --- | --- |
 | `EXPLANATION_MODEL` | `mock/mock-template-v1` | `제공자/모델 ID`. 제공자는 `openai`·`gemini`·`anthropic`·`bedrock`. 비우면 mock |
 | `OPENAI_API_KEY`·`GEMINI_API_KEY`·`ANTHROPIC_API_KEY` | 비움 | 제공자마다 하나. 고른 제공자의 키만 필요. `bedrock`은 키 대신 실행 환경의 자격 증명(인스턴스 역할)을 씀 |
-| `EXPLANATION_MODEL_TIMEOUT_SECONDS` | 12 | 모델 호출 한 번의 시간 제한 |
-| `EXPLANATION_TOTAL_BUDGET_SECONDS` | 20 | 설명 한 건(엔진 3시도 합)의 총 시간 예산 |
+| `EXPLANATION_MODEL_TIMEOUT_SECONDS` | 45 | 모델 호출 한 번의 시간 제한(11-16 전에는 12) |
+| `EXPLANATION_TOTAL_BUDGET_SECONDS` | 90 | 설명 한 건(엔진 3시도 합)의 총 시간 예산(11-16 전에는 20) |
 
 - `제공자`와 `모델 ID`는 엔진 모델 설정 파일의 `provider`·`model_id`와 글자까지 같아야 합니다. 엔진이 `model_id`로 등록부의 설정을 찾고(설정 ID = 모델 ID), 제공자가 다르면 `MODEL_CONFIG_MISMATCH`로 멈춥니다. 저장되는 모델 이름도 이 값입니다(`openai/<모델 ID>`).
 - 키는 `SecretStr`이고 호출할 때 직접 넘깁니다. 서버 설정은 `.env`를 읽어도 환경 변수로 내보내지 않으므로, LiteLLM이 환경 변수에서 키를 찾게 두지 않습니다.
-- 두 시간 값은 초안입니다. 모델별 측정 뒤 정합니다(8.6절).
+- 두 시간 값은 gpt-6-luna(생각 강도 medium)·프롬프트 1.1.1 측정(호출 중앙 17.1초·최대 29.3초)으로 정했습니다(11-16, 8.13절). 호출은 최대의 약 1.5배, 예산은 호출 두 번입니다. 분석 실행 제한(`ANALYSIS_RUN_TIME_LIMIT_SECONDS` 120초) 안에 들어갑니다. 데모 시드(`scripts/seed_demo_runs.py`)도 같은 설정을 읽습니다.
+- **생성 값:** 엔진 모델 설정 파일의 `settings`(gpt-6-luna 는 `{"reasoning_effort": "medium"}`)를 호출마다 넘깁니다. 공용 층이 받는 키는 `reasoning_effort` 하나(`GENERATION_OPTION_KEYS`)이고, 모델 설정에 다른 키가 있으면 서버 시작 단계에서 멈춥니다(시험하지 않은 값을 제공자에 보내지 않음).
 
 ### 8.3 호출 규칙
 
@@ -210,9 +211,11 @@ final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # A
 | 모르는 제공자, 그 제공자 키 없음, `mock/` 뒤가 `mock-template-v1`이 아님 | `ExplanationModelConfigError` |
 | 모델 호출 라이브러리 없음 | `ExplanationModelConfigError` |
 | 엔진 등록부에 그 모델 설정이 없음 | `ExplanationAssetError` `ASSET_NOT_REGISTERED` |
-| 등록된 설정의 제공자·모델 ID가 다름 | `ExplanationAssetError` `MODEL_CONFIG_MISMATCH` |
+| 등록된 설정의 제공자·모델 ID가 다름, 모델 설정 파일이 등록부 해시와 다름 | `ExplanationAssetError` `MODEL_CONFIG_MISMATCH` |
+| 실제 모델용 프롬프트 판(1.1.1)이 등록부에 없음·파일 없음 | `ExplanationAssetError` `PROMPT_NOT_REGISTERED`·`PROMPT_FILE_MISSING` |
+| 모델 설정 `settings`에 서버가 넘기지 않는 키가 있음 | `ExplanationModelConfigError` |
 
-등록부 확인은 엔진 `generator.preflight`를 그대로 부릅니다(설명을 만들 때 엔진이 하는 것과 같은 검사).
+등록부 확인은 엔진 `generator.preflight`를 실제 모델용 판(1.1.1)으로 그대로 부릅니다(설명을 만들 때 엔진이 하는 것과 같은 검사).
 
 ### 8.6 켜는 순서
 
@@ -224,11 +227,11 @@ final_check_input(passed: ExplanationPassed) -> ValidateAgentOutputInput     # A
 
 ### 8.7 주의
 
-- **실제 제공자 호출은 확인하지 못했습니다.** 시험은 이 PC의 가짜 HTTP 서버가 OpenAI·Claude·Gemini 응답 모양으로 답하게 하고 실제 LiteLLM이 그 서버를 부르는 방식입니다. 요청 횟수·오류 변환·출력은 확인했지만, 실제 모델이 프롬프트 `explain_ready_v1@1.0.0`으로 검증을 통과하는지는 키가 온 뒤에 잽니다. Bedrock 경로는 형식만 받아들이고 호출은 한 번도 해 보지 않았습니다.
+- **시험은 가짜 제공자로 돕니다.** 이 PC의 가짜 HTTP 서버가 OpenAI·Claude·Gemini 응답 모양으로 답하고 실제 LiteLLM이 그 서버를 부릅니다. 실제 제공자 결과는 8.13절 측정(측정 도구, 같은 어댑터·공용 층)에 있습니다. Bedrock 경로는 형식만 받아들이고 호출은 한 번도 해 보지 않았습니다.
 - **시간 제한은 "응답이 오지 않는 시간" 기준입니다.** HTTP 호출에 거는 값이라, 조금씩 흘려 보내는 응답은 제한보다 오래 걸릴 수 있습니다.
-- **모델 호출은 스레드에서 돌아 취소되지 않습니다.** 엔진 생성기가 `asyncio.to_thread` 안에서 돌기 때문입니다. 서버 종료 대기(`ANALYSIS_SHUTDOWN_GRACE_SECONDS`, 기본 10초)보다 호출 시간 제한(12초)이 길면, 종료가 그 호출이 끝날 때까지 늦어질 수 있습니다.
+- **모델 호출은 스레드에서 돌아 취소되지 않습니다.** 엔진 생성기가 `asyncio.to_thread` 안에서 돌기 때문입니다. 서버 종료 대기(`ANALYSIS_SHUTDOWN_GRACE_SECONDS`, 기본 10초)보다 호출 시간 제한(45초)이 길어, 종료가 그 호출이 끝날 때까지(최대 45초) 늦어질 수 있습니다.
 - **모델 장애 = 분석 실패:** 설명이 3번 실패하면 실행은 `FAILED`·`EXPLANATION_GENERATION_FAILED`입니다. 실제 모델에서는 제공자 장애·시간 초과가 여기로 이어집니다. 이 규칙을 그대로 둘지는 설계 결정입니다.
-- **생성 값은 아직 넣지 않았습니다.** 최대 출력 토큰·추론 강도는 제공자·LiteLLM 기본값을 씁니다. Claude는 LiteLLM 기본 최대 출력이 4,096 토큰이라 설명(약 3,000자)이 잘릴 수 있습니다. 엔진 모델 설정 파일의 `settings` 모양을 데이터 팀과 정한 뒤 넣습니다.
+- **생성 값은 `reasoning_effort` 하나만 넘깁니다(8.2절).** 최대 출력 토큰은 제공자·LiteLLM 기본값입니다. Claude는 LiteLLM 기본 최대 출력이 4,096 토큰이라 설명이 잘릴 수 있어, Claude 를 쓰려면 그 값을 따로 정해야 합니다(gpt-6-luna medium 은 출력 1.6~2.2천 토큰으로 잘림 없음).
 - **출력의 스키마 밖 키 이름(6절 7번)** 은 실제 모델을 켜기 전에 정리해야 합니다.
 
 ### 8.8 측정 (11-11, 개발 PC Windows, Python 3.14)
@@ -415,6 +418,23 @@ dev 서버(리눅스)에서는 값이 다를 수 있습니다. 메모리가 작�
 - 막아 둔 목록은 서버 프로세스마다 따로입니다(자동 시작의 "프로세스 하나" 전제와 같음).
 
 **시험:** `tests/core/test_llm.py` 7절(대조 기준, 세 제공자에서 멈춤·막기·다시 부르지 않음, 이름 없는 응답, 모르는 제공자), `tests/core/test_llm_usage.py`(제공자·대조 결과 합계), `test_explanation_models.py`(어댑터 기록·설정 대조, 5절 엔진과 함께: 한 번 부르고 멈춤·사용량 기록·막힌 뒤 호출 없음·기록된 모델 대조), `test_analysis_graph.py`(실행이 `FAILED`·`UNEXPECTED_TOOL_ERROR` 로 끝나고 설명이 없음), `test_agent_tracing.py`(내부 로그에 네 칸). 일부러 틀리게 바꾼 15가지를 모두 잡습니다: 대조가 늘 맞다고 함, 꼬리 모양 안 봄, 막지 않음, 막은 모델 다시 부름, 다른 모델이어도 안 올림, 모르는 제공자 부름, 어댑터가 엔진 시도로 바꿈, 어댑터가 설정과 대조 안 함, 조립이 설정을 안 넘김, 기록된 모델 대조 안 함, 멈출 때 사용량 안 남김, 합계의 대조 결과가 늘 맞다고 함, 설정이 mock 일 때 실제 모델 안 막음, 어댑터가 대조 결과 안 남김, 기록된 모델이 달라도 사용량에 표시 안 함.
+
+### 8.13 실제 모델 반영: gpt-6-luna · 프롬프트 1.1.1 (11-16, 데이터 팀 승인)
+
+- **프롬프트 판을 모델에 따라 고릅니다.** mock 은 `explain_ready_v1@1.0.0`, 실제 모델은 `@1.1.1`(`explanation_assets.template_version_for`, 어댑터의 `provider` 로 고름). 설명 생성·서버 시작 확인이 같은 판을 씁니다.
+  - mock 을 1.0.0 그대로 두는 이유: mock 은 프롬프트를 읽지 않지만 판 표기(`prompt_template_version`·`prompt_template_sha256`)가 설명에 저장되고, 확정 DB 정답 설명(overlay 14건·정답 실행 21건)이 1.0.0 으로 만들어져 있어 판을 바꾸면 정답 대조가 깨집니다.
+  - 1.0.0 으로는 실제 모델 설명이 검증을 통과하지 못했습니다(출력 형식·라벨·필수 근거를 주지 않음). 1.1.1 은 1.0.0 에 보강 지시를 끼운 판이고, 엔진 코드·스키마·라벨·검증 규칙은 그대로입니다.
+- **엔진 판:** 계획 저장소 tools/glowship_engine "엔진 수정 버전"(`0bb002e`)의 `explain/assets/prompts/explain_ready_v1/1.1.1.md`·`model_configs/gpt-6-luna.json`·`registry_v2.json`. 서버 런타임 해시 목록은 32 → 34개입니다(`docs/analysis/engine-local-path.md`). 등록부에 1.1.0 도 들어 있어 각자 엔진 폴더에는 1.1.0.md 도 함께 넣습니다(서버 목록에는 없음, 등록부가 가리켜서 둠).
+- **측정(측정 도구, 같은 서버 어댑터·공용 층·엔진 생성기·검증기, 평가 시나리오 설명 9개, 팀 키):**
+
+| 프롬프트 · 생각 강도 | 첫 시도 통과 | 최종 통과 | 호출 한 번(중앙·최대) | 건당 |
+| --- | --- | --- | --- | --- |
+| 1.1.0 · medium · 9×5 | 35/45 | 45/45 | 15.6초 · 19.9초 | $0.0014 |
+| **1.1.1 · medium · 9×5** | **45/45** | 45/45 | 17.1초 · 29.3초 | $0.0012 |
+| 1.1.1 · low · 9×1 | 7/9 | 9/9 | 13.2초 · 14.9초 | $0.0018 |
+
+- **시간:** 분석 실행 하나는 120초 제한 안에 끝나지만(설명 예산 90초), 동시 실행 1(2GB 서버)에서는 앞 실행을 기다리는 시간이 더해집니다. 웹이 "분석 중"을 다시 읽다가 180초에 멈추면, 실제 모델에서 실행이 몰릴 때 화면이 결과를 늦게 보여 줄 수 있습니다(프론트 담당에 알림).
+- **켜는 법:** 엔진 폴더를 새 판으로 바꾼 뒤 `EXPLANATION_MODEL=openai/gpt-6-luna`, `OPENAI_API_KEY` 를 넣고 시작합니다. 시작 확인(8.5절)이 등록부·모델 설정·키·생성 값을 봅니다.
 
 ## 9. 다른 기능에서 모델을 부를 때
 

@@ -386,3 +386,15 @@ def test_mock_is_recorded_simply_as_mock():
     assert summary["provider"] == "mock"
     assert summary["model_check"] == "MOCK"
     assert summary["response_models"] == []
+
+
+def test_real_explanation_model_has_a_price():
+    """실제 설명 모델 gpt-6-luna(GLOW-161)의 사용량에 예상 비용이 붙는다(11-16 실제 호출 1건: 입력 5,321·출력 1,920)."""
+    summary = U.summarize_usage(
+        "openai/gpt-6-luna", [_ok(5321, 1920, response_model="gpt-6-luna")]
+    )
+
+    assert summary["price"]["source"] == U.PRICE_SOURCE
+    # 5,321 × 0.10 + 1,920 × 0.50 (USD / 100만 토큰)
+    assert summary["estimated_cost_usd"] == "0.001492"
+    assert summary["cost_complete"] is True

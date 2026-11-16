@@ -58,8 +58,11 @@ def test_runtime_manifest_lists_only_files_the_server_runs():
     manifest = read_manifest()
     paths = {entry.path for entry in manifest}
 
-    assert len(manifest) == 32
-    assert len(paths) == 32
+    # 32 + 실제 설명 모델 판(11-16): 프롬프트 1.1.1·모델 설정 gpt-6-luna
+    assert len(manifest) == 34
+    assert len(paths) == 34
+    assert "glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.1.md" in paths
+    assert "glowship_engine/explain/assets/model_configs/gpt-6-luna.json" in paths
     assert "synth2025_v5/allocation_core.py" in paths
     assert "glowship_engine/core.py" in paths
     assert "glowship_engine/episodes.py" in paths
@@ -89,7 +92,8 @@ def test_runtime_and_test_manifests_do_not_overlap():
     tests = {entry.path for entry in read_test_manifest()}
 
     assert runtime & tests == set()
-    assert len(runtime | tests) == 44  # 나누기 전 목록의 파일 수
+    # 나누기 전 목록 44개 + 실제 설명 모델 판 2개(11-16)
+    assert len(runtime | tests) == 46
 
 
 # --- 해시 대조 -------------------------------------------------------------------

@@ -112,8 +112,13 @@ def test_default_model_is_engine_mock():
     )
     assert S.uses_mock_model(settings) is True
     assert settings.openai_api_key is None
-    assert settings.explanation_model_timeout_seconds == 12.0
-    assert settings.explanation_total_budget_seconds == 20.0
+    # gpt-6-luna medium·프롬프트 1.1.1 측정(호출 최대 29.3초)에 맞춘 값(11-16). 분석 실행 제한 안에 들어간다
+    assert settings.explanation_model_timeout_seconds == 45.0
+    assert settings.explanation_total_budget_seconds == 90.0
+    assert (
+        settings.explanation_total_budget_seconds
+        < settings.analysis_run_time_limit_seconds
+    )
 
 
 @pytest.mark.parametrize("value", ["", "   "])
@@ -671,6 +676,10 @@ def gs05(engine, monkeypatch):
 @pytest.fixture
 def registered_model(engine, tmp_path, monkeypatch):
     """엔진 자산 복사본에 시험용 실제 모델 설정을 등록한다(엔진 원본은 그대로). 데이터 팀 새 엔진 판이 할 일을 흉내 낸다."""
+    return _register_model(engine, tmp_path, monkeypatch, {})
+
+
+def _register_model(engine, tmp_path, monkeypatch, model_settings):
     base = tmp_path / "assets"
     shutil.copytree(engine["assets"].ASSETS, base)
     config = {
@@ -679,7 +688,7 @@ def registered_model(engine, tmp_path, monkeypatch):
         "provider": "openai",
         "model_id": TEST_MODEL_ID,
         "network": True,
-        "settings": {},
+        "settings": model_settings,
     }
     path = base / "model_configs" / f"{TEST_MODEL_ID}.json"
     path.write_text(json.dumps(config), encoding="utf-8")
@@ -865,7 +874,14 @@ def test_spent_budget_ends_remaining_attempts_without_calls(
 ):
     """첫 호출이 총 시간 예산(20초)을 다 쓰면 남은 두 시도는 모델을 부르지 않고 시간 초과로 끝난다."""
     models = ScriptedModels(engine, monkeypatch, [_timeout()], took=20.0)
-    _use_settings(monkeypatch, _real_settings())
+    # 예산 20초를 한 호출이 다 쓰는 경우(기본값은 측정에 맞춰 90초라 여기서 정함)
+    _use_settings(
+        monkeypatch,
+        _real_settings(
+            explanation_model_timeout_seconds=12.0,
+            explanation_total_budget_seconds=20.0,
+        ),
+    )
 
     result = asyncio.run(_explain(gs05))
 
@@ -959,6 +975,104 @@ def test_startup_check_stops_when_provider_differs_from_registry(
     assert caught.value.code == "MODEL_CONFIG_MISMATCH"
 
 
+def test_real_model_uses_prompt_1_1_1_and_mock_keeps_1_0_0(
+    engine, gs05, registered_model, monkeypatch
+):
+    """실제 모델은 데이터 팀이 승인한 1.1.1, mock 은 확정 정답 설명의 판 1.0.0 그대로(11-16)."""
+    ScriptedModels(engine, monkeypatch, ["ok"])
+    _use_settings(monkeypatch, _real_settings())
+
+    real = asyncio.run(_explain(gs05))
+
+    assert isinstance(real, X.ExplanationPassed)
+    assert real.prompt_version == "explain_ready_v1@1.1.1"
+    assert real.final_explanation_json["prompt_template_version"] == "1.1.1"
+
+    _use_settings(monkeypatch, _settings())
+    mock = asyncio.run(_explain(gs05))
+    assert mock.prompt_version == "explain_ready_v1@1.0.0"
+
+
+def test_prompt_version_follows_adapter_provider():
+    assert XA.template_version_for("mock") == "1.0.0"
+    assert XA.template_version_for(None) == "1.0.0"
+    assert XA.template_version_for("openai") == "1.1.1"
+    assert XA.template_version_for("anthropic") == "1.1.1"
+
+
+def test_model_settings_reach_every_call(engine, gs05, tmp_path, monkeypatch):
+    """엔진 모델 설정의 settings(reasoning_effort)가 호출마다 공용 층으로 넘어간다(gpt-6-luna medium 과 같은 모양)."""
+    _register_model(engine, tmp_path, monkeypatch, {"reasoning_effort": "medium"})
+    models = ScriptedModels(engine, monkeypatch, ["ok"])
+    _use_settings(monkeypatch, _real_settings())
+
+    result = asyncio.run(_explain(gs05))
+
+    assert isinstance(result, X.ExplanationPassed)
+    assert [call["generation_options"] for call in models.calls] == [
+        {"reasoning_effort": "medium"}
+    ]
+
+
+def test_model_without_settings_sends_no_generation_options(
+    engine, gs05, registered_model, monkeypatch
+):
+    models = ScriptedModels(engine, monkeypatch, ["ok"])
+    _use_settings(monkeypatch, _real_settings())
+
+    asyncio.run(_explain(gs05))
+
+    assert "generation_options" not in models.calls[0]
+
+
+def test_startup_check_stops_on_model_setting_the_server_does_not_send(
+    engine, tmp_path, monkeypatch
+):
+    """서버가 넘기지 않는 생성 값이 모델 설정에 있으면 시작 단계에서 멈춘다(시험하지 않은 값을 보내지 않음)."""
+    _register_model(engine, tmp_path, monkeypatch, {"temperature": 0.2})
+
+    with pytest.raises(S.ExplanationModelConfigError, match="temperature"):
+        S.check_explanation_model_ready(_real_settings())
+
+
+def test_adapter_reads_model_settings_once_and_only_when_calling(engine_errors):
+    """어댑터를 만들 때는 엔진을 읽지 않고, 첫 호출 때 한 번 읽어 모든 시도에 같은 값을 쓴다."""
+    reads: list[int] = []
+
+    def read():
+        reads.append(1)
+        return {"reasoning_effort": "medium"}
+
+    clock = Clock()
+    llm = FakeLlm(['{"ok": 1}', '{"ok": 2}'], clock)
+    adapter = A.ExplanationModelAdapter(
+        provider="openai",
+        model_id="gpt-x",
+        api_key=None,
+        call_timeout_seconds=12.0,
+        total_budget_seconds=20.0,
+        generation_settings=read,
+        complete=llm,
+        clock=clock,
+    )
+    assert reads == []
+
+    adapter.complete("PROMPT", REQUEST)
+    adapter.complete("PROMPT", REQUEST)
+
+    assert reads == [1]
+    assert [c["generation_options"] for c in llm.calls] == [
+        {"reasoning_effort": "medium"}
+    ] * 2
+
+
+def test_generation_settings_are_empty_without_engine():
+    """엔진 경로가 없으면 읽을 모델 설정이 없다(그때는 설명 생성 자체가 엔진 단계에서 멈춘다)."""
+    assert (
+        S.generation_settings("gpt-x", _real_settings(glowship_engine_dir=None)) == {}
+    )
+
+
 def test_engine_errors_are_the_classes_the_generator_catches(engine):
     generator = engine["generator"]
 
@@ -1010,7 +1124,14 @@ def test_usage_counts_failed_calls_and_skips_unsent_attempts(
 ):
     """실패한 호출도 호출 수에 들어가고, 시간 예산이 떨어져 부르지 않은 시도는 들어가지 않는다."""
     ScriptedModels(engine, monkeypatch, [_timeout()], took=20.0)
-    _use_settings(monkeypatch, _real_settings())
+    # 예산 20초를 한 호출이 다 쓰는 경우(기본값은 측정에 맞춰 90초라 여기서 정함)
+    _use_settings(
+        monkeypatch,
+        _real_settings(
+            explanation_model_timeout_seconds=12.0,
+            explanation_total_budget_seconds=20.0,
+        ),
+    )
     tracer = FakeTracer()
 
     result = asyncio.run(_explain(gs05, tracer))

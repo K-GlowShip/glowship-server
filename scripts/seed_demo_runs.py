@@ -11,6 +11,8 @@
       3. 엔진 계산(에이전트·LLM 없이 결과가 매번 같음): PR #36 엔진 입력 저장소 → check_input_seq →
          snapshot.build(D = 고객사 최신 재고일 + 1) → pipeline.analyze → 설명(서버 generate_explanation, PR #45: 엔진 생성기·
          결정적 mock 모델, 검증 통과만).
+         설명 모델은 서버 설정 EXPLANATION_MODEL 을 따른다. 실제 모델(openai/gpt-6-luna)이면 설명마다 그 모델을 부르고
+         (프롬프트 1.1.1·시간 제한은 서버와 같음), 설명 문장이 매번 달라지며 비용이 든다(GLOW-161).
          D 를 실행 날짜로 두면 SHIPMENT 만 나아간 데모에서 엔진이 "ORDER 수집 결측일"로 보류한다(11/06 시험).
       4. 저장: 결과 표 4개 행은 엔진 storage.rows_for 로 만든다(확정 DB overlay 를 만든 함수, 행 모양이 같음).
          서버 결과 저장(save_analysis_result)은 에이전트 도구 출력(T6·T7·T10·T11)을 받는데, 엔진 결과를 그 모양으로

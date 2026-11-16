@@ -315,6 +315,33 @@ def test_without_response_format_nothing_is_sent(provider):
     assert "response_format" not in provider.requests[0].body
 
 
+def test_generation_options_are_sent_in_the_request(provider):
+    """엔진 모델 설정의 생성 값(reasoning_effort)이 실제 요청 본문에 실린다(gpt-6-luna medium, 11-16)."""
+    provider.answer(_openai_body())
+
+    _call(OPENAI, generation_options={"reasoning_effort": "medium"})
+
+    assert provider.requests[0].body["reasoning_effort"] == "medium"
+
+
+def test_without_generation_options_nothing_extra_is_sent(provider):
+    provider.answer(_openai_body())
+
+    _call(OPENAI)
+
+    assert "reasoning_effort" not in provider.requests[0].body
+
+
+def test_unknown_generation_option_is_refused_before_calling(provider):
+    """시험하지 않은 생성 값은 제공자에 보내지 않는다(설정 오류로 멈춤, 요청 0번)."""
+    provider.answer(_openai_body())  # 요청 기록을 비운다
+
+    with pytest.raises(llm.LlmConfigError, match="temperature"):
+        _call(OPENAI, generation_options={"temperature": 0.2})
+
+    assert provider.requests == []
+
+
 class Draft(BaseModel):
     answer: str
 

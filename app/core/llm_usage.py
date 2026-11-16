@@ -31,7 +31,7 @@ from app.core.llm import (
 
 # 단가 출처: OpenAI 공식 가격 페이지의 Standard 등급 글 토큰 단가 (USD / 100만 토큰)
 PRICE_SOURCE_URL = "https://developers.openai.com/api/docs/pricing"
-PRICE_AS_OF = "2026-11-12"  # 위 페이지에서 확인한 날
+PRICE_AS_OF = "2026-11-16"  # 위 페이지에서 확인한 날(11-16: 표의 다섯 모델 모두 다시 확인, gpt-6-luna 추가)
 PRICE_SOURCE = f"openai-standard-{PRICE_AS_OF}"  # 기록에 적는 단가 출처
 PRICE_SOURCE_MOCK = "mock"  # 실제 호출이 없는 결정적 mock (비용 0)
 PRICE_SOURCE_UNKNOWN = "unknown"  # 표에 없는 모델 (금액을 만들지 않음)
@@ -63,6 +63,8 @@ def _price(input_usd: str, cached_input_usd: str, output_usd: str) -> ModelPrice
 # "제공자/모델 ID" → 단가. 설정에 넣는 모델 이름과 글자 그대로 같아야 한다(날짜가 붙은 판 이름은 따로 넣는다)
 MODEL_PRICES: Mapping[str, ModelPrice] = MappingProxyType(
     {
+        # 실제 설명 모델(GLOW-161). 그룹 표에는 없고 Standard short-context(입력 272K 이하) 표의 값
+        "openai/gpt-6-luna": _price("0.10", "0.01", "0.50"),
         "openai/gpt-5.4-mini": _price("0.75", "0.075", "4.50"),
         "openai/gpt-5.4-nano": _price("0.20", "0.02", "1.25"),
         "openai/gpt-5-mini": _price("0.25", "0.025", "2.00"),

@@ -130,9 +130,11 @@ class Settings(BaseSettings):
     # AI 설명을 만드는 모델. "제공자/모델 ID" 한 줄이다(예: openai/<모델 ID>). 기본은 엔진 mock 이라 외부 호출이 없다.
     # 실제 모델은 엔진 등록부에 그 모델 설정이 있고 제공자 키가 있어야 한다. 아니면 서버가 시작 단계에서 멈춘다.
     explanation_model: str = MOCK_EXPLANATION_MODEL
-    # 모델 호출 한 번의 시간 제한(초)과 설명 한 건(엔진 3시도 합)의 총 시간 예산(초). 모델별 측정 뒤 조정한다.
-    explanation_model_timeout_seconds: float = Field(default=12.0, gt=0)
-    explanation_total_budget_seconds: float = Field(default=20.0, gt=0)
+    # 모델 호출 한 번의 시간 제한(초)과 설명 한 건(엔진 3시도 합)의 총 시간 예산(초).
+    # 값은 gpt-6-luna(생각 강도 medium)·프롬프트 1.1.1 측정(11-16, 호출 중앙 17.1초·최대 29.3초)에 맞춤: 호출은 최대의 약 1.5배,
+    # 예산은 호출 두 번. 분석 실행 제한(analysis_run_time_limit_seconds 120초) 안에 들어간다(explanation.md 8.2절).
+    explanation_model_timeout_seconds: float = Field(default=45.0, gt=0)
+    explanation_total_budget_seconds: float = Field(default=90.0, gt=0)
     # 제공자 API 키. 기능마다 따로 두지 않고 제공자마다 하나다(모델은 기능별 설정). 고른 제공자의 키만 있으면 된다.
     openai_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None

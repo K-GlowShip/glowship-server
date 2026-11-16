@@ -1,6 +1,6 @@
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import SecretStr
@@ -41,6 +41,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
           · 부른 뒤: 답한 모델이 요청한 모델이 아니면 공용 층이 LlmModelMismatchError 를 올린다(app/core/llm.py).
         둘 다 엔진 오류로 바꾸지 않고 그대로 올린다. 엔진은 시도로 세지 않아 남은 시도를 하지 않고, 실행은 예상하지 못한
         오류로 끝난다. 시도별 사용량에는 답한 모델(response_model)과 대조 결과(model_check)를 남긴다.
+      - 생성 값(generation_settings): 엔진 등록부 모델 설정의 settings(예: reasoning_effort "medium")를 호출마다 함께 넘긴다
+        (explanation.md 8.2절). 값을 주는 함수를 받으면 첫 호출 때 한 번 읽는다(어댑터를 만들 때 엔진을 읽지 않게).
 """
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,9 @@ class ExplanationModelAdapter:
         call_timeout_seconds: float,
         total_budget_seconds: float,
         configured_model: str | None = None,
+        generation_settings: Mapping[str, Any]
+        | Callable[[], Mapping[str, Any]]
+        | None = None,
         complete: Callable[..., LlmResult] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -69,6 +74,8 @@ class ExplanationModelAdapter:
         self.model_id = model_id
         # 서버 설정의 "제공자/모델 ID". 넘기면 부를 때마다 지금 부르려는 모델과 대조한다(앱 조립이 넘긴다)
         self._configured_model = configured_model
+        # 엔진 모델 설정의 settings. 함수면 첫 호출 때 읽어 둔다
+        self._generation_settings = generation_settings
         self.attempt_usage: list[dict[str, Any]] = []
         self._api_key = api_key
         self._call_timeout_seconds = call_timeout_seconds
@@ -110,14 +117,18 @@ class ExplanationModelAdapter:
                 {"error": BUDGET_EXHAUSTED, "elapsed_ms": 0, "requested": False}
             )
             raise engine_errors.ModelTimeout(BUDGET_EXHAUSTED)
+        call: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "api_key": self._api_key,
+            "timeout_seconds": min(self._call_timeout_seconds, remaining),
+            "response_format": EXPLANATION_RESPONSE_FORMAT,
+        }
+        options = self._options()
+        if options:
+            call["generation_options"] = options
         try:
-            result = self._complete(
-                model=model,
-                prompt=prompt,
-                api_key=self._api_key,
-                timeout_seconds=min(self._call_timeout_seconds, remaining),
-                response_format=EXPLANATION_RESPONSE_FORMAT,
-            )
+            result = self._complete(**call)
         except LlmTimeoutError as error:
             self.attempt_usage.append(self._failed(error, now))
             raise engine_errors.ModelTimeout(error.reason) from error
@@ -143,6 +154,11 @@ class ExplanationModelAdapter:
             record["response_model"] = result.response_model
         self.attempt_usage.append(record)
         return result.text
+
+    def _options(self) -> dict[str, Any]:
+        if callable(self._generation_settings):
+            self._generation_settings = dict(self._generation_settings())
+        return dict(self._generation_settings or {})
 
     def _failed(self, error: LlmError, started: float) -> dict[str, Any]:
         return {

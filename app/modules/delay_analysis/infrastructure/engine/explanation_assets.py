@@ -21,8 +21,20 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 logger = logging.getLogger(__name__)
 
 TEMPLATE_ID = "explain_ready_v1"
+# mock 이 쓰는 프롬프트 판. mock 은 프롬프트를 읽지 않지만 판 표기는 설명에 저장되고, 확정 DB 정답 설명이 이 판으로 만들어져 있다.
 TEMPLATE_VERSION = "1.0.0"
+# 실제 모델이 쓰는 프롬프트 판(데이터 팀 승인 2026-11-16, 계획 저장소 tools/glowship_engine "엔진 수정 버전").
+# 1.0.0 은 출력 형식·라벨·필수 근거를 주지 않아 실제 모델 설명이 검증을 통과하지 못했다(explanation.md 8.13절).
+REAL_MODEL_TEMPLATE_VERSION = "1.1.1"
 MODEL_CONFIG_ID = "mock-template-v1"
+MOCK_PROVIDER = "mock"
+
+
+def template_version_for(provider: str | None) -> str:
+    """어댑터 제공자에 맞는 프롬프트 판. mock(또는 제공자를 모르는 시험용 어댑터)이면 1.0.0, 실제 제공자면 1.1.1."""
+    if provider is None or provider == MOCK_PROVIDER:
+        return TEMPLATE_VERSION
+    return REAL_MODEL_TEMPLATE_VERSION
 
 
 class ExplanationAssetError(RuntimeError):
@@ -34,17 +46,27 @@ class ExplanationAssetError(RuntimeError):
         self.detail = detail
 
 
-def _load(model_config_id: str, base: Path | None) -> dict[str, Any]:
+def _load(
+    model_config_id: str, base: Path | None, version: str = TEMPLATE_VERSION
+) -> dict[str, Any]:
     assets = load_engine_module("explain.assets")
     try:
         return assets.load(
             template_id=TEMPLATE_ID,
-            version=TEMPLATE_VERSION,
+            version=version,
             model_config_id=model_config_id,
             base=base,
         )
     except assets.SystemConfigError as error:
         raise ExplanationAssetError(error.code, error.detail) from error
+
+
+def load_real_model_config(model_config_id: str) -> dict[str, Any]:
+    """
+    실제 모델의 엔진 모델 설정(model_configs/<모델 ID>.json, 등록부 해시 대조). 실제 모델용 판(1.1.1)과 함께 읽는다.
+    캐시하지 않는다(설명 한 건마다 한 번, 엔진 generator 의 사전 검사와 같은 비용).
+    """
+    return _load(model_config_id, None, REAL_MODEL_TEMPLATE_VERSION)["model_config"]
 
 
 @lru_cache
