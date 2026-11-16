@@ -83,3 +83,13 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 async def db_write_session() -> AsyncGenerator[AsyncSession]:
     async for session in _rollback_session(read_only=False):
         yield session
+
+
+@pytest.fixture(autouse=True)
+def no_blocked_models():
+    """다른 모델이 답해 막아 둔 모델(app/core/llm.py)이 다음 시험으로 넘어가지 않게 한다."""
+    from app.core import llm
+
+    llm.reset_blocked_models()
+    yield
+    llm.reset_blocked_models()

@@ -8,7 +8,13 @@ from decimal import ROUND_HALF_UP, Decimal
 from types import MappingProxyType
 from typing import Any
 
-from app.core.llm import MAX_TOKEN_COUNT, safe_model_name
+from app.core.llm import (
+    MAX_TOKEN_COUNT,
+    MODEL_CHECK_MATCH,
+    MODEL_CHECK_MISMATCH,
+    MODEL_CHECK_UNVERIFIED,
+    safe_model_name,
+)
 
 """
     모델 사용량 합계와 예상 비용 (NFR-008 "모델 사용 비용 기록", docs/agent-flow/explanation.md 8절·9절)
@@ -31,6 +37,7 @@ PRICE_SOURCE_MOCK = "mock"  # 실제 호출이 없는 결정적 mock (비용 0)
 PRICE_SOURCE_UNKNOWN = "unknown"  # 표에 없는 모델 (금액을 만들지 않음)
 
 MOCK_PROVIDER = "mock"
+MODEL_CHECK_MOCK = "MOCK"  # 실제 호출이 없는 결정적 mock (대조할 답이 없음)
 USAGE_LOGGER_NAME = "app.model_usage"
 
 _MILLION = Decimal(1_000_000)
@@ -70,6 +77,7 @@ def summarize_usage(model: str, calls: Iterable[Mapping[str, Any]]) -> dict[str,
     호출 하나는 아래 칸을 가진 사전이다(없는 칸은 None 으로 본다).
       input_tokens · output_tokens · cached_input_tokens : 제공자가 준 토큰 수
       response_model : 제공자가 답한 모델 이름
+      model_check    : 답한 모델 대조 결과(MATCH·UNVERIFIED·MISMATCH, app/core/llm.py). 요청이 나가지 않은 시도의 것도 본다
       error          : 실패 사유 코드(성공이면 없음)
       requested      : False 면 제공자에게 요청이 나가지 않은 시도(시간 예산 소진 등) — 호출 수에 넣지 않는다
     돌려주는 값은 정수·참거짓·None·허용한 글자의 문자열뿐이다(자유 문장 없음).
@@ -78,15 +86,19 @@ def summarize_usage(model: str, calls: Iterable[Mapping[str, Any]]) -> dict[str,
     input_tokens = cached_tokens = output_tokens = 0
     measured = 0
     response_models: set[str] = set()
+    checks: set[str] = set()
     for call in calls:
+        check = call.get("model_check")
+        if isinstance(check, str):  # 글이 아닌 값(목록 등)은 대조 결과로 보지 않는다
+            checks.add(check)
+        answered = call.get("response_model")
+        if answered:
+            response_models.add(safe_model_name(answered))
         if call.get("requested") is False:
             continue
         count += 1
         if call.get("error"):
             failed += 1
-        answered = call.get("response_model")
-        if answered:
-            response_models.add(safe_model_name(answered))
         tokens = _tokens(call)
         if tokens is None:
             without_usage += 1
@@ -97,8 +109,12 @@ def summarize_usage(model: str, calls: Iterable[Mapping[str, Any]]) -> dict[str,
         output_tokens += tokens[2]
 
     summary: dict[str, Any] = {
+        # 어떤 모델로 불렀는지: 제공자(openai·anthropic·gemini·bedrock·mock), 요청한 "제공자/모델 ID", 제공자가 답한 이름들,
+        # 그리고 그 둘의 대조 결과
+        "provider": _provider(model),
         "model": safe_model_name(model),
         "response_models": sorted(response_models)[:_MAX_RESPONSE_MODELS],
+        "model_check": _model_check(model, checks),
         "calls": count,
         "calls_failed": failed,
         "calls_without_usage": without_usage,
@@ -111,6 +127,25 @@ def summarize_usage(model: str, calls: Iterable[Mapping[str, Any]]) -> dict[str,
         _cost(model, input_tokens, cached_tokens, output_tokens, without_usage)
     )
     return summary
+
+
+def _provider(model: str) -> str:
+    """ "제공자/모델 ID" 의 제공자. mock 은 "mock"."""
+    return safe_model_name(model.partition("/")[0])
+
+
+def _model_check(model: str, checks: set[str]) -> str:
+    """호출별 대조 결과를 하나로: 하나라도 다른 모델이면 MISMATCH, mock 이면 MOCK, 대조한 것이 모두 맞으면 MATCH.
+
+    대조한 호출이 없거나(모두 실패·이름 없음) 대조하지 못한 호출이 섞여 있으면 UNVERIFIED 다.
+    """
+    if MODEL_CHECK_MISMATCH in checks:
+        return MODEL_CHECK_MISMATCH
+    if _provider(model) == MOCK_PROVIDER:
+        return MODEL_CHECK_MOCK
+    if checks == {MODEL_CHECK_MATCH}:
+        return MODEL_CHECK_MATCH
+    return MODEL_CHECK_UNVERIFIED
 
 
 def _tokens(call: Mapping[str, Any]) -> tuple[int, int, int] | None:

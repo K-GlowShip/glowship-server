@@ -121,8 +121,10 @@ finally:
 
 | 칸 | 뜻 |
 | --- | --- |
+| `provider` | 모델 제공자(`openai`·`anthropic`·`gemini`·`bedrock`). 결정적 mock 은 `mock` |
 | `model` | 요청한 `제공자/모델 ID` |
 | `response_models` | 제공자가 답한 모델 이름들(날짜가 붙은 판 이름, 최대 5개) |
+| `model_check` | 요청한 모델과 답한 모델의 대조 결과: `MATCH`·`UNVERIFIED`·`MISMATCH`·`MOCK`(`explanation.md` 8.12절). `MISMATCH` 면 그 설명은 쓰이지 않고 실행이 멈춘 것 |
 | `calls`·`calls_failed` | 제공자에게 나간 호출 수, 그 가운데 실패 수(시간 예산이 다해 부르지 않은 시도는 넣지 않음) |
 | `calls_without_usage` | 토큰 수를 모르는 호출 수(시간 초과·연결 실패 등) |
 | `input_tokens`·`cached_input_tokens`·`output_tokens` | 토큰 합. 캐시에서 읽은 입력은 입력 안에 들어 있는 수. 아는 호출이 없으면 `null` |

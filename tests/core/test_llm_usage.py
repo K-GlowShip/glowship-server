@@ -307,3 +307,82 @@ def test_usage_line_survives_server_default_logging():
     lines = done.stdout.splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["analysis_run_id"] == "run-1"
+
+
+# --- 어떤 모델로 불렀는지 (제공자·대조 결과) ---------------------------------------------------
+
+
+def test_summary_names_the_provider_and_the_model_check():
+    calls = [
+        _ok(100, 10, response_model="gpt-5.4-mini-2026-03-17", model_check="MATCH"),
+        _ok(100, 10, response_model="gpt-5.4-mini-2026-03-17", model_check="MATCH"),
+    ]
+
+    summary = U.summarize_usage("openai/gpt-5.4-mini", calls)
+
+    assert summary["provider"] == "openai"
+    assert summary["model"] == "openai/gpt-5.4-mini"
+    assert summary["response_models"] == ["gpt-5.4-mini-2026-03-17"]
+    assert summary["model_check"] == "MATCH"
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [{"error": "TIMEOUT", "elapsed_ms": 1}],  # 답을 받은 호출이 없음
+        [_ok(1, 1, model_check="MATCH"), _ok(1, 1, model_check="UNVERIFIED")],
+        [_ok(1, 1)],  # 대조 결과를 남기지 않는 호출자
+        [_ok(1, 1, model_check="SOMETHING-ELSE")],
+        [
+            _ok(1, 1, model_check=["MATCH"])
+        ],  # 글이 아닌 값은 보지 않는다(합계가 죽지 않음)
+        [_ok(1, 1, model_check={"a": 1})],
+        [],
+    ],
+)
+def test_model_check_is_unverified_unless_every_checked_call_matched(calls):
+    summary = U.summarize_usage("anthropic/claude-haiku-5-5", calls)
+
+    assert summary["provider"] == "anthropic"
+    assert summary["model_check"] == "UNVERIFIED"
+
+
+def test_one_mismatch_marks_the_whole_summary_even_if_the_call_was_not_sent():
+    """막아 둔 모델을 다시 부른 시도는 호출 수에는 안 들어가지만, 다른 모델이었다는 표시와 그 이름은 남는다."""
+    calls = [
+        {
+            "error": "MODEL_MISMATCH",
+            "elapsed_ms": 0,
+            "requested": False,
+            "response_model": "another-model-9",
+            "model_check": "MISMATCH",
+        }
+    ]
+
+    summary = U.summarize_usage("openai/gpt-5.4-mini", calls)
+
+    assert summary["model_check"] == "MISMATCH"
+    assert summary["response_models"] == ["another-model-9"]
+    assert (summary["calls"], summary["calls_failed"]) == (0, 0)
+
+
+def test_mismatch_wins_over_matches():
+    calls = [
+        _ok(1, 1, model_check="MATCH"),
+        {
+            "error": "MODEL_MISMATCH",
+            "model_check": "MISMATCH",
+            "input_tokens": 5,
+            "output_tokens": 5,
+        },
+    ]
+
+    assert U.summarize_usage("openai/gpt-5.4-mini", calls)["model_check"] == "MISMATCH"
+
+
+def test_mock_is_recorded_simply_as_mock():
+    summary = U.summarize_usage("mock/mock-template-v1", [{}])
+
+    assert summary["provider"] == "mock"
+    assert summary["model_check"] == "MOCK"
+    assert summary["response_models"] == []
