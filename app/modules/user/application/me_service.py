@@ -6,6 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import UnauthenticatedException
 from app.core.rls_context import set_rls_context
 from app.core.security.auth import CurrentUser
+from app.modules.company.infrastructure.repository.admin_assignment_repository import (
+    AdminAssignmentRepository,
+    AssignedCompany,
+)
 from app.modules.company.infrastructure.repository.company_repository import (
     CompanyRepository,
 )
@@ -19,19 +23,22 @@ from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
     내 계정 조회 서비스 (API 명세 v6.2 4.1 GET /me, 공통 헤더)
       - 로그인 응답에는 사용자 정보가 없으므로(C31) 로그인 직후 화면이 이 API 로 계정·역할·고객사명을 받는다.
       - 값의 출처는 토큰이 아니라 DB 행이다. 토큰 발급 뒤 표시 이름·역할이 바뀌어도 현재 값을 돌려준다.
-      - 명세의 email 과 ADMIN 의 assignedCompanies[] 는 프론트 합의로 응답에 넣지 않는다 (docs/auth/me.md).
+      - ADMIN·OWNER 에게는 담당 고객사 목록(assignedCompanies[])을 함께 준다. 화면이 고객사를 고르는 근거다 (C47).
+      - 명세의 email 은 프론트 합의로 응답에 넣지 않는다 (docs/auth/me.md).
 """
 
 
 @dataclass(frozen=True)
 class MeProfile:
-    """내 계정 정보. 소속 고객사가 없는 OWNER·ADMIN 은 company_id·company_name 이 None 이다."""
+    """내 계정 정보. 소속 고객사가 없는 OWNER·ADMIN 은 company_id·company_name 이 None 이고,
+    담당 고객사는 assigned_companies 에 있다. Client 역할은 assigned_companies 가 비어 있다."""
 
     user_id: uuid.UUID
     display_name: str
     role_code: UserRoleCode
     company_id: uuid.UUID | None
     company_name: str | None
+    assigned_companies: tuple[AssignedCompany, ...] = ()
 
 
 class MeService:
@@ -40,11 +47,13 @@ class MeService:
         db: AsyncSession,
         user_repo: UserRepository,
         company_repo: CompanyRepository,
+        admin_assignment_repo: AdminAssignmentRepository,
     ):
         # 리포지토리들과 같은 요청 단위 세션. RLS 컨텍스트 설정에만 사용한다.
         self.db = db
         self.user_repo = user_repo
         self.company_repo = company_repo
+        self.admin_assignment_repo = admin_assignment_repo
 
     async def get_me(self, current_user: CurrentUser) -> MeProfile:
         """
@@ -73,10 +82,19 @@ class MeService:
             company = await self.company_repo.find_by_id(user.company_id)
             company_name = company.company_name if company is not None else None
 
+        # 담당 고객사는 ADMIN(배정된 고객사)·OWNER(전체 고객사)만 있다. Client 역할은 조회하지 않고 빈 목록이다.
+        # 역할은 토큰이 아니라 DB 행으로 보고, 조회 함수(0011)도 app.user_id 의 역할을 다시 판정한다.
+        assigned_companies: tuple[AssignedCompany, ...] = ()
+        if user.role_code in (UserRoleCode.ADMIN, UserRoleCode.OWNER):
+            assigned_companies = tuple(
+                await self.admin_assignment_repo.find_assigned_companies()
+            )
+
         return MeProfile(
             user_id=user.user_id,
             display_name=user.display_name,
             role_code=UserRoleCode(user.role_code),
             company_id=user.company_id,
             company_name=company_name,
+            assigned_companies=assigned_companies,
         )

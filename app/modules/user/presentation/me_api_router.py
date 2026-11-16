@@ -17,8 +17,9 @@ router = APIRouter(prefix="/api/v1", tags=["내 계정"])
     description=(
         "access_token 쿠키의 사용자를 DB 에서 다시 읽어 계정·역할·소속 고객사명을 돌려줍니다. "
         "로그인 응답에는 사용자 정보가 없으므로 로그인 직후 화면이 이 API 를 호출합니다. "
-        "OWNER·ADMIN 은 소속 고객사가 없어 companyId·companyName 이 null 입니다. "
-        "명세 4.1 의 email 과 ADMIN 의 assignedCompanies 는 프론트 합의로 응답에 없습니다."
+        "OWNER·ADMIN 은 소속 고객사가 없어 companyId·companyName 이 null 이고, "
+        "담당 고객사는 assignedCompanies 로 받습니다(ADMIN 은 배정된 고객사, OWNER 는 전체 고객사, "
+        "고객사 사용자는 빈 배열). 명세 4.1 의 email 은 프론트 합의로 응답에 없습니다."
     ),
     response_model=MeResponse,
     responses={

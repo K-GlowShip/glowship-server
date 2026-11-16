@@ -56,5 +56,13 @@ def get_me_service(
     db: AsyncSession = Depends(get_db),
     user_repo: UserRepository = Depends(get_user_repository),
     company_repo: CompanyRepository = Depends(get_company_repository),
+    admin_assignment_repo: AdminAssignmentRepository = Depends(
+        get_admin_assignment_repository
+    ),
 ) -> MeService:
-    return MeService(db=db, user_repo=user_repo, company_repo=company_repo)
+    return MeService(
+        db=db,
+        user_repo=user_repo,
+        company_repo=company_repo,
+        admin_assignment_repo=admin_assignment_repo,
+    )

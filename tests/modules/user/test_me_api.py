@@ -10,6 +10,9 @@ from app.core.exceptions import UnauthenticatedException
 from app.core.security.cookies import ACCESS_TOKEN_COOKIE
 from app.core.security.jwt import create_access_token, create_refresh_token
 from app.main import app
+from app.modules.company.infrastructure.repository.admin_assignment_repository import (
+    AssignedCompany,
+)
 from app.modules.user.application.exception.user_exceptions import (
     AccountDisabledException,
 )
@@ -20,7 +23,15 @@ from app.modules.user.infrastructure.user_enums import UserRoleCode
 URL = "/api/v1/me"
 USER_ID = uuid.uuid7()
 COMPANY_ID = uuid.uuid7()
-RESPONSE_KEYS = {"userId", "displayName", "roleCode", "companyId", "companyName"}
+OTHER_COMPANY_ID = uuid.uuid7()
+RESPONSE_KEYS = {
+    "userId",
+    "displayName",
+    "roleCode",
+    "companyId",
+    "companyName",
+    "assignedCompanies",
+}
 
 
 def _access_cookie(role_code: str, company_id: uuid.UUID | None = None) -> dict:
@@ -112,6 +123,7 @@ async def test_성공하면_200과_camelCase_응답을_반환한다(fake_service
         "roleCode": "CLIENT_LEAD",
         "companyId": str(COMPANY_ID),
         "companyName": "A Beauty",
+        "assignedCompanies": [],  # 고객사 사용자는 빈 배열 (필드를 빼지 않는다)
     }
 
     [current_user] = fake_service.calls
@@ -137,6 +149,45 @@ async def test_소속_고객사가_없으면_고객사_필드를_null_로_보낸
     assert body["roleCode"] == "ADMIN"
     assert body["companyId"] is None
     assert body["companyName"] is None
+    assert body["assignedCompanies"] == []  # 배정이 없는 ADMIN
+
+
+async def test_담당_고객사_목록을_camelCase_로_순서_그대로_보낸다(fake_service):
+    fake_service.profile = MeProfile(
+        user_id=USER_ID,
+        display_name="admin@glowship.com",
+        role_code=UserRoleCode.ADMIN,
+        company_id=None,
+        company_name=None,
+        assigned_companies=(
+            AssignedCompany(
+                company_id=COMPANY_ID,
+                company_name="A Beauty",
+                can_manage_client_accounts=True,
+            ),
+            AssignedCompany(
+                company_id=OTHER_COMPANY_ID,
+                company_name="B Cosmetics",
+                can_manage_client_accounts=False,
+            ),
+        ),
+    )
+
+    response = await _get(_access_cookie("ADMIN"))
+
+    assert response.status_code == 200
+    assert response.json()["assignedCompanies"] == [
+        {
+            "companyId": str(COMPANY_ID),
+            "companyName": "A Beauty",
+            "canManageClientAccounts": True,
+        },
+        {
+            "companyId": str(OTHER_COMPANY_ID),
+            "companyName": "B Cosmetics",
+            "canManageClientAccounts": False,
+        },
+    ]
 
 
 async def test_서비스가_사용자_없음을_던지면_401을_반환한다(fake_service):

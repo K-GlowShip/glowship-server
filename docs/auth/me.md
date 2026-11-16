@@ -2,7 +2,8 @@
 
 로그인한 사용자가 자기 계정·역할·소속 고객사명을 받는 API가 **현재 어떻게 동작하는지** 설명합니다.
 로그인 응답에는 사용자 정보가 없으므로(API 명세 v6.2 C31) 로그인 직후 화면과 공통 헤더가 이 API를 호출합니다.
-ADMIN의 담당 고객사 목록과 고객사 선택(명세 D7)은 아직 없으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(6절).
+ADMIN·OWNER에게는 담당 고객사 목록(`assignedCompanies[]`, 명세 C47)을 함께 줍니다. 화면이 고객사를 고르는 근거입니다.
+고른 고객사를 서버에 넘기는 공통 방식(명세 D7)은 아직 없으며, 그 자리는 6절에 적었습니다.
 
 ## 1. 전체 흐름
 
@@ -17,7 +18,8 @@ sequenceDiagram
     S->>DB: set_config('app.user_id', 사용자) · set_config('app.company_id', 토큰의 고객사)
     S->>DB: users 조회 (존재 · ACTIVE)
     S->>DB: companies 조회 (Client 역할만)
-    S-->>W: 200 {userId, displayName, roleCode, companyId, companyName}
+    S->>DB: app_me_list_assigned_companies() (ADMIN·OWNER만)
+    S-->>W: 200 {userId, displayName, roleCode, companyId, companyName, assignedCompanies[]}
 ```
 
 - 다른 Client API와 달리 **모든 역할**이 호출합니다. 고객사 범위 의존성(`get_tenant_context`)은 OWNER·ADMIN을 403으로 막으므로 쿠키 검증만 하는 `get_current_user`를 씁니다.
@@ -44,7 +46,8 @@ HTTP/1.1 200 OK
   "displayName": "홍길동",
   "roleCode": "CLIENT_LEAD",
   "companyId": "0199c2a8-7d4e-7b3c-9f1a-2e5d6c7b8a90",
-  "companyName": "A Beauty"
+  "companyName": "A Beauty",
+  "assignedCompanies": []
 }
 ```
 
@@ -55,6 +58,7 @@ HTTP/1.1 200 OK
 | `roleCode` | `users.role_code` | `OWNER`·`ADMIN`·`CLIENT_MEMBER`·`CLIENT_LEAD` |
 | `companyId` | `users.company_id` | Client 역할만 값이 있다. OWNER·ADMIN은 `null` (`users_ck2`) |
 | `companyName` | `companies.company_name` | 공통 헤더의 고객사 영역에 표시(명세 U7). OWNER·ADMIN은 `null` |
+| `assignedCompanies[]` | `admin_assignments`, `companies` | 담당 고객사 목록(명세 C47, GLOW-163). 아래 "담당 고객사 목록" 참고 |
 
 OWNER·ADMIN 응답 예:
 
@@ -64,18 +68,42 @@ OWNER·ADMIN 응답 예:
   "displayName": "admin@glowship.com",
   "roleCode": "ADMIN",
   "companyId": null,
-  "companyName": null
+  "companyName": null,
+  "assignedCompanies": [
+    {
+      "companyId": "0199c2a8-7d4e-7b3c-9f1a-2e5d6c7b8a90",
+      "companyName": "A Beauty",
+      "canManageClientAccounts": true
+    }
+  ]
 }
 ```
 
-값이 없어도 필드를 빼지 않고 `null`로 보냅니다(응답 본문 규칙 4절).
+값이 없어도 필드를 빼지 않고 `null`(목록은 `[]`)로 보냅니다(응답 본문 규칙 4절).
+
+### 담당 고객사 목록 (`assignedCompanies[]`)
+
+화면이 고객사를 고르는 근거입니다(명세 C47, 프론트 GLOW-103). 이 값으로 프론트의 고객사 환경변수를 대신합니다.
+
+| 항목 | 출처 | 설명 |
+| --- | --- | --- |
+| `companyId` | `companies.company_id` | |
+| `companyName` | `companies.company_name` | |
+| `canManageClientAccounts` | `admin_assignments.can_manage_client_accounts` | 이 고객사의 Client 계정을 관리할 수 있는지. `false`면 화면은 계정 목록은 보이되 관리 버튼을 숨긴다(명세 D25). OWNER는 모두 `true` |
+
+| 요청자 | 목록 |
+| --- | --- |
+| ADMIN | 배정된 고객사만. 배정이 하나도 없으면 `[]` |
+| OWNER | 전체 고객사, `canManageClientAccounts`는 모두 `true` |
+| CLIENT_MEMBER · CLIENT_LEAD | `[]` (소속 고객사는 `companyId`·`companyName`) |
+
+- **ACTIVE 고객사만** 나옵니다. 비활성 고객사는 고르더라도 DB의 고객사 범위 검사(`app_context_allowed`)가 막아 다른 API가 모두 비어 보이기 때문입니다.
+- 정렬은 고객사명, 같으면 `companyId`입니다.
+- 2026-11-05에는 ADMIN의 고객사 선택이 설계되지 않아 프론트 합의로 이 필드를 뺐고, 2026-11-16에 필드 추가로 넣었습니다(GLOW-163). 기존 필드 5개와 오류 응답은 바뀌지 않았습니다.
 
 ### 명세와 다른 점
 
-명세 4.1 `GET /me`의 `email`과 ADMIN의 `assignedCompanies[]`는 **프론트 합의로 응답에 넣지 않습니다**(2026-11-05).
-
-- `email`: 화면이 쓰지 않는다.
-- `assignedCompanies[]`: Client 사용자에게는 배정이 없고, ADMIN의 고객사 선택(D7)은 아직 설계되지 않았다. 필요해지면 필드 추가로 더한다(응답 본문 규칙 7절, 추가는 자유).
+명세 4.1 `GET /me`의 `email`은 **프론트 합의로 응답에 넣지 않습니다**(2026-11-05). 화면이 쓰지 않습니다.
 
 ### 실패 응답
 
@@ -92,19 +120,22 @@ OWNER·ADMIN 응답 예:
 ### 서비스 로직 (`MeService.get_me`)
 
 ```
-RLS 컨텍스트 설정 → users.find_by_id (없음 401 · DISABLED 403) → company_id 있으면 companies.find_by_id → MeProfile
+RLS 컨텍스트 설정 → users.find_by_id (없음 401 · DISABLED 403) → company_id 있으면 companies.find_by_id
+→ ADMIN·OWNER 면 담당 고객사 목록 조회 → MeProfile
 ```
 
 - `app/modules/user/application/me_service.py`. 결과는 `MeProfile` dataclass이고, 라우터가 `MeResponse.of`로 camelCase 응답에 담습니다.
 - OWNER·ADMIN은 `company_id`가 비어 있어 `companies`를 조회하지 않습니다.
 - 고객사 행이 없으면(FK상 생기지 않음) `companyName`만 `null`입니다.
+- 담당 고객사 목록은 DB 행의 역할이 ADMIN·OWNER일 때만 조회합니다(`AdminAssignmentRepository.find_assigned_companies`). Client 역할은 조회 없이 빈 목록입니다.
 
 ## 3. 역할별 결과
 
 | 요청자 | 결과 |
 | --- | --- |
-| CLIENT_MEMBER · CLIENT_LEAD (ACTIVE) | 200, `companyId`·`companyName` 있음 |
-| ADMIN · OWNER (ACTIVE) | 200, `companyId`·`companyName` `null` |
+| CLIENT_MEMBER · CLIENT_LEAD (ACTIVE) | 200, `companyId`·`companyName` 있음, `assignedCompanies` `[]` |
+| ADMIN (ACTIVE) | 200, `companyId`·`companyName` `null`, `assignedCompanies`는 배정된 고객사(없으면 `[]`) |
+| OWNER (ACTIVE) | 200, `companyId`·`companyName` `null`, `assignedCompanies`는 전체 고객사 |
 | 어느 역할이든 DISABLED | 403 `ACCOUNT_DISABLED` |
 | 토큰은 유효하나 `users` 행 없음 | 401 `UNAUTHENTICATED` |
 
@@ -116,6 +147,16 @@ RLS 컨텍스트 설정 → users.find_by_id (없음 401 · DISABLED 403) → co
 | --- | --- | --- |
 | `users` | `users_select_tenant_or_self`: 같은 고객사 범위이거나 `user_id = app.user_id` | `app.user_id`로 자기 행을 읽는다. 고객사가 없는 OWNER·ADMIN도 자기 행은 보인다 |
 | `companies` | `companies_tenant`: `company_id = app.company_id`이고 `app_context_allowed()` | 토큰의 `company_id`를 `app.company_id`로 넣어 소속 고객사를 읽는다 |
+| `admin_assignments` | `admin_assignments_self_company`: 본인 배정 중 `company_id = app.company_id`인 1건 | ADMIN·OWNER는 `app.company_id`가 비어 있어 정책만으로는 0행이다. 아래 조회 함수로 읽는다 |
+
+**담당 고객사 조회 함수** — `app_me_list_assigned_companies()` (마이그레이션 `0011`)
+
+이 API는 고객사를 고르기 전에 호출하므로 `app.company_id`가 없고, OWNER는 배정 행 자체가 없습니다. 그래서 로그인 조회 함수(`0008`)와 같은 방식으로 소유자 역할의 SECURITY DEFINER 함수가 대신 읽습니다.
+
+- 인자가 없습니다. 누구의 목록인지는 `app.user_id`로만 정하고 역할도 함수가 DB 행에서 판정하므로, 호출하는 쪽이 다른 사용자의 목록이나 OWNER의 전체 목록을 요청할 수 없습니다.
+- ACTIVE인 ADMIN·OWNER가 아니면 0행입니다(Client 역할, DISABLED, 컨텍스트 없음).
+- 실행 권한은 앱 역할(`glowship_v4_app`)에만 있습니다.
+- 데이터 팀 DDL(v6.2)에는 없는 함수입니다. `glowship-plan` DDL 반영은 별도 요청입니다.
 
 ```python
 # app/modules/user/application/me_service.py
@@ -129,12 +170,13 @@ await set_rls_context(
 
 ## 5. 테스트
 
-`tests/modules/user/` — DB 없이 실행됩니다.
+`tests/modules/user/` — 아래 두 파일은 DB 없이 실행되고, 세 번째 파일은 실제 DB를 쓰고 롤백합니다.
 
 | 파일 | 내용 |
 | --- | --- |
-| `test_me_service.py` | 가짜 Repository로 서비스 로직 검증. Client 성공(고객사명 포함), 토큰이 아니라 DB 값 사용, ADMIN·OWNER는 `None`이고 `companies`를 읽지 않음, 첫 조회 전 RLS 컨텍스트 설정 순서, 사용자 없음 401, DISABLED 403, 고객사 행 없음 |
-| `test_me_api.py` | 라우터 검증. 쿠키 없음·만료 토큰·refresh 토큰 401, 성공 200과 camelCase 키 5개, OWNER·ADMIN의 `null` 직렬화, 서비스 예외의 401·403 변환. 서비스는 `dependency_overrides`로 대체, 쿠키는 `create_access_token`으로 발급 |
+| `test_me_service.py` | 가짜 Repository로 서비스 로직 검증. Client 성공(고객사명 포함), 토큰이 아니라 DB 값 사용, ADMIN·OWNER는 `None`이고 `companies`를 읽지 않음, 첫 조회 전 RLS 컨텍스트 설정 순서, 사용자 없음 401, DISABLED 403, 고객사 행 없음. 담당 고객사: ADMIN·OWNER는 목록을 순서 그대로, 배정 없는 ADMIN은 빈 목록, Client 역할·DISABLED는 조회하지 않음, 조회 여부는 DB 역할로 판단 |
+| `test_me_api.py` | 라우터 검증. 쿠키 없음·만료 토큰·refresh 토큰 401, 성공 200과 camelCase 키 6개, OWNER·ADMIN의 `null` 직렬화, `assignedCompanies` 항목의 camelCase와 빈 배열, 서비스 예외의 401·403 변환. 서비스는 `dependency_overrides`로 대체, 쿠키는 `create_access_token`으로 발급 |
+| `test_me_assigned_companies_sql.py` | 조회 함수(`0011`) 검증. 앱 DB 역할(`SET LOCAL ROLE glowship_v4_app`)에 `app.user_id`만 넣고 ADMIN은 배정된 고객사, OWNER는 전체 고객사, Client 역할·컨텍스트 없음은 빈 목록, 비활성 고객사 제외. 정책만으로는 배정이 보이지 않는 것도 확인. `0011`이 없는 DB면 건너뜀 |
 
 로컬 DB 확인: 2026 H1 합성 계정은 로그인할 수 없으므로(명세 D24) `POST /auth/signup`(개발용, `POSTGRES_ROLE`을 비운 로컬 연결에서만 동작)으로 만든 ADMIN과, 그 ADMIN을 `admin_assignments`에 넣은 뒤 `POST /admin/users`로 만든 Client 계정으로 Swagger에서 로그인한 다음 `GET /api/v1/me`를 호출합니다.
 
@@ -142,7 +184,6 @@ await set_rls_context(
 
 | 기능 | 비워 둔 자리 |
 | --- | --- |
-| ADMIN의 담당 고객사 목록 `assignedCompanies[]` | `AdminAssignmentRepository`에 배정 목록 조회를 더하고 `MeProfile`·`MeResponse`에 필드를 추가. 운영 RLS에서는 `admin_assignments_self_company` 정책이 `app.company_id`와 같은 배정 1건만 보여 주므로, 목록을 읽으려면 SECURITY DEFINER 조회 함수(데이터 팀 DDL)가 함께 필요하다 |
 | ADMIN의 고객사 선택 (D7 `X-Company-Id`) | `get_tenant_context`가 헤더를 받아 배정 여부를 검사하는 방식으로 확장 |
 | `email` 응답 | 프론트가 필요해지면 `MeProfile`·`MeResponse`에 추가(필드 추가는 자유) |
 
@@ -151,12 +192,14 @@ await set_rls_context(
 | 파일 | 역할 |
 | --- | --- |
 | `app/modules/user/presentation/me_api_router.py` | `GET /api/v1/me` 엔드포인트 |
-| `app/modules/user/presentation/me_schemas.py` | `MeResponse` (camelCase) |
+| `app/modules/user/presentation/me_schemas.py` | `MeResponse`, `AssignedCompanyResponse` (camelCase) |
 | `app/modules/user/application/me_service.py` | `MeService`, `MeProfile`, 검사 순서 |
 | `app/modules/user/application/exception/user_exceptions.py` | `ACCOUNT_DISABLED` |
 | `app/modules/user/dependencies.py` | `get_me_service` 조립 |
 | `app/modules/user/infrastructure/repository/user_repository.py` | `find_by_id` |
 | `app/modules/company/infrastructure/repository/company_repository.py` | 고객사 조회 |
+| `app/modules/company/infrastructure/repository/admin_assignment_repository.py` | `find_assigned_companies`, `AssignedCompany` |
+| `migrations/versions/0011_add_assigned_companies_lookup_function.py` | 담당 고객사 조회 함수 |
 | `app/core/security/auth.py` | `get_current_user`, `CurrentUser` |
 | `app/core/exceptions.py` | `UNAUTHENTICATED` 공통 에러 코드 |
 | `app/core/rls_context.py` | `set_rls_context` |
