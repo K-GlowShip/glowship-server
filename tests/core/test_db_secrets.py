@@ -1,5 +1,8 @@
 import asyncio
 import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import asyncpg
@@ -244,3 +247,97 @@ async def test_secret_engine_selects_from_real_postgres_when_available(
             assert await connection.scalar(text("SELECT 1")) == 1
     finally:
         await engine.dispose()
+
+
+# --- seed scripts (PR #159 review): database_url has no password in secret mode ---
+
+
+def test_database_engine_factory_uses_secret_engine_only_when_arn_is_set(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        db_secrets,
+        "create_secret_engine",
+        lambda url, arn, **kwargs: calls.append(("secret", url, arn, kwargs)),
+    )
+    monkeypatch.setattr(
+        db_secrets,
+        "create_async_engine",
+        lambda url, **kwargs: calls.append(("static", url, kwargs)),
+    )
+
+    db_secrets.create_database_engine(URL, ARN, future=True)
+    db_secrets.create_database_engine(URL, None, future=True)
+    db_secrets.create_database_engine(URL, "")
+
+    assert calls == [
+        ("secret", URL, ARN, {"future": True}),
+        ("static", URL, {"future": True}),
+        ("static", URL, {}),
+    ]
+
+
+class _EngineRequested(Exception):
+    """Stops a seed script right after it asks for its engine."""
+
+
+def _capture_script_engine(monkeypatch, module, configured):
+    captured = []
+
+    def create(url, secret_arn, **kwargs):
+        captured.append((url, secret_arn))
+        raise _EngineRequested
+
+    monkeypatch.setattr(module, "get_settings", lambda: configured)
+    monkeypatch.setattr(module, "create_database_engine", create)
+    return captured
+
+
+async def test_synthetic_data_seed_connects_through_secret_aware_factory(
+    monkeypatch,
+):
+    from scripts import seed_synthetic_data
+
+    configured = settings(postgres_secret_arn=ARN)
+    captured = _capture_script_engine(monkeypatch, seed_synthetic_data, configured)
+    monkeypatch.setattr(seed_synthetic_data, "verify_files", lambda *_: {})
+
+    with pytest.raises(_EngineRequested):
+        await seed_synthetic_data.seed(Path("unused"), reset=False)
+
+    assert captured == [(configured.database_url, ARN)]
+
+
+async def test_demo_seed_connects_through_secret_aware_factory(monkeypatch):
+    from scripts import seed_demo_runs
+
+    configured = SimpleNamespace(
+        database_url=URL,
+        postgres_secret_arn=ARN,
+        virtual_tms_scenario_path="scenario.json",
+        virtual_clock_start="2026-07-01T00:00:00Z",
+    )
+    captured = _capture_script_engine(monkeypatch, seed_demo_runs, configured)
+    scenario = SimpleNamespace(responses=[SimpleNamespace(company_code="A_BEAUTY")])
+    monkeypatch.setattr(
+        seed_demo_runs,
+        "VirtualTmsScenario",
+        SimpleNamespace(from_file=lambda _: scenario),
+    )
+    monkeypatch.setattr(seed_demo_runs, "Engine", SimpleNamespace(load=lambda: None))
+    monkeypatch.setattr(sys, "argv", ["seed_demo_runs"])
+
+    with pytest.raises(_EngineRequested):
+        await seed_demo_runs.main()
+
+    assert captured == [(URL, ARN)]
+
+
+def test_scripts_do_not_build_engines_from_the_passwordless_url():
+    """A new script calling create_async_engine(database_url) breaks in secret mode."""
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    offenders = [
+        path.name
+        for path in sorted(scripts.glob("*.py"))
+        if "create_async_engine" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []

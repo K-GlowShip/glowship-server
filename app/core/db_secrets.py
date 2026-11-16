@@ -120,6 +120,20 @@ class RdsCredentialProvider:
         return await asyncio.to_thread(self._read, rejected)
 
 
+def create_database_engine(
+    url: str, secret_arn: str | None, **kwargs: Any
+) -> AsyncEngine:
+    """Engine for code outside the app engine (scripts/): secret mode or static.
+
+    Settings.database_url carries no password in secret mode, so building an
+    engine from that URL directly fails authentication. Seed scripts must come
+    through here instead of create_async_engine.
+    """
+    if secret_arn:
+        return create_secret_engine(url, secret_arn, **kwargs)
+    return create_async_engine(url, **kwargs)
+
+
 def create_secret_engine(url: str, secret_arn: str, **kwargs: Any) -> AsyncEngine:
     """App and Alembic share this factory; no DB credentials are persisted."""
     target = make_url(url)

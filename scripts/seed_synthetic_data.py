@@ -20,9 +20,10 @@ from pathlib import Path
 
 import asyncpg
 from sqlalchemy import Table, text
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.config import get_settings
+from app.core.db_secrets import create_database_engine
 from app.core.model_registry import Base
 
 AUX_DIR = "_p4_auxiliary"
@@ -171,7 +172,9 @@ async def seed(data_dir: Path, reset: bool) -> None:
     tables = list(Base.metadata.sorted_tables)  # FK 부모 → 자식 순서
     infos = verify_files(data_dir, tables)
 
-    engine = create_async_engine(get_settings().database_url)
+    # POSTGRES_SECRET_ARN 이 있으면 database_url 에 비밀번호가 없다. 앱과 같은 생성기로 붙는다(docs/backend/db-secret-rotation.md)
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url, settings.postgres_secret_arn)
     try:
         async with engine.begin() as conn:  # 예외 발생 시 전체 롤백
             await ensure_empty(conn, tables, reset)

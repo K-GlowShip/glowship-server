@@ -17,6 +17,12 @@ Secrets Manager 조회 실패나 대상 계정 불일치는 고정 오류 코드
 오래된 `POSTGRES_PASSWORD`로 조용히 되돌아가지 않는다. 이 모드에서는
 `POSTGRES_PASSWORD`를 읽지 않고 DB URL에도 넣지 않는다.
 
+시드 스크립트(`scripts/seed_demo_runs.py`, `scripts/seed_synthetic_data.py`)도 같은 방식으로
+붙는다. 이 모드에서는 `Settings.database_url`에 비밀번호가 없으므로, 스크립트는
+`create_async_engine(database_url)`을 직접 부르지 않고 `create_database_engine`
+(`app/core/db_secrets.py`)을 쓴다. ARN이 없으면 기존처럼 URL의 비밀번호로 붙는다.
+새 스크립트가 직접 엔진을 만들면 `tests/core/test_db_secrets.py`가 실패한다.
+
 ## 적용 전 조건
 
 - EC2 인스턴스 역할이 **대상 Secret 하나**의 `secretsmanager:GetSecretValue`를 허용해야 한다.
