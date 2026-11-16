@@ -18,6 +18,7 @@ from app.core.config import Settings
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "app_login",

@@ -227,7 +227,7 @@ sequenceDiagram
 uv run pytest tests/modules/delay_analysis -q
 ```
 
-서버 실행 후 `POST /api/v1/dev/agent/dry-run`(본문 `{}`)을 호출하면 가짜 실행 도구 묶음으로 그래프를 돌려 거친 노드 순서(`visited_nodes`)와 종료 상태를 볼 수 있습니다. DB를 읽거나 쓰지 않습니다. `APP_ENV=prod`에서는 이 API가 등록되지 않습니다.
+서버 실행 후 `POST /api/v1/dev/agent/dry-run`(본문 `{}`)을 호출하면 가짜 실행 도구 묶음으로 그래프를 돌려 거친 노드 순서(`visited_nodes`)와 종료 상태를 볼 수 있습니다. DB를 읽거나 쓰지 않습니다. 이 API는 `APP_ENV=local`에서만 등록됩니다(dev·prod 서버에는 없음).
 
 ## 9. 작업 중 실패와 원인 (GLOW-129)
 

@@ -167,7 +167,7 @@ uv sync
 
 | 변수 | 설명 |
 | --- | --- |
-| `APP_ENV` | `local` / `dev` / `prod` |
+| `APP_ENV` | `local` / `dev` / `prod`. **필수** — 없으면 서버가 뜨지 않습니다(이슈 #99) |
 | `POSTGRES_*` | docker-compose와 앱이 함께 사용하는 DB 접속 정보 |
 | `CORS_ORIGINS` | 허용할 프론트엔드 오리진 목록 (JSON 배열 문자열) |
 
@@ -209,7 +209,7 @@ uv run uvicorn app.main:app --reload
   2. 워커 로그인 계정을 만들어 워커 역할에 넣습니다: `GRANT glowship_v4_worker TO <워커계정>`. `.env`에 `WORKER_POSTGRES_USER`·`WORKER_POSTGRES_PASSWORD`. `POSTGRES_ROLE`을 넣으면 워커 계정이 없을 때 기동이 실패합니다.
   3. 서버는 연결할 때 역할을 바꿉니다(`app/core/database.py` `create_app_engine`·`create_worker_engine`). RLS 정책이 역할 이름(`current_user`)을 비교하므로, 고정하지 않으면 고객사 데이터가 모두 숨겨집니다.
   4. **사용자 없이 도는 백그라운드 작업(수집 적재·분석 자동 시작·결과 저장)은 워커 세션(`open_worker_session`)을 씁니다.** 앱 역할은 활성 사용자(`app.user_id`)를 요구해서, 앱 세션으로 돌리면 행이 보이지 않습니다(PR #48 리뷰).
-  5. **운영자(ADMIN·OWNER) 계정은 DB에 직접 넣습니다.** 회원가입 `POST /api/v1/auth/signup`은 개발용이라 `APP_ENV=prod`에서는 등록하지 않고, 앱 역할에는 `users` INSERT 권한이 없습니다(이슈 #78, 명세 D5).
+  5. **운영자(ADMIN·OWNER) 계정은 DB에 직접 넣습니다.** 회원가입 `POST /api/v1/auth/signup`은 개발용이라 `APP_ENV=local`에서만 등록하고(dev·prod 서버에는 없음), 앱 역할에는 `users` INSERT 권한이 없습니다(이슈 #78, 명세 D5).
      - 비밀번호 해시와 사용자 ID를 만듭니다(비밀번호는 영문·숫자 6~16자, 입력이 화면·기록에 남지 않음):
        `uv run python -c "import bcrypt, getpass, uuid; p=getpass.getpass('비밀번호: '); print(uuid.uuid7()); print(bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode())"`
      - 앱·워커 계정이 아닌 관리자(소유자·superuser) 계정으로 접속해 넣습니다. `user_id`·`display_name`은 DB 기본값이 없고, 운영자는 `company_id`가 `NULL`이어야 합니다(`users_ck2`):
@@ -281,7 +281,7 @@ uv run pytest
 
 - 에이전트는 업무 DB에 쓰지 않고 결과만 반환합니다. 저장·STALE 판정은 서비스 책임입니다.
 - 실행 상태 조회기는 `config["configurable"]["run_status_reader"]`로 주입합니다. 주입하지 않으면 STALE 확인을 건너뜁니다.
-- 개발 확인용 `POST /api/v1/dev/agent/dry-run`으로 그래프를 한 번 실행해 거친 노드 순서를 볼 수 있습니다 (`APP_ENV=prod`에서는 등록되지 않음).
+- 개발 확인용 `POST /api/v1/dev/agent/dry-run`으로 그래프를 한 번 실행해 거친 노드 순서를 볼 수 있습니다 (`APP_ENV=local`에서만 등록).
 - 계산·설명 검증은 데이터 팀 분석 엔진을 그대로 씁니다. 엔진 코드는 저장소에 넣지 않고, `.env`의 `GLOWSHIP_ENGINE_DIR` 폴더 원본을 해시 목록으로 대조해 불러옵니다. 준비 방법은 `docs/analysis/engine-local-path.md`에 있습니다.
 
 ## 코드 스타일

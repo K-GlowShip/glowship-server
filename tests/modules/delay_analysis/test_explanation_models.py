@@ -54,6 +54,7 @@ from tests.modules.delay_analysis.engine_test_modules import (
 
 API_KEY = "sk-test-KEEP-THIS-SECRET-0123456789"
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "app_login",

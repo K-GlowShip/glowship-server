@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 """
 
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "app_login",

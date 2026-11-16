@@ -83,8 +83,8 @@ async def lifespan(_: FastAPI):
 
 
 def include_dev_routers(app: FastAPI, settings: Settings) -> None:
-    """개발 확인용 라우터 (운영 환경 제외). 운영자 회원가입은 인증 없이 열려 있어 운영에 두지 않는다(이슈 #78)"""
-    if settings.app_env != "prod":
+    """개발 확인용 라우터 (local 에서만). 운영자 회원가입은 인증 없이 열려 있어 공개 서버(dev·prod)에 두지 않는다(이슈 #78, #99)"""
+    if settings.app_env == "local":
         app.include_router(signup_router)
         app.include_router(agent_dev_router)
 

@@ -253,6 +253,7 @@ def test_enabling_without_trace_dir_only_warns(tmp_path, caplog):
 def _settings_from_env(**env):
     return Settings(
         _env_file=None,
+        app_env="local",
         postgres_host="h",
         postgres_port=5432,
         postgres_user="u",
@@ -283,6 +284,7 @@ def test_blank_trace_dir_setting_means_off(monkeypatch, raw):
     monkeypatch.setenv("AGENT_TRACE_DIR", raw)
     settings = Settings(
         _env_file=None,
+        app_env="local",
         postgres_host="h",
         postgres_port=5432,
         postgres_user="u",

@@ -114,6 +114,7 @@ async def test_real_clock_when_virtual_start_is_unset():
 
 
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "u",
