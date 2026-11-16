@@ -4,6 +4,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenException
+from app.core.pagination import PageParams
 from app.core.rls_context import set_rls_context
 from app.core.security.auth import CurrentUser
 from app.core.security.hashing import hash_password
@@ -27,7 +28,7 @@ from app.modules.user.application.password import (
 )
 from app.modules.user.infrastructure.repository.user_repository import UserRepository
 from app.modules.user.infrastructure.user import User
-from app.modules.user.infrastructure.user_enums import UserRoleCode
+from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
 
 # PostgreSQL SQLSTATE: DB 함수가 권한 검사에 실패했을 때
 _PG_INSUFFICIENT_PRIVILEGE = "42501"
@@ -123,3 +124,51 @@ class ClientAccountService:
             if getattr(e.orig, "pgcode", None) == _PG_INSUFFICIENT_PRIVILEGE:
                 raise ForbiddenException() from e
             raise
+
+    async def list_client_users(
+        self,
+        *,
+        actor: CurrentUser,
+        company_id: uuid.UUID,
+        role_code: UserRoleCode | None,
+        status: UserStatus | None,
+        params: PageParams,
+    ) -> tuple[list[User], int]:
+        """
+        담당 고객사의 Client 계정 목록 한 페이지와 전체 개수 (최근에 만든 계정부터).
+
+        조회는 그 고객사에 배정만 있으면 된다. 계정 관리 권한(can_manage_client_accounts)은 보지 않는다 (명세 D25).
+        검사 순서는 운영 기준 목록(OperatingRuleService._enter_company_scope)과 같다. 배정을 먼저 보므로
+        배정되지 않은 고객사와 없는 고객사는 구분 없이 403 이다.
+
+        Args:
+            actor: 요청한 ADMIN (라우터에서 역할을 이미 확인함)
+            company_id: 계정을 조회할 고객사
+            role_code: CLIENT_MEMBER 또는 CLIENT_LEAD 로 거르기. None 이면 둘 다
+            status: ACTIVE 또는 DISABLED 로 거르기. None 이면 둘 다
+            params: page·size
+
+        Raises:
+            ForbiddenException: 요청자가 이 고객사에 배정되지 않음 (403)
+            CompanyNotFoundException: 고객사 없음 (404)
+            CompanyInactiveException: 비활성 고객사 (409)
+        """
+        # 첫 DB 조회 전에 RLS 컨텍스트를 설정한다. 앱 DB 역할에서는 이 고객사에 배정된 ADMIN 에게만
+        # admin_assignments·companies·users 의 이 고객사 행이 보인다.
+        await set_rls_context(self.db, user_id=actor.user_id, company_id=company_id)
+
+        assignment = await self.admin_assignment_repo.find_by_admin_and_company(
+            admin_user_id=actor.user_id, company_id=company_id
+        )
+        if assignment is None:
+            raise ForbiddenException()
+
+        company = await self.company_repo.find_by_id(company_id)
+        if company is None:
+            raise CompanyNotFoundException()
+        if company.status != CompanyStatus.ACTIVE:
+            raise CompanyInactiveException()
+
+        return await self.user_repo.find_client_users_page(
+            company_id=company_id, role_code=role_code, status=status, params=params
+        )

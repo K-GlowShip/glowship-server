@@ -4,8 +4,13 @@ from dataclasses import dataclass
 from sqlalchemy import UUID, bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pagination import PageParams, paginate
 from app.modules.user.infrastructure.user import User
-from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
+from app.modules.user.infrastructure.user_enums import (
+    CLIENT_ROLE_CODES,
+    UserRoleCode,
+    UserStatus,
+)
 
 # 고객사 사용자 생성은 DB 함수(초기 마이그레이션 _create_rls)로만 가능하다.
 # 운영용 앱 DB 역할은 users INSERT 권한이 없고, 이 SECURITY DEFINER 함수가 대신 INSERT 한다.
@@ -104,3 +109,27 @@ class UserRepository:
         """식별자로 유저 조회"""
         stmt = select(User).where(User.user_id == user_id)
         return await self.db.scalar(stmt)
+
+    async def find_client_users_page(
+        self,
+        *,
+        company_id: uuid.UUID,
+        role_code: UserRoleCode | None,
+        status: UserStatus | None,
+        params: PageParams,
+    ) -> tuple[list[User], int]:
+        """
+        고객사의 Client 계정(CLIENT_MEMBER·CLIENT_LEAD) 한 페이지와 전체 개수. 최근에 만든 계정부터, 같으면 user_id 순.
+
+        앱 DB 역할에서는 같은 트랜잭션의 RLS 컨텍스트(app.company_id)가 이 고객사여야 행이 보인다
+        (users_select_tenant_or_self). OWNER·ADMIN 은 company_id 가 없어(users_ck2) 조건만으로도 빠지지만,
+        역할 조건을 함께 걸어 Client 계정만 다룬다는 규칙을 조회에 남긴다.
+        """
+        roles = [role_code] if role_code is not None else list(CLIENT_ROLE_CODES)
+        stmt = select(User).where(
+            User.company_id == company_id, User.role_code.in_(roles)
+        )
+        if status is not None:
+            stmt = stmt.where(User.status == status)
+        stmt = stmt.order_by(User.created_at.desc(), User.user_id)
+        return await paginate(self.db, stmt, params)
