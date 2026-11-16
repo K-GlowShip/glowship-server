@@ -21,6 +21,12 @@ _CREATE_CLIENT_USER = text(
     ":user_id, :email, :password_hash, :display_name, :role_code)"
 ).bindparams(bindparam("user_id", type_=UUID(as_uuid=True)))
 
+# 비밀번호 재설정도 DB 함수(마이그레이션 0012)로만 가능하다. 앱 DB 역할은 users 에서 본인 display_name 만 UPDATE 할 수 있다.
+# 함수는 app.user_id(요청자)만 읽고, 대상 계정의 고객사에 요청자가 배정되어 있는지·계정 관리 권한이 있는지를 직접 검사한다.
+_RESET_CLIENT_USER_PASSWORD = text(
+    "SELECT app_admin_reset_client_user_password(:user_id, :password_hash)"
+).bindparams(bindparam("user_id", type_=UUID(as_uuid=True)))
+
 # 로그인 조회는 컨텍스트(app.user_id·app.company_id)가 없을 때 한다. 앱 DB 역할의 users 정책은 "같은 고객사이거나 본인"만
 # 보여 주므로 select(User) 로는 0행이다. 소유자 역할의 SECURITY DEFINER 함수(마이그레이션 0008)가 그 이메일 한 명만 돌려준다.
 _FIND_LOGIN_USER = text(
@@ -85,6 +91,22 @@ class UserRepository:
         )
         # 함수는 user_id 만 돌려주므로 created_at 등 DB 기본값을 포함해 다시 읽는다.
         return await self.find_by_id(user_id)
+
+    # Update
+    async def reset_client_user_password(
+        self, *, user_id: uuid.UUID, password_hash: str
+    ) -> None:
+        """
+        Client 계정의 비밀번호 해시 교체. ORM UPDATE 가 아니라 DB 함수 app_admin_reset_client_user_password 를 호출한다.
+
+        같은 트랜잭션에 RLS 컨텍스트(app.user_id)가 설정되어 있어야 함수가 요청자를 안다. app.company_id 는 쓰지 않는다.
+        권한이 없으면 insufficient_privilege(42501), 대상이 담당 고객사의 Client 계정이 아니면 no_data_found(P0002)
+        오류를 던지며, HTTP 변환은 서비스 계층이 담당한다.
+        """
+        await self.db.execute(
+            _RESET_CLIENT_USER_PASSWORD,
+            {"user_id": user_id, "password_hash": password_hash},
+        )
 
     # Read
     async def find_by_email(self, email: str) -> User | None:

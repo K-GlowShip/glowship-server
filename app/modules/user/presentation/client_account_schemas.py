@@ -51,6 +51,15 @@ class ClientUserCreateRequest(CamelModel):
         return None if v is None else reject_nul(v, "표시 이름")
 
 
+class ClientUserPasswordResetRequest(CamelModel):
+    """고객사 계정 비밀번호 재설정 요청 (명세 4.1 POST /admin/users/{userId}/password)"""
+
+    password: str = Field(
+        description="Base64 로 인코딩한 새 비밀번호 (디코딩 결과는 영문·숫자 6~16자)",
+        examples=["bmV3cGFzczEyMw=="],
+    )
+
+
 class ClientUserListItemResponse(CamelModel):
     """고객사 계정 목록의 한 행 (명세 4.1 GET /admin/users). 비밀번호 관련 값은 포함하지 않는다."""
 

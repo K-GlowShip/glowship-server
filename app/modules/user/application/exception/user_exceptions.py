@@ -6,6 +6,14 @@ from app.core.exceptions import BaseErrorCode, BusinessException
 class UserErrorCode(BaseErrorCode):
     """user 모듈 에러 코드: (status_code, code, message)"""
 
+    # USER
+    # 없는 계정과 요청자가 볼 수 없는 계정(다른 고객사, Client 역할이 아님)을 같은 코드로 응답해 계정 존재 여부를 노출하지 않는다.
+    USER_NOT_FOUND = (
+        status.HTTP_404_NOT_FOUND,
+        "USER_NOT_FOUND",
+        "요청한 계정을 찾을 수 없습니다.",
+    )
+
     # EMAIL
     EMAIL_DUPLICATED = (
         status.HTTP_409_CONFLICT,
@@ -32,6 +40,11 @@ class UserErrorCode(BaseErrorCode):
         "ACCOUNT_DISABLED",
         "비활성화된 계정입니다. 관리자에게 문의해 주십시오.",
     )
+
+
+class UserNotFoundException(BusinessException):
+    def __init__(self):
+        super().__init__(UserErrorCode.USER_NOT_FOUND)
 
 
 class EmailDuplicatedException(BusinessException):

@@ -1,6 +1,6 @@
-# 고객사 계정 생성·목록 (Admin)
+# 고객사 계정 생성·목록·비밀번호 재설정 (Admin)
 
-Glowship 내부 관리자(ADMIN)가 담당 고객사에 Client 계정을 만들고(2절) 목록을 조회하는(9절) API가 **현재 어떻게 동작하는지** 설명합니다.
+Glowship 내부 관리자(ADMIN)가 담당 고객사에 Client 계정을 만들고(2절) 목록을 조회하고(9절) 비밀번호를 재설정하는(10절) API가 **현재 어떻게 동작하는지** 설명합니다.
 계정 수정·비활성화와 OWNER의 계정 생성은 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
 
 고객사 계정은 공개 회원가입으로 만들지 않습니다(API 명세 D5). 내부 관리자가 이 API로 만들고, 초기 비밀번호는 관리자가 정해 고객사 직원에게 따로 전달합니다.
@@ -173,7 +173,7 @@ class ClientUserCreateRequest(CamelModel):
 
 ## 6. 테스트
 
-`tests/modules/user/` — DB 없이 실행됩니다(계정 목록의 시험은 9절).
+`tests/modules/user/` — DB 없이 실행됩니다(계정 목록의 시험은 9절, 비밀번호 재설정의 시험은 10절).
 
 | 파일 | 내용 |
 | --- | --- |
@@ -190,16 +190,18 @@ DB 함수 경로는 로컬 DB에서 트랜잭션 안에 임시 고객사·ADMIN�
 | OWNER의 계정 생성 | DB 함수가 `role_code = 'ADMIN'`과 배정 여부를 검사하므로 OWNER는 허용되지 않음. 열려면 함수를 바꾸는 마이그레이션 필요 |
 | Admin 여러 고객사 배정 선택 | 명세 D7은 `X-Company-Id` 헤더를 예정. 이 API는 본문 `companyId`로 이미 고객사를 지정하므로 영향 없음 |
 | ~~Client API용 컨텍스트 의존성~~ | 구현됨. `app/core/security/tenant.py`의 `get_tenant_context`가 토큰의 `company_id`로 `set_rls_context`를 호출한다 (`docs/data-sync/latest-sync-status.md` 4절) |
-| 초기 비밀번호 변경 강제 | 비밀번호 재설정 API가 없으므로(명세 D19) 운영으로 보완 |
+| 초기 비밀번호 변경 강제 | 사용자가 직접 비밀번호를 바꾸는 API는 없다(명세 D19). 관리자가 대신 재설정한다(10절) |
 
 ## 8. 관련 파일
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/client_account_api_router.py` | `POST`·`GET /api/v1/admin/users` 엔드포인트 |
+| `app/modules/user/presentation/client_account_api_router.py` | `POST`·`GET /api/v1/admin/users`, `POST /api/v1/admin/users/{userId}/password` 엔드포인트 |
 | `app/modules/user/presentation/client_account_schemas.py` | 요청·응답 스키마 (camelCase) |
-| `app/modules/user/application/client_account_service.py` | 검사 순서, DB 오류 변환, `list_client_users` |
-| `app/modules/user/infrastructure/repository/user_repository.py` | `create_client_user`(DB 함수 호출), `find_by_id`, `find_client_users_page` |
+| `app/modules/user/application/client_account_service.py` | 검사 순서, DB 오류 변환, `list_client_users`, `reset_client_user_password` |
+| `app/modules/user/infrastructure/repository/user_repository.py` | `create_client_user`·`reset_client_user_password`(DB 함수 호출), `find_by_id`, `find_client_users_page` |
+| `app/modules/user/application/exception/user_exceptions.py` | `USER_NOT_FOUND`, `INVALID_PASSWORD_FORMAT` |
+| `migrations/versions/0012_add_client_user_password_reset_function.py` | 비밀번호 재설정 함수 |
 | `app/core/pagination.py` | `PageParams`, `Page`, `paginate` (목록) |
 | `app/modules/user/dependencies.py` | `get_client_account_service` 조립 |
 | `app/modules/company/infrastructure/repository/company_repository.py` | 고객사 조회 |
@@ -292,6 +294,88 @@ OWNER·ADMIN은 `company_id`가 비어 있어(`users_ck2`) 고객사 조건만�
 | `test_client_account_list_api.py` | 라우터 검증. 쿠키 없음 401, OWNER·Client 역할 403, 형식 오류 422(`companyId`·`roleCode`·`status`·`page`·`size`), 성공 200과 camelCase 행·페이지 값, 필터 전달, 빈 목록 |
 | `test_client_user_list_sql.py` | 실제 DB(끝나면 롤백). 앱 DB 역할로 바꾸고 배정된 ADMIN의 컨텍스트에서 정렬·역할 범위·페이지·필터 확인, 배정되지 않은 ADMIN의 컨텍스트에서는 0행 |
 
+## 10. 비밀번호 재설정 API
+
+`POST /api/v1/admin/users/{userId}/password` — 명세 3절 29번, 4.1절, C47 (GLOW-165, 프론트 요청 GLOW-103)
+
+비밀번호 찾기 기능이 없어 사용자는 "관리자에게 문의"로 안내받습니다(명세 D19). 관리자가 이 API로 새 비밀번호를 정해 주고 따로 전달합니다.
+
+### 권한
+
+`access_token` 쿠키의 역할이 ADMIN이고, **대상 계정의 고객사에 배정되어 있으며 계정 관리 권한(`can_manage_client_accounts`)이 있어야** 합니다. 계정 생성(3절)과 같은 조건입니다. 다룰 수 있는 계정은 Client 역할(`CLIENT_MEMBER`·`CLIENT_LEAD`)뿐입니다.
+
+### 요청
+
+```http
+POST /api/v1/admin/users/01a18a64-97e5-77ce-b6d1-6bd3dbf58d48/password
+Content-Type: application/json
+
+{ "password": "bmV3cGFzczEyMw==" }
+```
+
+`password`는 계정 생성과 같은 형식입니다. Base64로 인코딩해 보내고, 디코딩한 값이 영문·숫자 6~16자여야 합니다. 고객사는 보내지 않습니다.
+
+### 성공 응답
+
+```http
+HTTP/1.1 204 No Content
+```
+
+본문이 없습니다. 쿠키도 바꾸지 않습니다.
+
+### 실패 응답
+
+| 상태 | code | 상황 |
+| --- | --- | --- |
+| 400 | `INVALID_PASSWORD_FORMAT` | `password`가 Base64가 아니거나 정책(영문·숫자 6~16자) 위반 |
+| 401 | `UNAUTHENTICATED` | 쿠키 없음·만료·위조 |
+| 403 | `FORBIDDEN` | 역할이 ADMIN이 아님, 대상 고객사에 배정은 있으나 `can_manage_client_accounts`가 거짓, 요청한 ADMIN 계정이 DISABLED |
+| 403 | `INVALID_ORIGIN` | 허용되지 않은 `Origin`의 요청 |
+| 404 | `USER_NOT_FOUND` | 없는 계정, 배정되지 않은 고객사의 계정, Client 역할이 아닌 계정(ADMIN·OWNER). **구분 없이 같은 응답** |
+| 422 | `VALIDATION_ERROR` | `userId`가 UUID가 아님, `password` 누락 |
+
+- 404 세 경우를 구분하지 않는 이유: 배정되지 않은 고객사에 그 계정이 있는지 알려 주지 않기 위해서입니다(명세 2절 "다른 고객사 리소스").
+- 배정은 있는데 권한만 없는 경우는 그 계정이 목록(9절)에서 이미 보이므로 403으로 구분합니다.
+- 비밀번호 형식 검사가 가장 먼저라, 형식이 틀리면 대상 계정과 무관하게 400입니다.
+
+### 기존 세션 (명세 D26)
+
+재설정해도 **이미 발급된 토큰은 폐기하지 않습니다.** 서버가 토큰을 기록하지 않기 때문입니다(무상태, C44). 재설정 전에 로그인한 세션은 access 토큰 최대 30분, refresh 토큰 최대 7일 동안 유효합니다. 바뀌는 것은 "다음 로그인에 쓰는 비밀번호"뿐입니다.
+
+### 서비스 로직 (`ClientAccountService.reset_client_user_password`)
+
+```
+Base64 해제 → 비밀번호 정책(400) → bcrypt 해싱 → RLS 컨텍스트 설정(app.user_id 만)
+→ Repository.reset_client_user_password (DB 함수) → SQLSTATE P0002 는 404 · 42501 은 403
+```
+
+계정 생성과 달리 서비스가 배정·고객사를 미리 조회하지 않습니다. 요청이 계정만 지정해 대상의 고객사를 모르고, 운영(앱 DB 역할)에서는 고객사 컨텍스트 없이 다른 사용자의 행을 읽을 수 없기 때문입니다. 검사는 DB 함수 한 곳에서 합니다.
+
+### DB 함수 — `app_admin_reset_client_user_password(user_id, password_hash)` (마이그레이션 `0012`)
+
+앱 DB 역할은 `users`에서 본인 `display_name`만 UPDATE할 수 있고(4절), 기존 `app_admin_update_client_user`는 역할·상태만 바꿉니다. 그래서 계정 생성과 같은 방식의 SECURITY DEFINER 함수를 새로 두었습니다.
+
+| 순서 | 검사 | 실패하면 |
+| --- | --- | --- |
+| 1 | `password_hash`가 bcrypt 형식 (계정 생성 함수와 같은 정규식) | `22023` → 500 (서버 버그일 때만. 평문 저장 방지) |
+| 2 | `app.user_id`가 ACTIVE ADMIN | `42501` → 403 |
+| 3 | 대상이 있고 Client 역할 | `P0002` → 404 |
+| 4 | 요청자가 대상의 고객사에 배정 | `P0002` → 404 |
+| 5 | 그 배정의 `can_manage_client_accounts` | `42501` → 403 |
+
+- 통과하면 `password_hash`와 `updated_at`을 바꿉니다.
+- `app.company_id`를 쓰지 않습니다. 대상의 고객사는 함수가 읽습니다.
+- **고객사 상태와 대상 계정 상태는 보지 않습니다.** 비활성 고객사의 계정, DISABLED 계정도 재설정됩니다. 해시만 바뀌고, 로그인할 수 있는지는 로그인이 계정 상태로 판정합니다.
+- 실행 권한은 앱 역할(`glowship_v4_app`)에만 있습니다. 데이터 팀 DDL(v6.2)에는 없는 함수라 `glowship-plan` DDL 반영은 별도 요청입니다.
+
+### 테스트
+
+| 파일 | 내용 |
+| --- | --- |
+| `test_client_account_password_reset_service.py` | 가짜 Repository로 서비스 로직 검증. 해시된 값 저장, 컨텍스트에 요청자만 넣음, 형식 오류는 DB에 가지 않고 400, `P0002` → 404, `42501` → 403, 그 밖의 DB 오류 전파 |
+| `test_client_account_password_reset_api.py` | 라우터 검증. 쿠키 없음 401, OWNER·Client 역할 403, 성공 204·빈 본문·쿠키 변경 없음, `password` 누락·UUID 아닌 `userId` 422, 서비스 예외의 400·403·404 변환 |
+| `test_client_user_password_reset_sql.py` | 실제 DB(끝나면 롤백). 앱 DB 역할로 함수 호출: 권한 있는 배정은 해시 교체, 권한 없는 배정 `42501`, 없는 계정·ADMIN 계정·미배정 고객사 계정 `P0002`, Client 계정·컨텍스트 없음 `42501`, 평문 `22023`, 실패한 호출은 해시를 바꾸지 않음. 서비스부터 함수까지 이어 실제 bcrypt 해시 저장과 404·403 변환도 확인. `0012`가 없는 DB면 건너뜀 |
+
 ### 아직 없는 것
 
-비밀번호 재설정(`POST /admin/users/{userId}/password`, 명세 29번)은 별도 작업입니다. 계정 이름·역할 수정과 비활성화·활성화는 이번 범위가 아닙니다(명세 C47).
+계정 이름·역할 수정(`PATCH /admin/users/{userId}`)과 비활성화·활성화는 이번 범위가 아닙니다(명세 C47). 이름 수정은 앱 DB 권한 때문에 마이그레이션이 더 필요합니다. 재설정 뒤 기존 세션을 끊으려면 `users`에 비밀번호 변경 시각을 두고 토큰 발급 시각과 비교하는 방식이 후속으로 적혀 있습니다(명세 D26).
