@@ -41,9 +41,10 @@ from typing import Any
 
 from sqlalchemy import UUID as SA_UUID
 from sqlalchemy import Date, DateTime, Numeric, insert, select, text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.db_secrets import create_database_engine
 from app.core.locks import lock_analysis_run, lock_company
 from app.core.model_registry import Base
 from app.core.security.tenant import TenantContext
@@ -589,7 +590,10 @@ async def main() -> int:
     company_code = args.company or scenario.responses[0].company_code
     engine = Engine.load()
 
-    db_engine = create_async_engine(settings.database_url)
+    # POSTGRES_SECRET_ARN 이 있으면 database_url 에 비밀번호가 없다. 앱과 같은 생성기로 붙는다(docs/backend/db-secret-rotation.md)
+    db_engine = create_database_engine(
+        settings.database_url, settings.postgres_secret_arn
+    )
     try:
         async with db_engine.connect() as conn:
             outer = await conn.begin()

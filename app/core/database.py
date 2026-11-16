@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 # 세션을 쓰기 전에 모든 ORM 모델이 Base.metadata 에 등록되어 있어야 한다.
 from app.core import model_registry  # noqa: F401
 from app.core.config import get_settings
+from app.core.db_secrets import create_secret_engine
 
 """
     DB 커넥션 연결, 세션 설정 및 관리
@@ -37,7 +38,9 @@ def sql_log_options(db_echo: bool) -> dict[str, Any]:
     return {"echo": db_echo, "hide_parameters": True}
 
 
-def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
+def create_app_engine(
+    url: str, role: str | None, *, secret_arn: str | None = None, **kwargs: Any
+) -> AsyncEngine:
     """
     요청 처리용 앱 엔진 (이슈 #41). role(설정 POSTGRES_ROLE)이 있으면 연결할 때 그 역할로 바꾼다.
       - 운영은 앱 역할(glowship_v4_app)에 속한 로그인 계정으로 붙는다. RLS 정책은 역할 이름(current_user)을 비교하므로
@@ -47,6 +50,8 @@ def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
     """
     if role is not None:
         kwargs["connect_args"] = _pin_role(kwargs, role)
+    if secret_arn:
+        return create_secret_engine(url, secret_arn, **kwargs)
     return create_async_engine(url, **kwargs)
 
 
@@ -54,6 +59,7 @@ def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
 engine = create_app_engine(
     get_settings().database_url,
     get_settings().postgres_role,
+    secret_arn=get_settings().postgres_secret_arn,
     **sql_log_options(get_settings().db_echo),
     future=True,  # SQLAlchemy 2.0 스타일의 API(새로운 방식)를 강제로 사용
 )

@@ -29,6 +29,8 @@
 #   - ENV_FILE 작성 (root 소유, chmod 600). .env.example 의 키를 dev 값으로 채운다:
 #       APP_ENV=dev, POSTGRES_HOST=<RDS 엔드포인트>, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
 #       JWT_SECRET_KEY(32자 이상), CORS_ORIGINS=["https://<프론트 도메인>"], VIRTUAL_CLOCK_START= (실제 원천이면 비움)
+#     RDS 관리형 교체 비밀번호는 POSTGRES_SECRET_ARN 을 사용한다. 앱·Alembic이 AWSCURRENT 를 읽으며
+#     POSTGRES_PASSWORD 는 무시한다. EC2 역할·컨테이너 IMDSv2·롤백 조건은 docs/backend/db-secret-rotation.md.
 #     GLOWSHIP_ENGINE_DIR 은 이 파일에 쓰지 않는다(ENGINE_DIR 로 마운트 경로를 준다).
 #   - 분석 기능을 쓰려면 엔진 폴더를 EC2 에 두고 ENGINE_DIR 로 넘긴다 (docs/analysis/engine-local-path.md)
 #
