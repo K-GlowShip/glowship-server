@@ -17,6 +17,12 @@ from app.modules.decision.application.exception.decision_exceptions import (
     DecisionErrorCode,
     DecisionException,
 )
+from app.modules.delay_analysis.application.stale.stale_service import (
+    StaleJudgmentService,
+)
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
+)
 from app.modules.operating_rule.application.exception.operating_rule_exceptions import (
     InvalidLeadTimeException,
 )
@@ -39,7 +45,8 @@ from tests.modules.decision.test_final_decision_service_sql import (
     운영 기준 서비스 SQL 테스트 (API 4·5, GLOW-153, 실제 DB, 끝나면 롤백)
       - 확정 DB 의 배정된 ADMIN 과 그 고객사(운영 기준 v1)를 씁니다. 없으면 건너뜁니다.
       - 새 버전 저장 뒤 기존 버전이 그대로인지, 다른 고객사와 섞이지 않는지, 배정되지 않은 ADMIN 이 거부되는지,
-        적용 시작일이 지난 새 버전이 있으면 이전 버전으로 분석한 실행의 최종 선택이 OPERATING_RULE_CHANGED 로 거부되는지 확인합니다.
+        이미 적용되는 새 버전을 저장하면 선택 대기 실행이 STALE(OPERATING_RULE_CHANGED)로 바뀌는지,
+        미래 버전은 실행을 그대로 두고 적용일이 지난 뒤 최종 선택이 OPERATING_RULE_CHANGED 로 거부되는지 확인합니다(GLOW-159).
 """
 
 NOW = datetime(2026, 7, 2, 0, 3, tzinfo=UTC)
@@ -86,6 +93,9 @@ def _service(db, *, now=NOW, evicted: list | None = None) -> OperatingRuleServic
         admin_assignment_repo=AdminAssignmentRepository(db),
         clock=DecisionClock.fixed(now),
         on_saved=None if evicted is None else evicted.append,
+        mark_stale_runs=StaleJudgmentService(
+            db, StaleChangeRepository(db)
+        ).mark_review_runs_on_rule_change,
     )
 
 
@@ -309,26 +319,68 @@ async def test_warehouse_of_other_company_is_invalid_lead_time(db_write_session)
         )
 
 
-# --- 최종 선택과의 연결 (serviceflow 5.2 재확인 5, 인수 조건) -----------------------------
+# --- 기존 분석 실행과의 연결 (BR-012, serviceflow 5.2 재확인 5, GLOW-159) --------------------
+
+_RUN_SQL = text(
+    "SELECT status, stale_primary_reason, stale_reason_codes, stale_detected_seq,"
+    " stale_detected_at FROM analysis_runs WHERE analysis_run_id = :r"
+)
 
 
-async def test_effective_new_version_blocks_final_decision_of_run_on_old_version(
+async def _run_row(db, run):
+    return (await db.execute(_RUN_SQL, {"r": run.analysis_run_id})).one()
+
+
+async def test_effective_new_version_marks_review_run_stale(db_write_session):
+    db = db_write_session
+    run = await _ready_run(db)
+    row = await _assigned(db, run.company_id)
+    max_seq = await db.scalar(
+        text(
+            "SELECT COALESCE(MAX(applied_seq), 0) FROM data_sync_runs WHERE company_id = :c"
+        ),
+        {"c": run.company_id},
+    )
+
+    # 적용 시작일이 판단 시각(DECISION_NOW)의 날짜인 새 버전
+    await _create(db, row, effective_from=DECISION_NOW.date(), now=DECISION_NOW)
+
+    staled = await _run_row(db, run)
+    assert staled.status == "STALE"
+    assert staled.stale_primary_reason == "OPERATING_RULE_CHANGED"
+    assert staled.stale_reason_codes == ["OPERATING_RULE_CHANGED"]
+    assert staled.stale_detected_seq == max_seq
+    assert staled.stale_detected_at == DECISION_NOW
+    # STALE 이 된 실행의 최종 선택은 ANALYSIS_STALE 로 거부된다(사유는 실행의 stale_primary_reason)
+    with pytest.raises(DecisionException) as raised:
+        await _decide(db, run)
+    assert raised.value.error_code is DecisionErrorCode.ANALYSIS_STALE
+
+
+async def test_future_version_keeps_review_run_and_blocks_decision_once_effective(
     db_write_session,
 ):
     db = db_write_session
     run = await _ready_run(db)
     row = await _assigned(db, run.company_id)
-    status_sql = text("SELECT status FROM analysis_runs WHERE analysis_run_id = :r")
 
-    # 적용 시작일이 선택일(DECISION_NOW 의 날짜)인 새 버전
-    await _create(db, row, effective_from=DECISION_NOW.date(), now=DECISION_NOW)
+    # 적용 시작일이 판단 시각 다음 날: 저장만으로는 실행을 바꾸지 않는다
+    await _create(db, row, effective_from=date(2026, 7, 3), now=DECISION_NOW)
+    assert (await _run_row(db, run)).status == "READY_FOR_REVIEW"
 
-    # 저장만으로는 실행을 STALE 로 바꾸지 않는다
-    assert await db.scalar(status_sql, {"r": run.analysis_run_id}) == "READY_FOR_REVIEW"
+    # 그날이 지난 뒤(운영 기준만 미리 적용해 흉내) 최종 선택은 OPERATING_RULE_CHANGED 로 거부되고 실행은 그대로다
+    await db.execute(
+        text(
+            "UPDATE operating_rule_sets SET effective_from = :d WHERE company_id = :c"
+            " AND version_no = (SELECT max(version_no) FROM operating_rule_sets"
+            "                    WHERE company_id = :c)"
+        ),
+        {"d": DECISION_NOW.date(), "c": run.company_id},
+    )
     with pytest.raises(DecisionException) as raised:
         await _decide(db, run)
     assert raised.value.error_code is DecisionErrorCode.OPERATING_RULE_CHANGED
-    assert await db.scalar(status_sql, {"r": run.analysis_run_id}) == "READY_FOR_REVIEW"
+    assert (await _run_row(db, run)).status == "READY_FOR_REVIEW"
 
 
 async def test_future_version_does_not_block_final_decision(db_write_session):
@@ -341,3 +393,79 @@ async def test_future_version_does_not_block_final_decision(db_write_session):
 
     result = await _decide(db, run)
     assert result.status == "FINALIZED"
+
+
+async def test_effective_new_version_keeps_other_runs(db_write_session):
+    """선택 대기가 아닌 실행, 닫힌 에피소드의 실행, 다른 고객사의 실행은 그대로다"""
+    db = db_write_session
+    run = await _ready_run(db)
+    row = await _assigned(db, run.company_id)
+    # 같은 고객사의 다른 선택 대기 실행 하나는 에피소드를 닫아 둔다(동결 대상)
+    frozen = await db.scalar(
+        text(
+            """
+            UPDATE analysis_runs r
+               SET status = 'READY_FOR_REVIEW', stale_primary_reason = NULL,
+                   stale_reason_codes = NULL, stale_detected_seq = NULL, stale_detected_at = NULL
+             WHERE r.analysis_run_id = (
+                    SELECT a.analysis_run_id FROM analysis_runs a
+                      JOIN delay_events e ON e.delay_event_id = a.delay_event_id
+                     WHERE a.company_id = :c AND a.is_latest AND a.status = 'STALE'
+                       AND a.completed_status = 'READY_FOR_REVIEW'
+                       AND a.analysis_run_id <> :r AND e.closed_at IS NOT NULL
+                     ORDER BY a.analysis_run_id LIMIT 1)
+            RETURNING r.analysis_run_id
+            """
+        ),
+        {"c": run.company_id, "r": run.analysis_run_id},
+    )
+    others_sql = text(
+        """
+        SELECT analysis_run_id, status, stale_primary_reason, stale_detected_at
+          FROM analysis_runs
+         WHERE analysis_run_id <> :r
+         ORDER BY analysis_run_id
+        """
+    )
+    before = (await db.execute(others_sql, {"r": run.analysis_run_id})).all()
+    assert {r.status for r in before} - {"READY_FOR_REVIEW"}  # 다른 상태의 실행이 있다
+
+    await _create(db, row, effective_from=DECISION_NOW.date(), now=DECISION_NOW)
+
+    assert (await _run_row(db, run)).status == "STALE"
+    after = (await db.execute(others_sql, {"r": run.analysis_run_id})).all()
+    changed = [b for b, a in zip(before, after, strict=True) if a != b]
+    # 바뀐 것은 같은 고객사의 열린 에피소드 선택 대기 실행뿐
+    assert all(r.status == "READY_FOR_REVIEW" for r in changed)
+    assert frozen not in {r.analysis_run_id for r in changed}
+    company_of = dict(
+        (
+            await db.execute(
+                text("SELECT analysis_run_id, company_id FROM analysis_runs")
+            )
+        ).all()
+    )
+    assert all(company_of[r.analysis_run_id] == run.company_id for r in changed)
+    if frozen is None:
+        pytest.skip(
+            "닫힌 에피소드의 선택 대기 실행을 만들 수 없는 DB (나머지는 확인함)"
+        )
+
+
+async def test_rejected_save_keeps_review_run(db_write_session):
+    db = db_write_session
+    run = await _ready_run(db)
+    row = await _assigned(db, run.company_id)
+
+    with pytest.raises(InvalidLeadTimeException):
+        await _create(
+            db,
+            row,
+            effective_from=DECISION_NOW.date(),
+            now=DECISION_NOW,
+            lead_times=[
+                NewLeadTime("AIR_TRANSIT", uuid.uuid7(), None, 1, "CALENDAR_DAY")
+            ],
+        )
+
+    assert (await _run_row(db, run)).status == "READY_FOR_REVIEW"

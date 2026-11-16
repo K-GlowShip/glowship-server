@@ -83,8 +83,9 @@ async def list_operating_rule_sets(
     description=(
         "Glowship ADMIN 이 담당 고객사의 운영 기준을 새 버전으로 저장합니다. 기존 버전은 수정·삭제하지 않고 "
         "버전 번호를 1 올려 새로 만듭니다. 요청자가 해당 고객사에 배정되어 있어야 합니다. "
-        "저장만으로는 기존 분석 실행을 STALE 로 바꾸지 않습니다. 적용 시작일이 지난 뒤 팀장이 이전 버전으로 분석한 실행을 "
-        "최종 선택하면 409 OPERATING_RULE_CHANGED 로 거부되어 재분석이 필요합니다. "
+        "저장한 버전이 이미 적용되면(적용 시작일이 오늘 이하) 그 고객사의 선택 대기 분석 실행을 STALE(OPERATING_RULE_CHANGED)로 "
+        "바꿔 재분석이 필요합니다. 적용 시작일이 미래인 버전은 저장만으로는 기존 실행을 바꾸지 않고, 그날이 지난 뒤 팀장이 "
+        "이전 버전으로 분석한 실행을 최종 선택하면 409 OPERATING_RULE_CHANGED 로 거부됩니다. "
         "분석 계산은 판매 기준 28일·CALENDAR_DAY 리드타임만 지원하며, 다른 값이 계산에 쓰이면 그 분석은 보류(ON_HOLD)됩니다."
     ),
     response_model=OperatingRuleSetCreateResponse,

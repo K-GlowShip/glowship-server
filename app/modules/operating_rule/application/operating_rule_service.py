@@ -1,7 +1,7 @@
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,9 +44,12 @@ from app.modules.operating_rule.infrastructure.repository.operating_rule_reposit
         운영 앱 DB 역할에서 배정되지 않은 ADMIN 에게는 companies 행이 보이지 않아(RLS), 고객사를 먼저 보면 403 이 아니라
         404 가 되기 때문입니다. admin_assignments 정책은 app.user_id·app.company_id 만 보므로 배정 여부는 그대로 읽힙니다.
       - 저장은 고객사 잠금(L1) 안에서 version_no + 1 로 새 버전을 만들고, 기존 버전은 수정·삭제하지 않습니다.
-      - 저장만으로는 기존 실행을 STALE 로 바꾸지 않습니다(serviceflow 5.2 "운영 기준 새 버전 저장만으로는 STALE 로 바꾸지 않는다").
-        팀장의 최종 선택 재확인 5(selection_policy)가 활성 버전이 다르면 OPERATING_RULE_CHANGED 로 재분석을 요구합니다.
-        명세 4.2 의 "저장 때 STALE" 은 제안이고 적용하지 않았습니다(11/13 결정).
+      - 저장한 버전이 이미 적용되면(effective_from ≤ 판단 시각 날짜) 같은 트랜잭션에서 그 고객사의 선택 대기 실행을
+        STALE(OPERATING_RULE_CHANGED)로 바꿉니다(mark_stale_runs, BR-012 "기존 결과를 최신 분석으로 표시하지 않는다",
+        PR #146 리뷰 C안, GLOW-159). 새 버전은 버전 번호가 가장 커서 적용되는 순간 활성 버전이므로, 그때의 선택 대기 실행은
+        모두 이전 버전으로 분석한 것입니다.
+      - 적용 시작일이 미래인 버전은 저장만으로는 실행을 바꾸지 않습니다(그날 전까지 기존 분석은 유효). 그날이 지나면
+        팀장의 최종 선택 재확인 5(selection_policy)가 OPERATING_RULE_CHANGED 로 재분석을 요구합니다(serviceflow 5.2).
       - isCurrent 기준일은 최종 선택과 같은 판단 시각(DecisionClock)의 UTC 날짜입니다. 그래야 "현재"로 보이는 버전과
         최종 선택이 비교하는 활성 버전(effective_from ≤ 선택일 중 version_no 최대)이 같습니다.
       - 저장 뒤 엔진 저장소 캐시에서 그 고객사 항목을 버립니다(on_saved). 캐시 열쇠가 (고객사, 입력 순번)이라 수집 없이
@@ -103,6 +106,8 @@ class OperatingRuleService:
         admin_assignment_repo: AdminAssignmentRepository,
         clock: DecisionClock | None = None,
         on_saved: Callable[[uuid.UUID], object] | None = None,
+        mark_stale_runs: Callable[[uuid.UUID, datetime], Awaitable[object]]
+        | None = None,
     ):
         self.db = db
         self.repo = repo
@@ -110,6 +115,7 @@ class OperatingRuleService:
         self.admin_assignment_repo = admin_assignment_repo
         self.clock = clock or DecisionClock(None, virtual=False)
         self.on_saved = on_saved
+        self.mark_stale_runs = mark_stale_runs
 
     async def _enter_company_scope(
         self, actor: CurrentUser, company_id: uuid.UUID
@@ -189,6 +195,7 @@ class OperatingRuleService:
 
         # L1: 같은 고객사의 동시 저장이 같은 버전 번호를 받지 않게, 분석 입력 확정과 겹치지 않게 한다(serviceflow 5.2)
         await lock_company(self.db, company_id)
+        now = await self.clock.now(company_id)
         new = NewRuleSet(
             operating_rule_set_id=uuid.uuid7(),
             version_no=await self.repo.find_max_version_no(company_id) + 1,
@@ -197,10 +204,16 @@ class OperatingRuleService:
             safety_stock_days=safety_stock_days,
             sales_basis_days=sales_basis_days,
             allow_partial_fulfillment=allow_partial_fulfillment,
-            created_at=await self.clock.now(company_id),
+            created_at=now,
             lead_times=tuple(lead_times),
         )
         await self.repo.insert_rule_set(company_id, new)
+        # 이미 적용되는 버전이면 이전 버전으로 분석한 선택 대기 실행을 같은 트랜잭션에서 STALE 로 바꾼다 (BR-012)
+        if (
+            self.mark_stale_runs is not None
+            and effective_from <= now.astimezone(UTC).date()
+        ):
+            await self.mark_stale_runs(company_id, now)
         await self.db.commit()
         if self.on_saved is not None:
             self.on_saved(company_id)
