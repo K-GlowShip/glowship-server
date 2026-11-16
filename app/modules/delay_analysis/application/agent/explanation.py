@@ -29,8 +29,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
 )
 from app.modules.delay_analysis.infrastructure.engine.explanation_assets import (
     TEMPLATE_ID,
-    TEMPLATE_VERSION,
     ExplanationAssetError,
+    template_version_for,
 )
 from app.modules.delay_analysis.infrastructure.explanation_models.selection import (
     configured_explanation_model,
@@ -175,7 +175,8 @@ async def generate_explanation(
             model,
             generated_at,
             template_id=TEMPLATE_ID,
-            version=TEMPLATE_VERSION,
+            # mock 은 1.0.0(확정 정답 설명의 판), 실제 모델은 1.1.1(explanation.md 8.13절)
+            version=template_version_for(getattr(model, "provider", None)),
         )
     except assets.SystemConfigError as error:
         raise ExplanationAssetError(error.code, error.detail) from error

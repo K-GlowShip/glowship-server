@@ -69,6 +69,11 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
+      "path": "glowship_engine/explain/assets/model_configs/gpt-6-luna.json",
+      "sha256": "9aaa94863fe223898b03bfa411ef014f6453fa2a9859f6c830fbbb8dafd5133c",
+      "recorded_in": "glowship-plan 0bb002e tools/glowship_engine/explain/assets/model_configs/gpt-6-luna.json (실제 설명 모델 설정, 생각 강도 medium, 데이터 팀 승인 2026-11-16)"
+    },
+    {
       "path": "glowship_engine/explain/assets/model_configs/mock-template-v1.json",
       "sha256": "3d41b9b357a3c49a2ce610f0e5f2cd1bab44bb9403cb5643ece9f85d787db15a",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
@@ -79,14 +84,19 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
+      "path": "glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.1.md",
+      "sha256": "43fe42d66ed6c01ab7cd08d30753fbe0dc4e7f8c6bb30cfaf59f721b787f4f46",
+      "recorded_in": "glowship-plan 0bb002e tools/glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.1.md (설명 프롬프트 1.1.1, 실제 모델용, 데이터 팀 승인 2026-11-16)"
+    },
+    {
       "path": "glowship_engine/explain/assets/registry.json",
       "sha256": "2e8503b1a84aef22ed4762a8ffc0f04b818acd5d95ecb1e76171738ba8a2cbe7",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
       "path": "glowship_engine/explain/assets/registry_v2.json",
-      "sha256": "a2fcfb4ba2700b843920d4b9ff2be9d93d35568df9aafbe7c4e134ea0d367f5d",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+      "sha256": "a44108d956e73fa9701cdc8d03567833670a0c9f003ca3647a75efa76c666925",
+      "recorded_in": "glowship-plan 0bb002e tools/glowship_engine/explain/assets/registry_v2.json (1.1.0·1.1.1 프롬프트·gpt-6-luna 모델 설정 항목 추가 판)"
     },
     {
       "path": "glowship_engine/explain/assets/schemas/explanation.v1.schema.json",

@@ -3,6 +3,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,8 @@ API_KEY_FIELDS = {
 }
 # 키 대신 실행 환경의 자격 증명(인스턴스 역할 등)을 쓰는 제공자
 KEYLESS_PROVIDERS = frozenset({"bedrock"})
+# 호출에 더 넘길 수 있는 생성 값(엔진 모델 설정 settings 에서 옴, explanation.md 8.2절). 시험하지 않은 값은 제공자에 보내지 않는다.
+GENERATION_OPTION_KEYS = frozenset({"reasoning_effort"})
 
 # 호출 실패 사유 코드 (LlmCallError.reason)
 REASON_TIMEOUT = "TIMEOUT"
@@ -357,9 +360,11 @@ def complete_text(
     api_key: SecretStr | None,
     timeout_seconds: float,
     response_format: dict[str, Any] | type[BaseModel] | None = None,
+    generation_options: Mapping[str, Any] | None = None,
 ) -> LlmResult:
     """
     모델을 한 번 부르고 글을 돌려준다. model 은 "제공자/모델 ID", prompt 는 사용자 메시지 하나로 보낸다.
+    generation_options 는 GENERATION_OPTION_KEYS 에 있는 생성 값만 받는다(예: reasoning_effort). 다른 키는 부르지 않고 멈춘다.
     response_format 은 JSON 방식({"type": "json_object"})·JSON 스키마·Pydantic 모델 가운데 하나다.
     결과는 글(JSON 문자열일 수 있음)이며 Pydantic 모델로 읽는 것은 부르는 쪽이 한다(Model.model_validate_json).
     시간 제한은 HTTP 호출에 건다. 응답이 오지 않는 시간을 재는 것이라, 조금씩 흘려 보내는 응답은 더 걸릴 수 있다.
@@ -397,6 +402,13 @@ def complete_text(
         params["api_key"] = api_key.get_secret_value()
     if response_format is not None:
         params["response_format"] = response_format
+    if generation_options:
+        unknown = sorted(set(generation_options) - GENERATION_OPTION_KEYS)
+        if unknown:
+            raise LlmConfigError(
+                f"모르는 생성 값이라 부르지 않습니다: {', '.join(unknown)}"
+            )
+        params.update(generation_options)
 
     failure: LlmError | None = None
     response: Any = None
