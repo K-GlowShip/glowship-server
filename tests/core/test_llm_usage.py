@@ -268,6 +268,8 @@ def test_usage_log_is_one_json_line_on_stdout(capsys):
 
 
 def test_usage_logger_gets_one_handler_and_does_not_propagate(capsys):
+    # 앱 로거 수준은 서버 시작(LOG_LEVEL)이 정한다. 앞서 돈 시험이 앱을 띄웠으면 이미 INFO 일 수 있어, 값이 아니라 그대로인지만 본다.
+    app_level_before = logging.getLogger("app").level
     for _ in range(3):
         logger = U.usage_logger()
     U.log_model_usage("explain", U.summarize_usage(MOCK, [{}]))
@@ -278,8 +280,8 @@ def test_usage_logger_gets_one_handler_and_does_not_propagate(capsys):
     assert (
         len(capsys.readouterr().out.splitlines()) == 1
     )  # 같은 줄이 두 번 나오지 않는다
-    # 앱 전체 로깅 수준은 그대로다(앱 로거의 INFO 는 여전히 꺼져 있음)
-    assert not logging.getLogger("app.core.llm").isEnabledFor(logging.INFO)
+    # 사용량 로거는 앱 로깅 수준을 바꾸지 않는다
+    assert logging.getLogger("app").level == app_level_before
 
 
 def test_usage_line_survives_server_default_logging():
