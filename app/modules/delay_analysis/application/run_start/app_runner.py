@@ -14,6 +14,7 @@ from app.modules.delay_analysis.application.agent.runtime import (
 )
 from app.modules.delay_analysis.application.agent.tracing import (
     RunTracer,
+    TraceSink,
     auto_tracing_env_on,
     build_run_tracer,
 )
@@ -27,6 +28,9 @@ from app.modules.delay_analysis.application.run_start.runner import (
     TracerFactory,
 )
 from app.modules.delay_analysis.application.run_start.transitions import StartedRun
+from app.modules.delay_analysis.infrastructure.agent_trace_langsmith import (
+    LangSmithTraceSink,
+)
 from app.modules.delay_analysis.infrastructure.agent_trace_outbox import (
     OUTBOX_DIR_NAME,
     TraceOutboxSink,
@@ -48,6 +52,8 @@ from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
         (TraceOutboxSink)에 남긴다. 싱크는 실행기 하나에 하나를 모든 실행이 같이 쓴다(줄이 섞이지 않게 하는 잠금이 싱크마다라서).
         비어 있으면(기본) 추적하지 않는다(사용자 결정 11-11: 배포 컨테이너에 쓸 수 있는 폴더가 정해지기 전).
         파일 날짜는 서버 시각(UTC)이다. 가상 시각으로 쓰면 며칠치 실행이 한 파일에 몰린다.
+        AGENT_TRACE_LANGSMITH_ENABLED 를 켜면 내부 로그 싱크에 더해 LangSmith 전송기를 함께 둔다. 사건은 내부 로그에 바로 다
+        남고(서버가 죽어도), LangSmith 에는 실행 끝에 따로 보낸다(사용자 결정 11-13, agentflow 8.1 "전송 실패"보다 넓게 남김).
       - open_session: 시험이 앱의 조립(가상 시각·저장 시각·추적기)을 그대로 쓰며 세션만 바꿀 때 넘긴다(기본 워커 세션).
 """
 
@@ -64,15 +70,39 @@ def _virtual(settings: Settings) -> bool:
     return settings.virtual_clock_start is not None
 
 
-def build_tracer_factory(trace_dir: Path | None) -> TracerFactory | None:
-    """실행마다 내부 로그 추적기를 만드는 함수. 폴더가 없으면 None(추적 안 함)."""
-    if trace_dir is None:
+def build_trace_sinks(settings: Settings) -> list[TraceSink]:
+    """실행기 하나가 모든 실행에 같이 쓰는 싱크들. 둘 다 꺼져 있으면 빈 목록(추적 안 함).
+
+    순서: 내부 로그 먼저(사건마다 바로 파일), LangSmith 전송기 다음(실행 끝에 모아 데몬 스레드로 보냄).
+    """
+    sinks: list[TraceSink] = []
+    if settings.agent_trace_dir is not None:
+        sinks.append(TraceOutboxSink(settings.agent_trace_dir))
+    if settings.agent_trace_langsmith_enabled:
+        key = settings.langsmith_api_key
+        # 설정 검사(_langsmith_needs_key)가 먼저 막는다. 직접 만든 설정에서도 조용히 넘어가지 않게
+        if key is None:
+            raise ValueError(
+                "AGENT_TRACE_LANGSMITH_ENABLED 를 켜면 LANGSMITH_API_KEY 도 넣어야 합니다"
+            )
+        sinks.append(
+            LangSmithTraceSink.from_settings(
+                api_key=key.get_secret_value(),
+                project=settings.langsmith_project,
+                endpoint=settings.langsmith_endpoint,
+            )
+        )
+    return sinks
+
+
+def build_tracer_factory(sinks: list[TraceSink]) -> TracerFactory | None:
+    """실행마다 추적기를 만드는 함수. 싱크가 없으면 None(추적 안 함)."""
+    if not sinks:
         return None
-    sink = TraceOutboxSink(trace_dir)
 
     def tracer_factory(run: StartedRun) -> RunTracer:
         # 자동 추적 환경 변수가 켜져 있으면 TraceConfigError — 실행기가 경고만 남기고 추적 없이 분석한다
-        return build_run_tracer(run.analysis_run_id, run.company_id, [sink])
+        return build_run_tracer(run.analysis_run_id, run.company_id, sinks)
 
     return tracer_factory
 
@@ -103,7 +133,7 @@ def build_app_runner(
         max_concurrent_runs=settings.analysis_max_concurrent_runs,
         shutdown_grace_seconds=settings.analysis_shutdown_grace_seconds,
         save_time=save_time,
-        tracer_factory=build_tracer_factory(settings.agent_trace_dir),
+        tracer_factory=build_tracer_factory(build_trace_sinks(settings)),
         run_time_limit_seconds=settings.analysis_run_time_limit_seconds,
         save_time_limit_seconds=settings.analysis_save_time_limit_seconds,
     )
@@ -132,11 +162,17 @@ def check_auto_start_ready(
             f"ANALYSIS_AUTO_START_ENABLED 를 켰지만 LangChain 자동 추적 환경 변수가 켜져 있습니다: {tracing_env}."
             " 그래프 상태가 마스킹 없이 밖으로 나갈 수 있습니다. 끄고 시작하세요(docs/agent-flow/agent-tracing.md)"
         )
-    _check_trace_dir(settings.agent_trace_dir)
+    _check_trace_dir(settings.agent_trace_dir, settings.agent_trace_langsmith_enabled)
 
 
-def _check_trace_dir(trace_dir: Path | None) -> None:
+def _check_trace_dir(trace_dir: Path | None, langsmith: bool = False) -> None:
     """켰는데 추적 폴더가 비어 있으면 경고만, 넣었는데 쓸 수 없으면 멈춤(실행마다 쓰기 경고가 쌓이는 것보다 바로 알림)."""
+    if trace_dir is None and langsmith:
+        logger.warning(
+            "LangSmith 전송을 켰지만 AGENT_TRACE_DIR 가 비어 있어 내부 로그가 없습니다. 전송이 실패하거나"
+            " 서버가 보내기 전에 끝나면 그 실행 추적은 남지 않습니다(docs/agent-flow/agent-tracing.md 3절)"
+        )
+        return
     if trace_dir is None:
         logger.warning(
             "자동 시작을 켰지만 AGENT_TRACE_DIR 가 비어 있어 실행 추적 내부 로그를 남기지 않습니다"
