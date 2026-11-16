@@ -1010,3 +1010,90 @@ async def test_save_without_recalculation_passes_no_recalculator(monkeypatch):
     )
 
     assert captured == ["재계산기", None]
+
+
+# --- 엔진이 쓴 운영 기준을 실행 행에 맞춤 (GLOW-160) ----------------------------------------
+
+
+class _ExecDb:
+    def __init__(self):
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+
+
+class _Rules:
+    def __init__(self, rule_set_id, version_no=2):
+        self.operating_rule_set_id = None if rule_set_id is None else str(rule_set_id)
+        self.version_no = version_no
+
+
+def _saving(monkeypatch, *, saved=True):
+    """저장 함수들을 가짜로 바꾼다. 결과를 저장했는지만 정한다."""
+
+    async def no_versions(*_):
+        return None
+
+    async def save(db, **kwargs):
+        return ResultSaveOutcome(saved=saved, status="READY_FOR_REVIEW")
+
+    monkeypatch.setattr(outcome_save, "record_input_data_versions", no_versions)
+    monkeypatch.setattr(
+        outcome_save, "analysis_result_from_state", lambda *_, **__: None
+    )
+    monkeypatch.setattr(outcome_save, "save_analysis_result", save)
+    monkeypatch.setattr(outcome_save, "save_analysis_failure", save)
+    monkeypatch.setattr(outcome_save, "recalculator_or_none", lambda db: None)
+
+
+async def test_run_row_is_aligned_to_rule_the_engine_used(monkeypatch, caplog):
+    """엔진(T8)이 고른 운영 기준이 실행 행과 다르면 행을 엔진 쪽으로 고치고 표시 로그를 남긴다."""
+    _saving(monkeypatch)
+    db, run, engine_rule = _ExecDb(), _Run(uuid.uuid4()), uuid.uuid4()
+    state = {
+        "outcome": AnalysisOutcome.READY_FOR_REVIEW,
+        "operating_rules": _Rules(engine_rule),
+    }
+
+    with caplog.at_level(logging.WARNING, logger=outcome_save.__name__):
+        await outcome_save.save_graph_outcome(db, run, state)
+
+    (statement,) = db.statements
+    params = statement.compile().params
+    assert statement.table.name == "analysis_runs"
+    assert params["operating_rule_set_id"] == engine_rule
+    assert run.analysis_run_id in params.values() and COMPANY in params.values()
+    (record,) = [
+        r
+        for r in caplog.records
+        if outcome_save.OPERATING_RULE_ADJUSTED_LOG_MARK in r.getMessage()
+    ]
+    message = record.getMessage()
+    assert str(run.analysis_run_id) in message
+    assert str(run.operating_rule_set_id) in message and str(engine_rule) in message
+
+
+@pytest.mark.parametrize(
+    "case", ["same", "not_saved", "no_rule_id", "no_tool_output", "hold"]
+)
+async def test_run_row_is_left_when_there_is_nothing_to_align(monkeypatch, case):
+    _saving(monkeypatch, saved=case != "not_saved")
+    db, run = _ExecDb(), _Run(uuid.uuid4())
+    rules = {
+        "same": _Rules(run.operating_rule_set_id),
+        "not_saved": _Rules(uuid.uuid4()),  # 그 사이 STALE 등으로 결과를 쓰지 않음
+        "no_rule_id": _Rules(None),
+    }.get(case)
+    state = {"outcome": AnalysisOutcome.READY_FOR_REVIEW}
+    if rules is not None:
+        state["operating_rules"] = rules
+    if case == "hold":  # 보류는 T8 을 부르지 않아 상태에 운영 기준이 없다
+        state = {
+            "outcome": AnalysisOutcome.ON_HOLD,
+            "failure": type("S", (), {"failure_code": "REQUIRED_DATA_INVALID"})(),
+        }
+
+    await outcome_save.save_graph_outcome(db, run, state)
+
+    assert db.statements == []

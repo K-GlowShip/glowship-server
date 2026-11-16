@@ -1,3 +1,5 @@
+import logging
+import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -45,7 +47,18 @@ from app.modules.delay_analysis.infrastructure.engine.signature_recalculator imp
         0건·나머지 도메인 5건, 사용자 결정 11-10)이다. 그래프 밖에서 끝내는 FAILED 는 transitions.fail_unfinished 가 같은 규칙으로 기록한다.
         재분석·자동 실행 모두 만들 때 기록하지 않아 여기서 채워진다. 이미 있으면 다시 넣지 않는다.
       - 저장 함수들은 실행이 아직 진행 중일 때만 쓰고, 커밋은 부르는 쪽이 한다.
+      - 운영 기준 버전(GLOW-160): 실행 행의 operating_rule_set_id 는 실행을 만들 때 실행 날짜로 고르고(run_creation_service),
+        엔진은 분석을 시작할 때 기준일 D 로 따로 고른다(snapshot.build, T8 출력). 그 사이 새 버전이 저장되거나 D 가 실행 날짜보다
+        앞서면(재고·주문 자료가 늦음, 이슈 #51) 둘이 다를 수 있다. 결과를 저장했고 T8 출력이 있으면 같은 트랜잭션에서 행을
+        엔진이 실제로 쓴 버전으로 맞춘다. 그래야 분석 상세의 운영 기준 버전이 계산에 쓴 버전이고, 최종 선택 재확인
+        (selection_policy, 행의 버전과 활성 버전 비교)이 실제 계산 버전으로 판정한다.
+        보류(ON_HOLD)·지연 해소(NO_DELAY)는 T8 을 부르지 않아 행을 그대로 둔다.
 """
+
+logger = logging.getLogger(__name__)
+
+# 실행 행의 운영 기준을 엔진이 쓴 버전으로 고쳤을 때 남기는 로그 표시. 뒤에 실행 ID·이전 ID·엔진 ID·엔진 버전 번호
+OPERATING_RULE_ADJUSTED_LOG_MARK = "OPERATING_RULE_ADJUSTED_TO_ENGINE"
 
 
 class OutcomeMissingError(RuntimeError):
@@ -105,12 +118,40 @@ async def save_graph_outcome(
     recalculate=False: 저장 직후 재판정에 판정 서명 재계산을 쓰지 않는다(걸린 변경이 있으면 STALE, 놓치지 않는 쪽).
     실행기가 저장 시간 제한을 넘겨 다시 저장할 때만 넘긴다(이슈 #123).
     결과를 저장했고 상태에 데이터 경고가 있으면 같은 트랜잭션에서 analysis_runs.data_warnings 에 쓴다(이슈 #122).
+    결과를 저장했고 엔진이 쓴 운영 기준(T8 출력)이 실행 행과 다르면 같은 트랜잭션에서 행을 맞춘다(GLOW-160).
     지연 해소(NO_DELAY)는 엔진 입력을 만들지 않아 경고가 없고 열은 NULL 그대로다.
     """
     saved = await _save_by_outcome(db, run, state, now=now, recalculate=recalculate)
     if saved is not None and saved.saved and "data_warnings" in state:
         await _record_data_warnings(db, run, state["data_warnings"])
+    if saved is not None and saved.saved and "operating_rules" in state:
+        await _record_engine_operating_rule(db, run, state["operating_rules"])
     return saved
+
+
+async def _record_engine_operating_rule(
+    db: AsyncSession, run: StartedRun, rules: Any
+) -> None:
+    """엔진이 계산에 쓴 운영 기준(T8 출력)이 실행 행과 다르면 행을 엔진 쪽으로 맞춘다 (머리말 GLOW-160)."""
+    used = getattr(rules, "operating_rule_set_id", None)
+    if used is None or uuid.UUID(str(used)) == run.operating_rule_set_id:
+        return
+    logger.warning(
+        "%s analysis_run_id=%s recorded=%s engine=%s engine_version_no=%s",
+        OPERATING_RULE_ADJUSTED_LOG_MARK,
+        run.analysis_run_id,
+        run.operating_rule_set_id,
+        used,
+        getattr(rules, "version_no", None),
+    )
+    await db.execute(
+        update(AnalysisRun)
+        .where(
+            AnalysisRun.company_id == run.company_id,
+            AnalysisRun.analysis_run_id == run.analysis_run_id,
+        )
+        .values(operating_rule_set_id=uuid.UUID(str(used)))
+    )
 
 
 async def _record_data_warnings(
