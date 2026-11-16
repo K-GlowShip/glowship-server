@@ -279,7 +279,7 @@ dev 서버(리눅스)에서는 값이 다를 수 있습니다. 메모리가 작�
  "response_models": ["…"], "model_check": "MATCH",
  "calls": 3, "calls_failed": 1, "calls_without_usage": 1, "input_tokens": 4100, "cached_input_tokens": 1536, "output_tokens": 4576,
  "estimated_cost_usd": "0.022630", "cost_complete": false,
- "price": {"source": "openai-standard-2026-11-12", "input_per_1m_usd": "0.75", "cached_input_per_1m_usd": "0.075", "output_per_1m_usd": "4.50"}}
+ "price": {"source": "openai-standard-2026-11-16", "input_per_1m_usd": "0.75", "cached_input_per_1m_usd": "0.075", "output_per_1m_usd": "4.50"}}
 ```
 
 - **왜 전용 출력인가:**
@@ -293,13 +293,14 @@ dev 서버(리눅스)에서는 값이 다를 수 있습니다. 메모리가 작�
 
 | 모델 | 입력 | 캐시 입력 | 출력 |
 | --- | --- | --- | --- |
+| `openai/gpt-6-luna` | 0.10 | 0.01 | 0.50 |
 | `openai/gpt-5.4-mini` | 0.75 | 0.075 | 4.50 |
 | `openai/gpt-5.4-nano` | 0.20 | 0.02 | 1.25 |
 | `openai/gpt-5-mini` | 0.25 | 0.025 | 2.00 |
 | `openai/gpt-4.1-mini` | 0.40 | 0.10 | 1.60 |
 
-- **출처:** OpenAI 공식 가격 페이지(<https://developers.openai.com/api/docs/pricing>)의 Standard 등급 글 토큰 단가, 기준일 2026-11-12(`PRICE_AS_OF`). 같은 날 LiteLLM 1.106.6 내장 가격표와 대조해 네 모델 모두 같았습니다.
-- **고른 이유:** 모델이 아직 정해지지 않아(인프라 결정으로 제공자는 OpenAI API) 설명 같은 짧은 JSON 생성에 쓸 만한 소형 대화 모델만 넣었습니다. 모델을 정하면 그 모델이 표에 있는지 먼저 봅니다.
+- **출처:** OpenAI 공식 가격 페이지(<https://developers.openai.com/api/docs/pricing>)의 Standard 등급 글 토큰 단가, 기준일 2026-11-16(`PRICE_AS_OF`). 11-12 에 넣은 네 모델은 LiteLLM 1.106.6 내장 가격표와 대조해 같았고, 11-16 에 다섯 모델을 가격 페이지에서 다시 확인했습니다(네 모델 값 그대로). `gpt-6-luna` 는 그룹 표가 아니라 Standard short-context(입력 272K 토큰 이하) 표의 값입니다.
+- **고른 이유:** 모델이 정해지기 전(인프라 결정으로 제공자는 OpenAI API) 설명 같은 짧은 JSON 생성에 쓸 만한 소형 대화 모델을 넣었고, 11-16 실제 설명 모델로 정해진 `gpt-6-luna` 를 더했습니다(8.13절). 모델을 바꾸면 그 모델이 표에 있는지 먼저 봅니다(없으면 사용량은 남지만 예상 비용이 비고 `price.source` 가 `unknown`).
 - **실행 중에 밖에서 받아오지 않습니다.** 모델 호출 라이브러리의 가격 데이터도 쓰지 않습니다. LiteLLM은 기본으로 import할 때 판이 고정되지 않은 원격 가격표를 받아 오므로(8.4절) 그 표에 기대지 않고, 단가가 바뀌면 PR 변경 내용에 숫자가 보이게 했습니다. 표는 실행 중에 바꿀 수 없습니다(읽기 전용).
 - **갱신 방법:** 표와 `PRICE_AS_OF`를 함께 고쳐 PR로 리뷰받습니다. 기록마다 그때 쓴 단가·출처가 들어 있어 옛 기록은 그대로 읽힙니다.
 
