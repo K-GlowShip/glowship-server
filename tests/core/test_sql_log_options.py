@@ -15,6 +15,7 @@ from app.core.config import Settings, get_settings
 """
 
 REQUIRED = {
+    "app_env": "local",
     "postgres_host": "db",
     "postgres_port": 5432,
     "postgres_user": "app_login",
@@ -40,7 +41,7 @@ def test_db_echo_can_be_turned_on(monkeypatch):
 
 
 def test_db_echo_rejects_other_values(monkeypatch):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="db_echo"):
         _settings(monkeypatch, db_echo="verbose")
 
 
