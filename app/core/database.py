@@ -28,6 +28,15 @@ def _pin_role(kwargs: dict[str, Any], role: str) -> dict[str, Any]:
     }
 
 
+def sql_log_options(db_echo: bool) -> dict[str, Any]:
+    """
+    SQL 로그 옵션 (이슈 #141). 앱 엔진·워커 엔진이 함께 쓴다.
+      - echo: 설정 DB_ECHO(기본 false). 켜면 SQLAlchemy 가 실행하는 SQL 문을 로그에 낸다.
+      - hide_parameters: 늘 True. 켜도 바인드 값(이메일·비밀번호 해시·사용자가 쓴 글)은 로그와 DB 오류 문장에 넣지 않는다.
+    """
+    return {"echo": db_echo, "hide_parameters": True}
+
+
 def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
     """
     요청 처리용 앱 엔진 (이슈 #41). role(설정 POSTGRES_ROLE)이 있으면 연결할 때 그 역할로 바꾼다.
@@ -45,7 +54,7 @@ def create_app_engine(url: str, role: str | None, **kwargs: Any) -> AsyncEngine:
 engine = create_app_engine(
     get_settings().database_url,
     get_settings().postgres_role,
-    echo=True,  # SQLAlchemy가 실행하는 모든 SQL 쿼리를 콘솔(로그)에 출력
+    **sql_log_options(get_settings().db_echo),
     future=True,  # SQLAlchemy 2.0 스타일의 API(새로운 방식)를 강제로 사용
 )
 
@@ -76,7 +85,11 @@ def create_worker_engine(url: str, **kwargs: Any) -> AsyncEngine:
 
 # 수집 적재 전용 연결 (워커 역할, GLOW-13). 워커 계정을 따로 두지 않으면 앱 연결을 그대로 쓴다.
 worker_engine = (
-    create_worker_engine(get_settings().worker_database_url, echo=True, future=True)
+    create_worker_engine(
+        get_settings().worker_database_url,
+        **sql_log_options(get_settings().db_echo),
+        future=True,
+    )
     if get_settings().uses_separate_worker_account
     else engine
 )

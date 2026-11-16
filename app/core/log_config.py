@@ -12,7 +12,7 @@ import sys
         하나만 붙는다. uvicorn 로거와 모델 사용량 로거는 위로 올려 보내지 않아 같은 줄이 두 번 나오지 않는다.
       - 이 출력은 앱 로그만 그 수준대로 내보내고, 그 밖의 로그는 WARNING 이상이면서 자기 출력이 없는 것만 내보낸다
         (지금까지 파이썬 기본 출력이 하던 것과 같음: 기본 출력은 어디에도 출력이 없는 로그의 WARNING 이상만 냈다).
-        SQLAlchemy 엔진(app/core/database.py echo=True)은 자기 출력을 따로 붙여 SQL 을 INFO 로, 경고를 WARNING 으로 낸다.
+        SQLAlchemy 엔진은 SQL 로그를 켜면(DB_ECHO=true, app/core/database.py) 자기 출력을 따로 붙여 SQL 을 INFO 로, 경고를 WARNING 으로 낸다.
         거르지 않으면 같은 SQL·같은 경고가 두 번 찍힌다(11-13 uvicorn·실험으로 확인).
       - 앱 INFO 로그에는 실행 ID·상태·순번·초·모델 이름만 넣는다(NFR-006, 개인정보 없음).
 """
