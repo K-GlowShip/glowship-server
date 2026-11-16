@@ -18,6 +18,12 @@ from app.modules.company.infrastructure.repository.company_repository import (
     CompanyRepository,
 )
 from app.modules.decision.application.decision_clock import DecisionClock
+from app.modules.delay_analysis.application.stale.stale_service import (
+    StaleJudgmentService,
+)
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
+)
 from app.modules.operating_rule.application.operating_rule_service import (
     OperatingRuleService,
 )
@@ -33,6 +39,7 @@ from tests.core.test_worker_database_rls_sql import _admin_engine, _login_url
       - 로컬 개발 DB 는 superuser 라 RLS 를 우회한다. 운영과 같게 앱 역할에 속한 임시 로그인 계정으로 붙어,
         배정된 ADMIN 은 조회·저장이 되고(RLS 정책 app_context_allowed 의 ADMIN 분기), 배정되지 않은 ADMIN 은
         404 가 아니라 403 인지(배정을 고객사보다 먼저 확인) 본다.
+      - 이미 적용되는 버전을 저장할 때 배정된 ADMIN 컨텍스트로 선택 대기 실행을 STALE 로 바꿀 수 있는지도 본다(GLOW-159).
       - 저장은 바깥 트랜잭션을 롤백하므로 DB 는 그대로다(서비스의 commit 은 SAVEPOINT 만 닫는다).
       - superuser 가 아니거나 DB 에 붙을 수 없으면 건너뛴다(app_login 픽스처, SKIP_DB_ROLE_TESTS=1).
 """
@@ -104,6 +111,9 @@ def _service(db: AsyncSession) -> OperatingRuleService:
         company_repo=CompanyRepository(db),
         admin_assignment_repo=AdminAssignmentRepository(db),
         clock=DecisionClock.fixed(NOW),
+        mark_stale_runs=StaleJudgmentService(
+            db, StaleChangeRepository(db)
+        ).mark_review_runs_on_rule_change,
     )
 
 
@@ -141,6 +151,70 @@ async def test_assigned_admin_lists_and_creates_under_app_role(app_role_session)
     assert newest.row.author_user_id == admin_id
     assert newest.row.author_role_code == "ADMIN"
     assert len(after) == len(before) + 1
+
+
+async def test_effective_version_marks_review_run_stale_under_app_role(
+    app_role_session,
+):
+    """앱 역할의 배정된 ADMIN 컨텍스트에서 analysis_runs 를 읽고 고칠 수 있어야 STALE 처리가 된다 (GLOW-159)"""
+    db = app_role_session
+    admin_id, company_id, _, warehouse_id = await _assigned_admin()
+    await db.execute(
+        text(
+            "SELECT set_config('app.user_id', :u, true), set_config('app.company_id', :c, true)"
+        ),
+        {"u": str(admin_id), "c": str(company_id)},
+    )
+    # 선택 대기였다가 STALE 이 된 현재 실행 하나를 선택 대기로 되돌리고 지연을 연다(롤백됨)
+    run_id = await db.scalar(
+        text(
+            """
+            UPDATE analysis_runs r
+               SET status = 'READY_FOR_REVIEW', stale_primary_reason = NULL,
+                   stale_reason_codes = NULL, stale_detected_seq = NULL, stale_detected_at = NULL
+             WHERE r.analysis_run_id = (
+                    SELECT a.analysis_run_id FROM analysis_runs a
+                     WHERE a.company_id = :c AND a.is_latest AND a.status = 'STALE'
+                       AND a.completed_status = 'READY_FOR_REVIEW'
+                     ORDER BY a.analysis_run_id LIMIT 1)
+            RETURNING r.analysis_run_id
+            """
+        ),
+        {"c": company_id},
+    )
+    if run_id is None:
+        pytest.skip("선택 대기로 되돌릴 실행이 없는 DB")
+    await db.execute(
+        text(
+            "UPDATE delay_events SET closed_at = NULL, close_reason = NULL"
+            " WHERE delay_event_id = (SELECT delay_event_id FROM analysis_runs"
+            "                          WHERE analysis_run_id = :r)"
+        ),
+        {"r": run_id},
+    )
+
+    await _service(db).create_rule_set(
+        actor=_actor(admin_id),
+        company_id=company_id,
+        effective_from=NOW.date(),
+        safety_stock_days=21,
+        sales_basis_days=28,
+        allow_partial_fulfillment=None,
+        lead_times=[
+            NewLeadTime("OUTBOUND_HANDLING", warehouse_id, None, 1, "CALENDAR_DAY"),
+        ],
+    )
+
+    row = (
+        await db.execute(
+            text(
+                "SELECT status, stale_primary_reason FROM analysis_runs"
+                " WHERE analysis_run_id = :r"
+            ),
+            {"r": run_id},
+        )
+    ).one()
+    assert (row.status, row.stale_primary_reason) == ("STALE", "OPERATING_RULE_CHANGED")
 
 
 async def test_unassigned_admin_is_403_not_404_under_app_role(app_role_session):

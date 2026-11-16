@@ -29,6 +29,7 @@ from app.modules.operating_rule.infrastructure.repository.operating_rule_reposit
 """
     운영 기준 서비스 단위 테스트 (API 4·5, GLOW-153). 가짜 리포지토리로 DB 없이 실행
       - 권한 확인 순서(RLS 컨텍스트 → 배정 → 고객사), 리드타임 규칙, 버전 번호, 현재 버전 판정, 저장 뒤 커밋·캐시 버리기 순서
+      - 이미 적용되는 버전을 저장할 때만 선택 대기 실행 STALE 처리를 부르는지 (GLOW-159)
 """
 
 ADMIN = CurrentUser(user_id=uuid.uuid7(), role_code="ADMIN", company_id=None)
@@ -150,15 +151,25 @@ def _service(
         admin_assignment_repo=FakeAdminAssignmentRepository(log, assignment),
         clock=DecisionClock.fixed(NOW),
         on_saved=lambda company_id: log.events.append(("evict", company_id)),
+        mark_stale_runs=_fake_mark_stale_runs(log),
     )
     return service, repo
 
 
-async def _create(service: OperatingRuleService, lead_times=None):
+def _fake_mark_stale_runs(log: Log):
+    async def mark(company_id, detected_at):
+        log.events.append(("stale", company_id, detected_at))
+
+    return mark
+
+
+async def _create(
+    service: OperatingRuleService, lead_times=None, effective_from=date(2026, 7, 3)
+):
     return await service.create_rule_set(
         actor=ADMIN,
         company_id=COMPANY_ID,
-        effective_from=date(2026, 7, 3),
+        effective_from=effective_from,
         safety_stock_days=10,
         sales_basis_days=28,
         allow_partial_fulfillment=None,
@@ -283,6 +294,31 @@ async def test_create_makes_next_version_inside_company_lock(log):
     ]
 
 
+@pytest.mark.parametrize("effective_from", [date(2026, 7, 2), date(2025, 1, 1)])
+async def test_version_already_effective_marks_review_runs_stale_before_commit(
+    log, effective_from
+):
+    """적용 시작일이 판단 시각 날짜(NOW = 7/2) 이하면 저장과 같은 트랜잭션에서 STALE 처리를 부른다 (BR-012)"""
+    service, _ = _service(log)
+
+    await _create(service, effective_from=effective_from)
+
+    assert log.events[-4:] == [
+        "insert",
+        ("stale", COMPANY_ID, NOW),
+        "commit",
+        ("evict", COMPANY_ID),
+    ]
+
+
+async def test_future_version_does_not_mark_runs_stale(log):
+    service, _ = _service(log)
+
+    await _create(service, effective_from=date(2026, 7, 3))
+
+    assert not [e for e in log.events if e[0] == "stale"]
+
+
 async def test_first_version_is_1(log):
     service, _ = _service(log, max_version_no=0)
 
@@ -321,6 +357,7 @@ async def test_invalid_lead_time_is_rejected_without_saving(log, lead_times):
 
     assert repo.inserted == []
     assert "commit" not in log.events
+    assert not [e for e in log.events if e[0] == "stale"]
 
 
 def test_same_type_and_warehouse_with_different_regions_is_valid():
