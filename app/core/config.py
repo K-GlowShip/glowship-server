@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 from app.core.security.jwt import JwtConfig
 
@@ -31,8 +32,11 @@ class Settings(BaseSettings):
     postgres_host: str
     postgres_port: int
     postgres_user: str
-    postgres_password: str
+    postgres_password: str = ""
     postgres_db: str
+    # When configured, new app/migration connections read AWSCURRENT using
+    # the EC2 instance role. POSTGRES_PASSWORD is ignored in this mode.
+    postgres_secret_arn: str | None = None
 
     # 수집 적재 전용 워커 DB 계정 (GLOW-13, 수집 서비스 ingest_service "실행 전제")
     # 수집은 워커 역할(glowship_v4_worker) 권한으로 돌아야 한다. 운영은 그 역할에 속한 로그인 계정을 넣고,
@@ -225,6 +229,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _worker_credentials_come_together(self) -> Settings:
+        if not self.postgres_secret_arn and not self.postgres_password:
+            raise ValueError("POSTGRES_PASSWORD or POSTGRES_SECRET_ARN is required")
         # 계정만 있고 비밀번호가 없는(또는 그 반대) 설정은 운영에서 조용히 앱 계정으로 붙지 않도록 기동 시점에 실패시킨다.
         if (self.worker_postgres_user is None) != (
             self.worker_postgres_password is None
@@ -241,14 +247,19 @@ class Settings(BaseSettings):
         return self
 
     def _postgres_url(self, user: str, password: str) -> str:
-        return (
-            f"postgresql+asyncpg://{user}:{password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return URL.create(
+            "postgresql+asyncpg",
+            username=user,
+            password=password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        ).render_as_string(hide_password=False)
 
     @property
     def database_url(self) -> str:
-        return self._postgres_url(self.postgres_user, self.postgres_password)
+        password = "" if self.postgres_secret_arn else self.postgres_password
+        return self._postgres_url(self.postgres_user, password)
 
     @property
     def uses_separate_worker_account(self) -> bool:
