@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -20,6 +21,14 @@ from app.core.config import get_settings
       - 테스트마다 이벤트 루프가 달라서 앱 전역 엔진 대신 NullPool 엔진을 새로 만든다.
     db_write_session: 쓰기 SQL 을 확인하는 세션. 쓰기는 되지만 테스트가 끝나면 롤백하므로 DB 는 그대로다.
 """
+
+
+def pytest_configure(config):
+    # 개발자 .env 에서 LangSmith 전송(AGENT_TRACE_LANGSMITH_ENABLED)을 켜 두어도 시험은 외부로 보내지 않는다
+    # (환경 변수가 .env 보다 앞섬, docs/agent-flow/agent-tracing.md 3절). 켜 보는 시험은 Settings 를 직접 만든다.
+    os.environ["AGENT_TRACE_LANGSMITH_ENABLED"] = "false"
+    get_settings.cache_clear()
+
 
 # head(0006) 상태 표지: 0003 이 추가한 analysis_runs.stale_primary_reason, 0004 가 보장하는 users.created_at,
 # 0005 가 추가한 analysis_runs.trigger_reason·delay_events.episode_no (지연 목록 SQL 이 읽음),
@@ -74,3 +83,13 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 async def db_write_session() -> AsyncGenerator[AsyncSession]:
     async for session in _rollback_session(read_only=False):
         yield session
+
+
+@pytest.fixture(autouse=True)
+def no_blocked_models():
+    """다른 모델이 답해 막아 둔 모델(app/core/llm.py)이 다음 시험으로 넘어가지 않게 한다."""
+    from app.core import llm
+
+    llm.reset_blocked_models()
+    yield
+    llm.reset_blocked_models()

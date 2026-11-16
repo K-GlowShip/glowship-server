@@ -1,7 +1,8 @@
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import ARRAY, UUID, Integer, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
       - 경로(route) 출발지는 고객사의 한국 출고 창고(KR_ORIGIN) 지역이다. 지연 목록 SQL 과 같은 서브쿼리를 쓴다.
       - 상세 줄은 대표 상품·품목 수 계산(D13)에 쓴다. 선적당 1~30줄이라 페이지의 선적 ID 배열로 한 번에 읽는다.
       - 검증 오류로 거부된 선적은 shipments 에 없다. 오류는 GET /validation-issues 몫이라 여기서 다루지 않는다.
+      - 선적 상세(GET /shipments/{shipmentId}, 명세 4.3)는 목록과 같은 열·조인(_SHIPMENT_COLUMNS·_SHIPMENT_JOINS)에
+        항구 도착일·계획 근거·데이터 기준 시각을 더한 한 행 + 상세 줄 + 일정 이력(관측 시각 순)이다.
+        목록과 같은 조각을 써서 두 API 의 같은 칸이 어긋나지 않는다.
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로
         조건을 명시해 같은 결과가 나오게 한다 (ERD 설명 4.6).
 """
@@ -24,9 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _LIKE_ESCAPE = "\\"
 _UUID = UUID(as_uuid=True)
 
-_FILTERED = """
-    WITH filtered AS (
-        SELECT s.shipment_id, s.shipment_code, s.transport_mode,
+# 목록 행·상세 행이 같이 쓰는 열과 조인. 목록과 상세의 같은 칸이 같은 값이 되도록 한 곳에 둔다.
+_SHIPMENT_COLUMNS = """
+               s.shipment_id, s.shipment_code, s.transport_mode,
                s.current_stage AS stage,
                s.planned_kr_release_date, s.planned_3pl_inbound_date,
                s.current_expected_3pl_inbound_date AS expected_3pl_inbound_date,
@@ -37,11 +41,20 @@ _FILTERED = """
                   FROM warehouses o
                  WHERE o.company_id = s.company_id AND o.warehouse_type = 'KR_ORIGIN'
                  ORDER BY o.warehouse_code
-                 LIMIT 1) AS origin_region_code
+                 LIMIT 1) AS origin_region_code"""
+_SHIPMENT_JOINS = """
           FROM shipments s
           JOIN warehouses w ON w.company_id = s.company_id AND w.warehouse_id = s.warehouse_id
           JOIN market_leadtime_references m
-            ON m.market_leadtime_reference_id = s.market_leadtime_reference_id
+            ON m.market_leadtime_reference_id = s.market_leadtime_reference_id"""
+
+_FILTERED = (
+    """
+    WITH filtered AS (
+        SELECT"""
+    + _SHIPMENT_COLUMNS
+    + _SHIPMENT_JOINS
+    + """
          WHERE s.company_id = :company_id
            AND (CAST(:stage AS text) IS NULL OR s.current_stage = :stage)
            AND (CAST(:transport_mode AS text) IS NULL OR s.transport_mode = :transport_mode)
@@ -49,6 +62,7 @@ _FILTERED = """
            AND (CAST(:pattern AS text) IS NULL OR s.shipment_code ILIKE :pattern ESCAPE '\\')
     )
 """
+)
 
 _FILTER_PARAMS = (
     bindparam("company_id", type_=_UUID),
@@ -96,6 +110,41 @@ _LINES = text(
 )
 
 
+# 선적 상세 한 행. 데이터 기준 시각은 선적 행을 마지막으로 바꾼 수집(data_sync_run_id)의 finished_at 이다.
+# 분석 상세 dataBasisAt·수집 현황 lastSyncedAt 과 같은 열(수집 종료 시각)이다 (응답 본문 규칙 "데이터 기준 시각").
+_DETAIL = text(
+    "SELECT"
+    + _SHIPMENT_COLUMNS
+    + """,
+               s.current_expected_port_arrival_date AS expected_port_arrival_date,
+               m.month, m.total_leadtime_p50, m.total_leadtime_p90, m.confidence_leadtime,
+               r.finished_at AS data_basis_at"""
+    + _SHIPMENT_JOINS
+    + """
+          LEFT JOIN data_sync_runs r
+            ON r.company_id = s.company_id AND r.data_sync_run_id = s.data_sync_run_id
+         WHERE s.company_id = :company_id AND s.shipment_id = :shipment_id
+    """
+).bindparams(
+    bindparam("company_id", type_=_UUID),
+    bindparam("shipment_id", type_=_UUID),
+)
+
+# 일정 이력: 관측 시각 오래된 순, 같으면 스냅샷 ID (응답 본문 규칙 "정렬 값이 같으면 ID로 한 번 더")
+_HISTORY = text(
+    """
+    SELECT shipment_schedule_snapshot_id, observed_at, stage,
+           expected_port_arrival_date, expected_3pl_inbound_date
+      FROM shipment_schedule_snapshots
+     WHERE company_id = :company_id AND shipment_id = :shipment_id
+     ORDER BY observed_at, shipment_schedule_snapshot_id
+    """
+).bindparams(
+    bindparam("company_id", type_=_UUID),
+    bindparam("shipment_id", type_=_UUID),
+)
+
+
 @dataclass(frozen=True)
 class ShipmentFilter:
     """목록 필터. 모두 선택 사항이고 None 이면 그 조건은 통과한다."""
@@ -135,6 +184,29 @@ class ShipmentLineRow:
     shipped_quantity: int
     sku_code: str
     product_name: str
+
+
+@dataclass(frozen=True)
+class ShipmentDetailRow(ShipmentListRow):
+    """선적 상세 한 행: 목록 행 + 현재 예상 항구 도착일·계획 근거(시장 리드타임 기준)·데이터 기준 시각"""
+
+    expected_port_arrival_date: date | None
+    month: str
+    total_leadtime_p50: Decimal
+    total_leadtime_p90: Decimal
+    confidence_leadtime: str
+    data_basis_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ShipmentScheduleRow:
+    """일정 관측 하나 (shipment_schedule_snapshots)"""
+
+    shipment_schedule_snapshot_id: uuid.UUID
+    observed_at: datetime
+    stage: str
+    expected_port_arrival_date: date | None
+    expected_3pl_inbound_date: date
 
 
 @dataclass(frozen=True)
@@ -199,3 +271,22 @@ class ShipmentRepository:
             _LINES, {"company_id": company_id, "shipment_ids": list(shipment_ids)}
         )
         return [ShipmentLineRow(**row._mapping) for row in result]
+
+    async def find_detail(
+        self, company_id: uuid.UUID, shipment_id: uuid.UUID
+    ) -> ShipmentDetailRow | None:
+        """고객사의 선적 한 건(목록 칸 + 상세 칸). 없거나 다른 고객사 선적이면 None."""
+        result = await self.db.execute(
+            _DETAIL, {"company_id": company_id, "shipment_id": shipment_id}
+        )
+        row = result.first()
+        return ShipmentDetailRow(**row._mapping) if row is not None else None
+
+    async def find_history(
+        self, company_id: uuid.UUID, shipment_id: uuid.UUID
+    ) -> list[ShipmentScheduleRow]:
+        """선적의 일정 관측 전부 (관측 시각 오래된 순, 같으면 스냅샷 ID 순)."""
+        result = await self.db.execute(
+            _HISTORY, {"company_id": company_id, "shipment_id": shipment_id}
+        )
+        return [ShipmentScheduleRow(**row._mapping) for row in result]

@@ -9,6 +9,7 @@ dependencies = [
     "boto3>=1.44.0",
     "fastapi[standard]>=0.162.0",
     "langgraph>=1.2.18",
+    "langsmith>=0.14.14",
     "litellm==1.106.6",
     "pydantic-settings>=2.16.1",
     "pyjwt>=2.15.1",

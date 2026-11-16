@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -5,12 +6,16 @@ from typing import Any
 from pydantic import SecretStr
 
 from app.core.llm import (
+    MODEL_CHECK_MISMATCH,
+    REASON_MODEL_MISMATCH,
     LlmCallError,
     LlmError,
+    LlmModelMismatchError,
     LlmResult,
     LlmTimeoutError,
     LlmUsage,
     complete_text,
+    safe_model_name,
 )
 from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
     load_engine_module,
@@ -31,7 +36,14 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
       - 시도별 사용량(attempt_usage): 엔진 시도 기록과 같은 순서. 토큰 수·걸린 시간, 실패면 사유 코드.
         거부·잘림·빈 응답은 실패지만 제공자가 청구하므로 토큰 수도 남긴다. 시간 예산이 떨어져 부르지 않은 시도는
         requested=False 로 표시한다(제공자에게 요청이 안 나감 → 호출 수·비용에 넣지 않음, app/core/llm_usage.py).
+      - 모델 대조(설정한 모델만 부른다, docs/agent-flow/explanation.md 8.12절):
+          · 부르기 전: 지금 부르려는 "제공자/모델 ID" 가 서버 설정(configured_model)과 다르면 부르지 않는다.
+          · 부른 뒤: 답한 모델이 요청한 모델이 아니면 공용 층이 LlmModelMismatchError 를 올린다(app/core/llm.py).
+        둘 다 엔진 오류로 바꾸지 않고 그대로 올린다. 엔진은 시도로 세지 않아 남은 시도를 하지 않고, 실행은 예상하지 못한
+        오류로 끝난다. 시도별 사용량에는 답한 모델(response_model)과 대조 결과(model_check)를 남긴다.
 """
+
+logger = logging.getLogger(__name__)
 
 # 엔진 검증기가 JSON 원문을 읽으므로 제공자에게 JSON 방식으로 답하게 한다. 스키마 강제는 하지 않는다
 # (explanation.v1 의 길이·패턴 제약을 제공자들이 그대로 받지 못함). 검증은 엔진이 한다.
@@ -49,11 +61,14 @@ class ExplanationModelAdapter:
         api_key: SecretStr | None,
         call_timeout_seconds: float,
         total_budget_seconds: float,
+        configured_model: str | None = None,
         complete: Callable[..., LlmResult] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.provider = provider
         self.model_id = model_id
+        # 서버 설정의 "제공자/모델 ID". 넘기면 부를 때마다 지금 부르려는 모델과 대조한다(앱 조립이 넘긴다)
+        self._configured_model = configured_model
         self.attempt_usage: list[dict[str, Any]] = []
         self._api_key = api_key
         self._call_timeout_seconds = call_timeout_seconds
@@ -65,6 +80,27 @@ class ExplanationModelAdapter:
 
     def complete(self, prompt: str, request: Any) -> str:
         engine_errors = load_engine_module("explain.adapter")
+        model = f"{self.provider}/{self.model_id}"
+        if self._configured_model is not None and model != self._configured_model:
+            self.attempt_usage.append(
+                {
+                    "error": REASON_MODEL_MISMATCH,
+                    "elapsed_ms": 0,
+                    "requested": False,
+                    "response_model": safe_model_name(model),
+                    "model_check": MODEL_CHECK_MISMATCH,
+                }
+            )
+            logger.critical(
+                "설정한 설명 모델과 다른 모델을 부르려 해 멈춥니다: 설정 %s, 부르려던 모델 %s",
+                safe_model_name(self._configured_model),
+                safe_model_name(model),
+            )
+            raise LlmModelMismatchError(
+                model=self._configured_model,
+                response_model=safe_model_name(model),
+                called=False,
+            )
         now = self._clock()
         if self._deadline is None:
             self._deadline = now + self._total_budget_seconds
@@ -76,7 +112,7 @@ class ExplanationModelAdapter:
             raise engine_errors.ModelTimeout(BUDGET_EXHAUSTED)
         try:
             result = self._complete(
-                model=f"{self.provider}/{self.model_id}",
+                model=model,
                 prompt=prompt,
                 api_key=self._api_key,
                 timeout_seconds=min(self._call_timeout_seconds, remaining),
@@ -88,7 +124,21 @@ class ExplanationModelAdapter:
         except LlmCallError as error:
             self.attempt_usage.append(self._failed(error, now))
             raise engine_errors.ModelCallError(error.reason) from error
-        record = {**_tokens(result.usage), "elapsed_ms": result.elapsed_ms}
+        except LlmModelMismatchError as error:
+            # 엔진 오류로 바꾸지 않는다(바꾸면 엔진이 실패한 시도로 세고 다시 부른다). 누가 답했는지는 사용량에 남긴다
+            record = self._failed(error, now)
+            record["model_check"] = MODEL_CHECK_MISMATCH
+            if error.response_model:
+                record["response_model"] = error.response_model
+            if not error.called:
+                record["requested"] = False
+            self.attempt_usage.append(record)
+            raise
+        record = {
+            **_tokens(result.usage),
+            "elapsed_ms": result.elapsed_ms,
+            "model_check": result.model_check,
+        }
         if result.response_model:
             record["response_model"] = result.response_model
         self.attempt_usage.append(record)

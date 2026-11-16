@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +28,8 @@ from app.core import llm
       5. 사용량: 캐시에서 읽은 입력 토큰을 읽고, 거부·잘림·빈 응답의 토큰 수도 오류에 숫자로만 싣는다.
          제공자가 준 수·모델 이름은 그대로 믿지 않는다(범위를 벗어난 수 → 사용량 없음, 이상한 이름 → INVALID)
       6. LiteLLM 은 로더(load_llm_library) 안에서만 import 한다(다른 곳에서 import 하면 원격 가격표 조회가 켜진다)
+      7. 답한 모델 대조: 요청한 모델(또는 그 날짜판)이 아닌 모델이 답하면 그 응답을 쓰지 않고 멈추며,
+         그 모델은 다시 불러도 제공자에게 나가지 않는다. 모르는 제공자(mock 포함)는 부르지 않는다
 """
 
 API_KEY = "sk-test-KEEP-THIS-SECRET-0123456789"
@@ -85,6 +89,8 @@ def _gemini_body(text=ANSWER, finish="STOP"):
 
 
 BODY = {OPENAI: _openai_body, ANTHROPIC: _anthropic_body, GEMINI: _gemini_body}
+# 제공자가 모델 이름을 알려 주지 않았을 때의 (답한 이름, 대조 결과)
+NO_NAME_RESULT = (None, "UNVERIFIED")
 # 제공자마다 "잘림"·"거부"를 알리는 값
 TRUNCATED = {OPENAI: "length", ANTHROPIC: "max_tokens", GEMINI: "MAX_TOKENS"}
 REFUSED = {OPENAI: "content_filter", ANTHROPIC: "refusal", GEMINI: "SAFETY"}
@@ -238,6 +244,7 @@ def test_reads_text_usage_and_model_from_each_provider(
     assert result.text == ANSWER
     assert result.model == model
     assert result.response_model == response_model
+    assert result.model_check == llm.MODEL_CHECK_MATCH  # 날짜판 이름은 같은 모델
     assert (result.usage.input_tokens, result.usage.output_tokens) == tokens
     assert result.elapsed_ms >= 0
     assert len(provider.requests) == 1
@@ -505,6 +512,30 @@ def test_library_uses_bundled_price_table_and_stays_quiet():
     assert logging.getLogger("LiteLLM").getEffectiveLevel() >= logging.WARNING
 
 
+def test_loading_the_library_does_not_read_dotenv_into_the_environment():
+    """LiteLLM 이 import 때 .env 를 환경 변수로 올리지 않는다(새 프로세스에서: load_dotenv 가 한 번도 안 불림)."""
+    code = (
+        "import dotenv, os\n"
+        "calls = []\n"
+        "dotenv.load_dotenv = lambda *a, **k: calls.append(1)\n"
+        "os.environ.pop('LITELLM_MODE', None)\n"
+        "from app.core import llm\n"
+        "llm.load_llm_library()\n"
+        "print('DOTENV_CALLS', len(calls), os.environ['LITELLM_MODE'])\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=APP_DIR.parent,
+        timeout=120,
+    )
+
+    assert done.returncode == 0, done.stderr[-500:]
+    assert "DOTENV_CALLS 0 PRODUCTION" in done.stdout
+
+
 def test_library_is_loaded_once():
     assert llm.load_llm_library() is llm.load_llm_library()
 
@@ -629,12 +660,18 @@ FORGED_LINE = "gpt-x" + chr(10) + "2026-11-12 00:00:00 INFO forged line"
     "name",
     [FORGED_LINE, "gpt x", "모델", "a" * 81, "gpt-x" + chr(13), "gpt-x" + chr(9)],
 )
-def test_strange_response_model_name_is_replaced(provider, name):
+def test_strange_response_model_name_is_replaced(provider, name, caplog):
+    """이상한 이름은 요청한 모델이 아니므로 멈춘다. 기록에는 그 이름 대신 INVALID 만 남는다."""
     body = _openai_body()
     body["model"] = name
     provider.answer(body)
 
-    assert _call(OPENAI).response_model == llm.INVALID_MODEL_NAME
+    with caplog.at_level(logging.DEBUG), pytest.raises(llm.LlmModelMismatchError) as e:
+        _call(OPENAI)
+
+    assert e.value.response_model == llm.INVALID_MODEL_NAME
+    assert llm.blocked_models() == {OPENAI: llm.INVALID_MODEL_NAME}
+    assert "forged line" not in str(e.value) + caplog.text
 
 
 @pytest.mark.parametrize(
@@ -704,3 +741,167 @@ def test_import_scan_catches_a_direct_import():
     found = [scope for _, scope in _litellm_imports(ast.parse(code))]
 
     assert found == [None, None, "other", "load_llm_library"]
+
+
+# --- 7. 답한 모델 대조 ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "answered"),
+    [
+        ("openai/gpt-x", "gpt-x"),
+        ("openai/gpt-x", "gpt-x-2026-03-17"),
+        ("anthropic/claude-haiku-5-5", "claude-haiku-5-5-20261001"),
+        ("openai/gpt-4", "gpt-4-0613"),
+        ("gemini/gemini-2.5-flash", "gemini-2.5-flash-001"),
+        ("gemini/gemini-2.5-flash", "models/gemini-2.5-flash"),
+        ("openai/gpt-x", "openai/gpt-x"),
+        ("anthropic/claude-x-latest", "claude-x-20260101"),
+        ("anthropic/claude-x-latest", "claude-x-latest"),
+        ("bedrock/anthropic.claude-x-v1:0", "anthropic.claude-x-v1:0"),
+    ],
+)
+def test_same_model_or_its_dated_snapshot_matches(model, answered):
+    assert llm.check_response_model(model, answered) == llm.MODEL_CHECK_MATCH
+
+
+@pytest.mark.parametrize(
+    ("model", "answered"),
+    [
+        ("openai/gpt-x", "gpt-x-mini"),  # 꼬리가 날짜판 모양이 아님 = 다른 모델
+        ("openai/gpt-x-mini", "gpt-x"),
+        ("openai/gpt-x", "gpt-y"),
+        ("openai/gpt-x", "claude-haiku-5-5"),
+        ("openai/gpt-x", "gpt-x-2026-03-17-preview"),
+        ("openai/gpt-x", "gpt-x-12345"),
+        ("openai/gpt-x", "GPT-X"),
+        ("openai/gpt-x", "gpt-x "),
+        ("openai/gpt-x", "anthropic/gpt-x"),
+        ("openai/gpt-x", 7),
+    ],
+)
+def test_any_other_name_is_a_different_model(model, answered):
+    assert llm.check_response_model(model, answered) == llm.MODEL_CHECK_MISMATCH
+
+
+@pytest.mark.parametrize("answered", [None, ""])
+def test_missing_name_is_unverified_not_a_mismatch(answered):
+    assert (
+        llm.check_response_model("openai/gpt-x", answered) == llm.MODEL_CHECK_UNVERIFIED
+    )
+
+
+def _other_model_body(model, name):
+    body = BODY[model]()
+    body["modelVersion" if model == GEMINI else "model"] = name
+    return body
+
+
+@pytest.mark.parametrize("model", [OPENAI, ANTHROPIC, GEMINI])
+def test_answer_from_another_model_is_not_used_and_the_model_is_blocked(
+    provider, model, caplog, capfd
+):
+    provider.answer(_other_model_body(model, "another-model-9"))
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(llm.LlmModelMismatchError) as e:
+        _call(model)
+
+    error = e.value
+    assert error.reason == llm.REASON_MODEL_MISMATCH
+    assert (error.model, error.response_model, error.called) == (
+        model,
+        "another-model-9",
+        True,
+    )
+    # 다시 불러 볼 실패가 아니다(시간 초과·호출 실패로 보이면 부르는 쪽이 재시도한다)
+    assert not isinstance(error, (llm.LlmCallError, llm.LlmTimeoutError))
+    assert error.usage.input_tokens is not None  # 청구되는 호출이라 토큰 수는 남긴다
+    assert len(provider.requests) == 1
+    assert llm.blocked_models() == {model: "another-model-9"}
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert len(critical) == 1
+    assert model in critical[0].getMessage()
+    assert "another-model-9" in critical[0].getMessage()
+    seen = str(error) + caplog.text + "".join(capfd.readouterr())
+    for secret in (API_KEY, "PROMPT-MARKER", ANSWER):
+        assert secret not in seen
+
+    # 다시 불러도 제공자에게 나가지 않는다
+    with pytest.raises(llm.LlmModelMismatchError) as again:
+        _call(model)
+    assert again.value.called is False
+    assert again.value.usage is None
+    assert len(provider.requests) == 1
+
+
+def test_blocking_one_model_leaves_other_models_callable(provider):
+    provider.answer(_other_model_body(OPENAI, "another-model-9"))
+    with pytest.raises(llm.LlmModelMismatchError):
+        _call(OPENAI)
+
+    provider.answer(_anthropic_body())
+
+    assert _call(ANTHROPIC).text == ANSWER
+    assert len(provider.requests) == 1
+
+
+def test_block_is_lifted_only_by_reset(provider):
+    provider.answer(_other_model_body(OPENAI, "another-model-9"))
+    with pytest.raises(llm.LlmModelMismatchError):
+        _call(OPENAI)
+    provider.answer(_openai_body())
+    with pytest.raises(llm.LlmModelMismatchError):
+        _call(OPENAI)  # 제공자가 이제 맞게 답해도 막힌 채다
+    assert provider.requests == []
+
+    llm.reset_blocked_models()
+
+    assert _call(OPENAI).model_check == llm.MODEL_CHECK_MATCH
+
+
+def test_another_models_truncated_answer_is_a_mismatch_not_an_attempt(provider):
+    """다른 모델의 답은 잘렸든 거부됐든 호출 실패(엔진 시도)로 세지 않고 멈춘다."""
+    body = _openai_body(finish=TRUNCATED[OPENAI])
+    body["model"] = "another-model-9"
+    provider.answer(body)
+
+    with pytest.raises(llm.LlmModelMismatchError):
+        _call(OPENAI)
+
+
+def test_answer_without_model_name_is_used_but_marked(provider):
+    """제공자가 모델 이름을 알려 주지 않으면 멈추지 않는다. 대조 결과만 남긴다.
+
+    OpenAI 모양 응답으로 본다. Gemini 는 이름이 없으면 LiteLLM 이 요청한 이름을 채워 넣어 MATCH 로 보이고,
+    Claude 는 이름 없는 응답을 LiteLLM 이 읽지 못해 호출 실패가 된다(둘 다 11-15 가짜 서버로 확인).
+    """
+    body = _openai_body()
+    del body["model"]
+    provider.answer(body)
+
+    result = _call(OPENAI)
+
+    assert result.text == ANSWER
+    assert (result.response_model, result.model_check) == NO_NAME_RESULT
+    assert llm.blocked_models() == {}
+
+
+@pytest.mark.parametrize("model", ["mock/mock-template-v1", "nobody/some-model"])
+def test_unknown_provider_is_never_called(provider, model):
+    provider.answer(_openai_body())
+
+    with pytest.raises(llm.LlmConfigError, match="모르는 모델 제공자"):
+        _call(model)
+
+    assert provider.requests == []
+
+
+def test_success_log_says_which_model_was_asked_and_which_answered(provider, caplog):
+    provider.answer(_openai_body())
+
+    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+        _call(OPENAI)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "app.core.llm"]
+    assert "요청한 모델 openai/fake-model" in line
+    assert "답한 모델 fake-model-2026-01-01 (MATCH)" in line

@@ -337,6 +337,55 @@ def test_model_usage_event_keeps_numbers_and_stays_one_line(tmp_path):
     assert json.loads(text)["analysis_run_id"] == str(run_id)
 
 
+def test_model_usage_event_says_which_model_was_called(tmp_path):
+    """내부 로그의 사용량 사건에 제공자·요청한 모델·답한 모델·대조 결과가 그대로 남는다(mock 은 mock 으로)."""
+    run_id, company_id = uuid.uuid4(), uuid.uuid4()
+    tracer = RunTracer(run_id, company_id, [TraceOutboxSink(tmp_path)])
+    real = summarize_usage(
+        "openai/gpt-5.4-mini",
+        [
+            {
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "response_model": "gpt-5.4-mini-2026-03-17",
+                "model_check": "MATCH",
+            }
+        ],
+    )
+    stopped = summarize_usage(
+        "openai/gpt-5.4-mini",
+        [
+            {
+                "error": "MODEL_MISMATCH",
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "response_model": "another-model-9",
+                "model_check": "MISMATCH",
+            }
+        ],
+    )
+    mock = summarize_usage("mock/mock-template-v1", [{}])
+
+    for usage in (real, stopped, mock):
+        tracer.model_usage("explain", usage)
+    assert tracer.close()
+
+    (path,) = tmp_path.rglob("*.jsonl")
+    lines = [
+        json.loads(line)["summary"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    picked = [
+        (s["provider"], s["model"], s["response_models"], s["model_check"])
+        for s in lines
+    ]
+    assert picked == [
+        ("openai", "openai/gpt-5.4-mini", ["gpt-5.4-mini-2026-03-17"], "MATCH"),
+        ("openai", "openai/gpt-5.4-mini", ["another-model-9"], "MISMATCH"),
+        ("mock", "mock/mock-template-v1", [], "MOCK"),
+    ]
+
+
 def test_model_usage_failure_is_counted_not_raised():
     class Broken(RunTracer):
         def emit(self, *args, **kwargs):
@@ -492,6 +541,27 @@ def test_masker_hides_codes_followed_by_korean_text(text_in, secret):
     # 일부만 가리고 끝자리(-0040 등)를 남기는 경우까지 잡는다(정규식이 뒤로 물러나 앞부분만 맞는 일이 있음)
     assert secret not in masked and secret[-5:] not in masked
     assert "ORD#" in masked or "[EMAIL]" in masked
+
+
+def test_masker_hides_sku_codes_in_evidence_paths():
+    """설명 검증 실패 위치의 SKU 경로 조각(/sku/<코드>/)을 가린다(사용자 결정 11-13, 실측 실패 기록에 그대로 남음).
+
+    같은 실행 안에서는 같은 값(같은 SKU 에서 몇 번 틀렸는지 묶어 봄), 다른 실행이면 다른 값, 다른 경로는 그대로.
+    """
+    first, second = TraceMasker(), TraceMasker()
+    path = "risk_summary:missing /sku/TONER20/increment_prepare_quantity"
+    masked = first.text(path)
+    assert "TONER20" not in masked
+    assert masked.startswith("risk_summary:missing /sku/SKU#")
+    assert masked.endswith("/increment_prepare_quantity")
+    assert first.text("/sku/TONER20/x").split("/")[2] == masked.split("/")[2]
+    assert second.text(path) != masked
+    assert first.text("/sku/CREAM-30ML/a") != first.text("/sku/TONER20/a")
+    for kept in (
+        "run_summary:missing /run/delayed_shipment_code",
+        "option_explanations[KEEP_PLAN]#s2",
+    ):
+        assert first.text(kept) == kept
 
 
 def test_masker_keeps_version_and_location_codes():

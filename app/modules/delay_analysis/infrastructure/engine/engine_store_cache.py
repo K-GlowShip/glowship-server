@@ -26,6 +26,9 @@ from app.modules.delay_analysis.infrastructure.engine import engine_input_store
       - 항목 수 상한(설정 ENGINE_STORE_CACHE_MAX_ENTRIES)을 넘으면 가장 오래 안 쓴 것부터 버린다. 0 이면 캐시를 끈다.
       - 캐시 자료구조는 이벤트 루프 스레드에서만 다룬다(저장소 읽기·엔진 계산만 스레드). 그래서 스레드 잠금이 필요 없다.
       - 함께 읽는 저장소는 바뀌면 안 된다. 색인 defaultdict 는 저장소가 만들 때 넣지 않는 사전으로 바꾼다(engine_input_store).
+      - 버리기(evict_company·clear)와 읽는 중인 호출이 겹치면, 그 읽기는 버리기 전 표를 봤을 수 있다. 그래서 고객사별 세대 번호를
+        두고 버릴 때 올린다. 읽기 시작 때 본 세대가 넣기 직전과 다르면 캐시에 넣지 않는다(그 호출 결과는 돌려줌). 그러지 않으면
+        운영 기준 저장 뒤 같은 입력 순번의 재분석이 저장 전 저장소를 받는다(#146 후속, 문서 2절).
       - 서버가 다시 시작되면 비어 있다. load_company_engine_store 는 그대로 두어 캐시 없이 읽는 곳(데모 시드 등)도 그대로 쓴다.
 """
 
@@ -44,6 +47,7 @@ class EngineStoreCacheStats:
     coalesced: int
     evictions: int
     size: int
+    discarded: int = 0  # 읽는 동안 그 고객사가 버려져 캐시에 넣지 않은 읽기
 
 
 class EngineStoreCache:
@@ -57,6 +61,13 @@ class EngineStoreCache:
         self._locks: dict[StoreKey, asyncio.Lock] = {}
         self._lock_users: dict[StoreKey, int] = {}
         self._hits = self._misses = self._coalesced = self._evictions = 0
+        self._discarded = 0
+        # 버리기 세대: 고객사별(evict_company) + 전체(clear). 읽기 시작 때와 넣기 직전이 다르면 넣지 않는다
+        self._generations: dict[uuid.UUID, int] = {}
+        self._epoch = 0
+
+    def _generation(self, company_id: uuid.UUID) -> tuple[int, int]:
+        return (self._epoch, self._generations.get(company_id, 0))
 
     async def _load(
         self, session: AsyncSession, company_id: uuid.UUID, input_seq: int
@@ -97,7 +108,17 @@ class EngineStoreCache:
                     self._entries.move_to_end(key)
                     self._coalesced += 1
                     return store
+                seen = self._generation(company_id)
                 store = await self._load(session, company_id, input_seq)
+                if self._generation(company_id) != seen:
+                    # 읽는 사이 버려짐: 이 저장소는 버리기 전 표일 수 있어 넣지 않는다. 기다리던 호출은 자기 세션으로 다시 읽는다
+                    self._discarded += 1
+                    logger.info(
+                        "엔진 저장소를 읽는 사이 고객사 %s 항목이 버려져 캐시에 넣지 않음(입력 순번 %s)",
+                        company_id,
+                        input_seq,
+                    )
+                    return store
                 self._put(key, store)
                 return store
         finally:
@@ -121,13 +142,16 @@ class EngineStoreCache:
             coalesced=self._coalesced,
             evictions=self._evictions,
             size=len(self._entries),
+            discarded=self._discarded,
         )
 
     def evict_company(self, company_id: uuid.UUID) -> int:
         """한 고객사의 항목을 모두 버리고 버린 수를 돌려준다. 수집 없이 저장소 표가 바뀌었을 때 부른다
         (운영 기준 새 버전 저장, GLOW-153: 입력 순번은 그대로인데 operating_rule_sets·operating_lead_times 가 달라짐).
-        읽는 중인 호출은 그대로 끝나고 그 결과가 들어간다."""
+        읽는 중인 호출은 그대로 끝나고 결과를 돌려받지만, 그 결과는 캐시에 넣지 않는다(세대 번호, 버리기 전 표일 수 있음)."""
         company_id = uuid.UUID(str(company_id))
+        # 항목이 없어도 올린다: 지금 읽는 중인 호출(아직 항목 없음)이 버리기 전 표를 넣지 못하게
+        self._generations[company_id] = self._generations.get(company_id, 0) + 1
         keys = [key for key in self._entries if key[0] == company_id]
         for key in keys:
             del self._entries[key]
@@ -138,9 +162,11 @@ class EngineStoreCache:
         return len(keys)
 
     def clear(self) -> None:
-        """항목과 횟수를 비운다(시험 사이, 운영 데이터를 수집 밖에서 고쳤을 때). 읽는 중인 호출은 그대로 끝난다."""
+        """항목과 횟수를 비운다(시험 사이, 운영 데이터를 수집 밖에서 고쳤을 때). 읽는 중인 호출은 그대로 끝나지만 넣지 않는다."""
+        self._epoch += 1
         self._entries.clear()
         self._hits = self._misses = self._coalesced = self._evictions = 0
+        self._discarded = 0
 
 
 @lru_cache
