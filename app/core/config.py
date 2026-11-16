@@ -5,7 +5,6 @@ from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.engine import URL
 
 from app.core.security.jwt import JwtConfig
 
@@ -290,6 +289,10 @@ class Settings(BaseSettings):
         return self
 
     def _postgres_url(self, user: str, password: str) -> str:
+        # Agent modules also import Settings; keep DB dependencies out of that
+        # import path until an actual database URL is requested.
+        from sqlalchemy.engine import URL
+
         return URL.create(
             "postgresql+asyncpg",
             username=user,
