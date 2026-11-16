@@ -8,7 +8,7 @@
       2. 열린 지연마다 실행: 현재 실행이 없으면 create_analysis_run(AUTO, EPISODE_STARTED, 원인 스냅샷 = 감지 스냅샷,
          실행 시각 = 고객사 마지막 적재 수집 시작, 이슈 #50). 진행 중(DETECTED 등) 실행이 있으면 그것을 쓴다.
          이미 결과가 있는 실행은 건너뛴다.
-      3. 엔진 계산(에이전트·LLM 없이 결과가 매번 같음): PR #36 엔진 입력 저장소 → check_input_seq →
+      3. 엔진 계산(계산 결과는 매번 같음): PR #36 엔진 입력 저장소 → check_input_seq →
          snapshot.build(D = 고객사 최신 재고일 + 1) → pipeline.analyze → 설명(서버 generate_explanation, PR #45: 엔진 생성기·
          결정적 mock 모델, 검증 통과만).
          설명 모델은 서버 설정 EXPLANATION_MODEL 을 따른다. 실제 모델(openai/gpt-6-luna)이면 설명마다 그 모델을 부르고

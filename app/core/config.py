@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # 분석 실행 하나의 시간 제한(초, 이슈 #123, docs/analysis/auto-start.md 2절). 값은 dev 사양 재측정(11-12)으로 정함(7절 3번).
     # 분석 = 시작 전이부터 그래프 끝까지(자리를 기다린 시간은 뺌). 넘으면 FAILED(RUN_TIME_LIMIT_EXCEEDED).
     # 저장 = 결과 저장(저장 직후 재판정의 판정 서명 재계산 포함). 넘으면 재계산 없이 다시 저장(걸린 변경이 있으면 STALE).
-    analysis_run_time_limit_seconds: float = Field(default=120.0, gt=0)
+    analysis_run_time_limit_seconds: float = Field(default=240.0, gt=0)
     analysis_save_time_limit_seconds: float = Field(default=60.0, gt=0)
     # 실행 추적 내부 로그 폴더 (이슈 #51, docs/agent-flow/agent-tracing.md 3절). 실행 사건(노드·도구·설명 시도, 마스킹됨)을
     # <폴더>/agent_trace_outbox/<고객사>/<UTC 날짜>.jsonl 에 한 줄씩 남긴다(agentflow 8.1 "외부 전송 불허 시").
