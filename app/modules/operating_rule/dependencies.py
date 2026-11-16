@@ -14,8 +14,14 @@ from app.modules.company.infrastructure.repository.company_repository import (
 )
 from app.modules.decision.application.decision_clock import DecisionClock
 from app.modules.decision.dependencies import get_decision_clock
+from app.modules.delay_analysis.application.stale.stale_service import (
+    StaleJudgmentService,
+)
 from app.modules.delay_analysis.infrastructure.engine.engine_store_cache import (
     engine_store_cache,
+)
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
 )
 from app.modules.operating_rule.application.operating_rule_service import (
     OperatingRuleService,
@@ -29,6 +35,7 @@ from app.modules.operating_rule.infrastructure.repository.operating_rule_reposit
       - 요청 단위 DB 세션(get_db)을 받아 리포지토리와 서비스를 만들어 라우터에 주입합니다.
       - 판단 시각(DecisionClock)은 최종 선택과 같은 것을 씁니다(isCurrent 기준일).
       - 저장 뒤에는 엔진 저장소 캐시에서 그 고객사 항목을 버립니다(서비스 주석 참고).
+      - 이미 적용되는 버전을 저장하면 선택 대기 실행을 STALE 로 바꿉니다(같은 세션·같은 트랜잭션, GLOW-159).
 """
 
 
@@ -47,4 +54,7 @@ def get_operating_rule_service(
         admin_assignment_repo=admin_assignment_repo,
         clock=clock,
         on_saved=engine_store_cache().evict_company,
+        mark_stale_runs=StaleJudgmentService(
+            db, StaleChangeRepository(db)
+        ).mark_review_runs_on_rule_change,
     )

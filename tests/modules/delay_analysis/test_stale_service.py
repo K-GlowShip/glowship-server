@@ -72,12 +72,16 @@ class FakeChangeRepository:
     closed_run_ids: set = field(default_factory=set)
     max_applied_seq: int = 0
     change_queries: list = field(default_factory=list)
+    review_run_ids: list = field(default_factory=list)
 
     async def find_target_run_ids(self, company_id, applied_seq):
         return [run.analysis_run_id for run in self.runs]
 
     async def find_max_applied_seq(self, company_id):
         return self.max_applied_seq
+
+    async def find_review_run_ids(self, company_id):
+        return self.review_run_ids
 
     async def find_closed_episode_run_ids(self, analysis_run_ids):
         return set(analysis_run_ids) & self.closed_run_ids
@@ -314,6 +318,50 @@ async def test_mark_runs_stale_skips_finalized_runs(locked):
     assert staled == [previous]
     assert previous.stale_primary_reason == "DELAY_SCHEDULE_CHANGED"
     assert finalized.status == "FINALIZED"
+
+
+# --- mark_review_runs_on_rule_change (GLOW-159) -----------------------------------
+
+
+async def test_rule_change_marks_review_runs_with_company_max_applied_seq(locked):
+    run = _run()
+    locked([run])
+    repo = FakeChangeRepository(
+        review_run_ids=[run.analysis_run_id], max_applied_seq=17
+    )
+
+    staled = await _service(repo).mark_review_runs_on_rule_change(COMPANY_ID, NOW)
+
+    assert staled == [run]
+    assert run.status == "STALE"
+    assert run.stale_primary_reason == "OPERATING_RULE_CHANGED"
+    assert run.stale_reason_codes == ["OPERATING_RULE_CHANGED"]
+    assert (run.stale_detected_seq, run.stale_detected_at) == (17, NOW)
+
+
+async def test_rule_change_without_review_runs_locks_nothing(locked):
+    calls = locked([])
+
+    assert (
+        await _service(FakeChangeRepository()).mark_review_runs_on_rule_change(
+            COMPANY_ID, NOW
+        )
+        == []
+    )
+    assert calls == []
+
+
+async def test_rule_change_keeps_run_finalized_or_closed_after_lock(locked):
+    """후보로 읽은 뒤 잠그기 전에 최종 선택됐거나 에피소드가 닫힌 실행은 그대로 둔다"""
+    finalized, closed_run = _run(status="FINALIZED"), _run()
+    locked([finalized, closed_run])
+    repo = FakeChangeRepository(
+        review_run_ids=[finalized.analysis_run_id, closed_run.analysis_run_id],
+        closed_run_ids={closed_run.analysis_run_id},
+    )
+
+    assert await _service(repo).mark_review_runs_on_rule_change(COMPANY_ID, NOW) == []
+    assert (finalized.status, closed_run.status) == ("FINALIZED", "READY_FOR_REVIEW")
 
 
 # --- 종료된 에피소드 동결 ---------------------------------------------------------

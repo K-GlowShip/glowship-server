@@ -88,6 +88,21 @@ _MAX_APPLIED_SEQ = text(
     """
 ).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
 
+# 운영 기준 변경용(GLOW-159): 현재 실행 버전이고 선택 대기(READY_FOR_REVIEW)이며 지연 에피소드가 열려 있는 실행
+_REVIEW_RUN_IDS = text(
+    """
+    SELECT a.analysis_run_id
+      FROM analysis_runs a
+      JOIN delay_events e
+        ON e.company_id = a.company_id AND e.delay_event_id = a.delay_event_id
+     WHERE a.company_id = :company_id
+       AND a.is_latest
+       AND a.status = 'READY_FOR_REVIEW'
+       AND e.closed_at IS NULL
+     ORDER BY a.analysis_run_id
+    """
+).bindparams(bindparam("company_id", type_=UUID(as_uuid=True)))
+
 # 동결 확인용: 주어진 실행 중 지연 에피소드가 이미 종료된 실행
 _CLOSED_EPISODE_RUN_IDS = text(
     """
@@ -185,6 +200,11 @@ class StaleChangeRepository:
         result = await self.db.scalars(
             _TARGET_RUN_IDS, {"company_id": company_id, "applied_seq": applied_seq}
         )
+        return list(result)
+
+    async def find_review_run_ids(self, company_id: uuid.UUID) -> list[uuid.UUID]:
+        """고객사의 선택 대기 실행 ID (잠그기 전 후보). 운영 기준이 바뀌었을 때 STALE 로 바꿀 대상입니다."""
+        result = await self.db.scalars(_REVIEW_RUN_IDS, {"company_id": company_id})
         return list(result)
 
     async def find_max_applied_seq(self, company_id: uuid.UUID) -> int:

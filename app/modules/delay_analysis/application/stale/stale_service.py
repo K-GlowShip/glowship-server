@@ -159,6 +159,26 @@ class StaleJudgmentService:
         await self.db.flush()
         return staled
 
+    async def mark_review_runs_on_rule_change(
+        self, company_id: uuid.UUID, detected_at: datetime
+    ) -> list[AnalysisRun]:
+        """
+        이미 적용되는 운영 기준 새 버전을 저장할 때, 그 고객사의 선택 대기(READY_FOR_REVIEW) 실행을
+        OPERATING_RULE_CHANGED 로 STALE 로 바꿉니다 (BR-012, GLOW-159). 호출 측이 L1 을 잡고 새 버전을 넣은 뒤 부릅니다.
+        진행 중·NO_RISK 실행은 바꾸지 않습니다(선택 대기만, PR #146 리뷰 C안).
+        운영 기준 저장은 수집이 아니라 자기 적용 순번이 없으므로 감지 순번은 고객사의 현재 최대 적용 순번입니다
+        (analysis_runs_ck33: TIME_ELAPSED 만 순번을 비움).
+        """
+        run_ids = await self.change_repo.find_review_run_ids(company_id)
+        if not run_ids:
+            return []
+        return await self.mark_runs_stale(
+            run_ids,
+            StaleReasonCode.OPERATING_RULE_CHANGED,
+            await self.change_repo.find_max_applied_seq(company_id),
+            detected_at,
+        )
+
     async def _unfrozen(self, runs: list[AnalysisRun]) -> list[AnalysisRun]:
         """잠근 뒤 다시 확인: 지연 에피소드가 종료된 실행은 동결 대상이라 뺍니다 (D-13 Q-08d)."""
         closed = await self.change_repo.find_closed_episode_run_ids(
