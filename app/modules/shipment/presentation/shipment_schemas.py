@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import Field
 
@@ -9,6 +9,10 @@ from app.core.summary_schemas import SkuSummary, WarehouseSummary
 from app.modules.delay_analysis.presentation.analysis_run_schemas import (
     EXPECTED_3PL,
     PLANNED_3PL,
+    JsonNumberDecimal,
+)
+from app.modules.shipment.application.shipment_detail_service import (
+    ShipmentDetail,
 )
 from app.modules.shipment.application.shipment_list_service import (
     ShipmentListItem,
@@ -143,4 +147,111 @@ class ShipmentListResponse(Page[ShipmentListItemResponse]):
             [ShipmentListItemResponse.of(item) for item in result.items],
             result.total_count,
             result.page,
+        )
+
+
+class ShipmentLineResponse(CamelModel):
+    """선적 상세 한 줄 (shipment_lines)"""
+
+    line_no: int = Field(description="상세 줄 번호(1부터)", examples=[1])
+    sku: SkuSummary = Field(description="실린 상품")
+    shipped_quantity: int = Field(description="선적 수량", examples=[1200])
+
+
+class ShipmentPlannedBasisResponse(CamelModel):
+    """계획 리드타임 근거 (market_leadtime_references). 계획 3PL 입고일 = 계획 출고일 + 올림(p90)"""
+
+    month: str = Field(description="기준 달 YYYY-MM", examples=["2026-06"])
+    us_port_name: str = Field(
+        description="도착 항구 이름 (시장 리드타임 기준 표의 값 그대로)",
+        examples=["LOS ANGELES, CA"],
+    )
+    total_leadtime_p50: JsonNumberDecimal = Field(
+        description="한국 출고 → 3PL 입고 총 리드타임 중앙값(일)", examples=[24.5]
+    )
+    total_leadtime_p90: JsonNumberDecimal = Field(
+        description="총 리드타임 90분위(일). 계획 3PL 입고일을 정할 때 올림해 씀",
+        examples=[31.2],
+    )
+    confidence_leadtime: str = Field(
+        description="기준 리드타임 신뢰도 (market_leadtime_references.confidence_leadtime, 원천 값 그대로)",
+        examples=["low"],
+    )
+
+
+class ShipmentScheduleObservationResponse(CamelModel):
+    """일정 관측 하나 (shipment_schedule_snapshots)"""
+
+    observed_at: datetime = Field(description="원천이 일정을 관측한 시각")
+    stage: ShipmentStage = Field(description="그때의 운송 단계", examples=["AT_SEA"])
+    expected_port_arrival_date: date | None = Field(
+        description="그때의 예상 항구 도착일. 항공·미정이면 null",
+        examples=["2026-07-01"],
+    )
+    expected_3pl_inbound_date: date = Field(
+        alias=EXPECTED_3PL,
+        description="그때의 예상 3PL 입고일",
+        examples=["2026-07-06"],
+    )
+
+
+class ShipmentDetailResponse(ShipmentListItemResponse):
+    """GET /api/v1/shipments/{shipmentId} 응답 (명세 4.3). 목록 행 필드 전부 + 아래 상세 필드"""
+
+    expected_port_arrival_date: date | None = Field(
+        description=(
+            "현재 예상 항구 도착일 (shipments.current_expected_port_arrival_date). "
+            "3PL 입고일과 다른 날짜다(BR-007). 항공 등으로 값이 없으면 null"
+        ),
+        examples=["2026-07-01"],
+    )
+    lines: list[ShipmentLineResponse] = Field(description="상세 줄 (줄 번호 순)")
+    planned_basis: ShipmentPlannedBasisResponse = Field(
+        description="계획 리드타임 근거"
+    )
+    schedule_history: list[ShipmentScheduleObservationResponse] = Field(
+        description="일정 변경 이력. 관측 시각 오래된 순(같으면 관측 ID 순), 관측 전부"
+    )
+    data_basis_at: datetime | None = Field(
+        description=(
+            "데이터 기준 시각 = 이 선적 행을 마지막으로 바꾼 수집의 종료 시각 "
+            "(data_sync_runs.finished_at, 분석 상세 dataBasisAt·수집 현황 lastSyncedAt 과 같은 열)"
+        )
+    )
+
+    @classmethod
+    def from_detail(cls, detail: ShipmentDetail) -> ShipmentDetailResponse:
+        base = ShipmentListItemResponse.of(detail.item)
+        return cls(
+            **base.model_dump(),
+            expected_port_arrival_date=detail.expected_port_arrival_date,
+            lines=[
+                ShipmentLineResponse(
+                    line_no=line.line_no,
+                    sku=SkuSummary(
+                        sku_id=line.sku_id,
+                        sku_code=line.sku_code,
+                        product_name=line.product_name,
+                    ),
+                    shipped_quantity=line.shipped_quantity,
+                )
+                for line in detail.lines
+            ],
+            planned_basis=ShipmentPlannedBasisResponse(
+                month=detail.planned_basis.month,
+                us_port_name=detail.planned_basis.us_port_name,
+                total_leadtime_p50=detail.planned_basis.total_leadtime_p50,
+                total_leadtime_p90=detail.planned_basis.total_leadtime_p90,
+                confidence_leadtime=detail.planned_basis.confidence_leadtime,
+            ),
+            schedule_history=[
+                ShipmentScheduleObservationResponse(
+                    observed_at=observation.observed_at,
+                    stage=observation.stage,
+                    expected_port_arrival_date=observation.expected_port_arrival_date,
+                    expected_3pl_inbound_date=observation.expected_3pl_inbound_date,
+                )
+                for observation in detail.schedule_history
+            ],
+            data_basis_at=detail.data_basis_at,
         )
