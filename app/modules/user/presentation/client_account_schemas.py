@@ -51,6 +51,23 @@ class ClientUserCreateRequest(CamelModel):
         return None if v is None else reject_nul(v, "표시 이름")
 
 
+class ClientUserListItemResponse(CamelModel):
+    """고객사 계정 목록의 한 행 (명세 4.1 GET /admin/users). 비밀번호 관련 값은 포함하지 않는다."""
+
+    user_id: uuid.UUID
+    email: str
+    display_name: str = Field(
+        description="표시 이름 (users.display_name). 생성 때 생략했으면 이메일과 같다",
+        examples=["홍길동"],
+    )
+    role_code: UserRoleCode = Field(
+        description="CLIENT_MEMBER(팀원)·CLIENT_LEAD(팀장)만 나온다",
+        examples=["CLIENT_MEMBER"],
+    )
+    status: UserStatus = Field(description="ACTIVE·DISABLED")
+    created_at: datetime
+
+
 class ClientUserCreateResponse(CamelModel):
     """생성된 고객사 계정 정보. 비밀번호 관련 값은 포함하지 않는다."""
 
