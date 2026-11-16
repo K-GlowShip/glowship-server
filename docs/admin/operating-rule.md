@@ -136,6 +136,7 @@ sequenceDiagram
 | --- | --- | --- |
 | 저장 뒤 만든 분석 실행 | 기준일에 적용 중인 새 버전을 쓰고, 분석 상세 `inputBasis.operatingRuleVersionNo`에 그 번호가 나옴 | `run_creation_repository.py` |
 | 실행 행의 버전과 엔진이 계산에 쓴 버전이 다름 | 결과를 저장할 때 실행 행을 엔진이 쓴 버전으로 맞춤. 상세의 버전 번호와 최종 선택 재확인이 실제 계산 버전을 봄. 저장 뒤·분석 시작 전에 새 버전이 저장됐거나, 재고·주문 자료가 늦어 기준일이 실행 날짜보다 앞설 때 생김 | `outcome_save.py`(GLOW-160), `docs/analysis/engine-input.md` 7절 |
+| 계산에 쓴 버전이 결과를 저장하는 날의 활성 버전이 아님 | 결과는 저장하고 그 실행을 `STALE`(`OPERATING_RULE_CHANGED`)로 남김(선택 대기로 끝난 현재 실행만). 분석 중에 "오늘부터 적용" 새 버전이 저장됐거나, 기준일이 당겨져 이전 버전으로 계산했는데 새 버전이 이미 적용 중일 때 | `outcome_save.py`(GLOW-160, PR #160 리뷰), `docs/analysis/engine-input.md` 7절 |
 | 이전 버전으로 분석한 선택 대기 실행 | **저장만으로는 `STALE`로 바꾸지 않음.** 팀장이 최종 선택하면 409 `OPERATING_RULE_CHANGED`로 거부, 재분석 필요 | serviceflow 5.2, `selection_policy.py` |
 | 적용 시작일이 미래인 버전 | 그날 전까지는 이전 버전으로 분석한 실행을 그대로 최종 선택할 수 있음 | 활성 버전 = `effective_from` ≤ 선택일 중 최대 |
 | `salesBasisDays` ≠ 28, 계산에 쓰이는 리드타임이 `BUSINESS_DAY` | 그 분석은 보류(`ON_HOLD`, `REQUIRED_DATA_INVALID`) | `engine_operating_rules.py`(GLOW-100) |
@@ -172,6 +173,7 @@ sequenceDiagram
 | 고객사 자동 선택 | 요청에 `companyId`를 명시. `admin_assignments` RLS 정책이 고객사를 알아야 행을 보여 줘서, 배정 목록 조회는 DB 함수가 필요(명세 D7) |
 | 저장 때 `STALE` 표시 | 적용하지 않음(5절). 명세 4.2 문구 수정 필요 |
 | 지원하지 않는 값(판매 기준 28일 외·`BUSINESS_DAY`) 저장 차단 | 막지 않음. 분석이 보류로 알림 |
+| 운영 기준 저장과 분석 결과 저장이 겹치는 순간 | 분석이 끝날 때 활성 버전을 다시 확인해 `STALE`로 남기지만(5절), 두 트랜잭션이 겹치는 짧은 순간에는 선택 대기로 남을 수 있음. 최종 선택 재확인이 `OPERATING_RULE_CHANGED`로 막음 |
 | 보류(`ON_HOLD`) 실행의 운영 기준 버전 | 계산 결과가 있는 실행만 엔진이 쓴 버전으로 맞춤(5절, GLOW-160). 보류 실행은 실행을 만들 때 정한 버전 그대로라, 보류 문구의 버전 번호와 다를 수 있음 |
 | 명세 반영 | `glowship-plan` 명세 3절 4·5번 상태, 4.2 응답의 `leadTimes`·`author`, `companyId` 요청 항목 |
 

@@ -1047,9 +1047,22 @@ def _saving(monkeypatch, *, saved=True):
     monkeypatch.setattr(outcome_save, "recalculator_or_none", lambda db: None)
 
 
+def _active_check(monkeypatch, *, staled=False):
+    """활성 버전 확인(DB 를 읽는다)을 가짜로 바꾸고, 부른 실행을 모은 목록을 돌려준다."""
+    calls = []
+
+    async def check(db, run):
+        calls.append(run)
+        return staled
+
+    monkeypatch.setattr(outcome_save, "_stale_if_operating_rule_not_active", check)
+    return calls
+
+
 async def test_run_row_is_aligned_to_rule_the_engine_used(monkeypatch, caplog):
     """엔진(T8)이 고른 운영 기준이 실행 행과 다르면 행을 엔진 쪽으로 고치고 표시 로그를 남긴다."""
     _saving(monkeypatch)
+    _active_check(monkeypatch)
     db, run, engine_rule = _ExecDb(), _Run(uuid.uuid4()), uuid.uuid4()
     state = {
         "outcome": AnalysisOutcome.READY_FOR_REVIEW,
@@ -1079,6 +1092,7 @@ async def test_run_row_is_aligned_to_rule_the_engine_used(monkeypatch, caplog):
 )
 async def test_run_row_is_left_when_there_is_nothing_to_align(monkeypatch, case):
     _saving(monkeypatch, saved=case != "not_saved")
+    checked = _active_check(monkeypatch)
     db, run = _ExecDb(), _Run(uuid.uuid4())
     rules = {
         "same": _Rules(run.operating_rule_set_id),
@@ -1097,3 +1111,56 @@ async def test_run_row_is_left_when_there_is_nothing_to_align(monkeypatch, case)
     await outcome_save.save_graph_outcome(db, run, state)
 
     assert db.statements == []
+    # 활성 버전 확인은 결과를 저장했고 T8 출력이 있을 때만 한다(행을 맞출 것이 없어도)
+    assert checked == ([run] if case in ("same", "no_rule_id") else [])
+
+
+@pytest.mark.parametrize("staled", [True, False])
+async def test_ready_run_is_checked_against_active_rule_after_alignment(
+    monkeypatch, staled
+):
+    """선택 대기로 저장하면 행을 맞춘 뒤 활성 버전을 확인하고, STALE 로 남겼으면 그 상태를 돌려준다(PR #160 리뷰)."""
+    _saving(monkeypatch)
+    db, run = _ExecDb(), _Run(uuid.uuid4())
+    order = []
+
+    async def align(db, run, rules):
+        order.append("align")
+
+    async def check(db, run):
+        order.append("check")
+        return staled
+
+    monkeypatch.setattr(outcome_save, "_record_engine_operating_rule", align)
+    monkeypatch.setattr(outcome_save, "_stale_if_operating_rule_not_active", check)
+    state = {
+        "outcome": AnalysisOutcome.READY_FOR_REVIEW,
+        "operating_rules": _Rules(uuid.uuid4()),
+    }
+
+    saved = await outcome_save.save_graph_outcome(db, run, state)
+
+    assert order == ["align", "check"]
+    assert saved.saved
+    assert saved.status == ("STALE" if staled else "READY_FOR_REVIEW")
+
+
+@pytest.mark.parametrize("status", ["NO_RISK", "STALE", "FAILED"])
+async def test_only_ready_run_is_checked_against_active_rule(monkeypatch, status):
+    """위험 없음·저장 직후 재판정으로 이미 STALE·설명 실패(FAILED)는 활성 버전을 확인하지 않는다."""
+    _saving(monkeypatch)
+    checked = _active_check(monkeypatch, staled=True)
+
+    async def save(db, **kwargs):
+        return ResultSaveOutcome(saved=True, status=status)
+
+    monkeypatch.setattr(outcome_save, "save_analysis_result", save)
+    state = {
+        "outcome": AnalysisOutcome.READY_FOR_REVIEW,
+        "operating_rules": _Rules(uuid.uuid4()),
+    }
+
+    saved = await outcome_save.save_graph_outcome(_ExecDb(), _Run(uuid.uuid4()), state)
+
+    assert checked == []
+    assert saved.status == status

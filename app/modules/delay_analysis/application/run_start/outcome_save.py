@@ -1,12 +1,13 @@
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.locks import lock_analysis_run
 from app.modules.delay_analysis.application.agent.retry import (
     EXPLANATION_GENERATION_FAILED,
 )
@@ -27,10 +28,23 @@ from app.modules.delay_analysis.application.run_creation.run_creation_service im
     record_input_data_versions,
 )
 from app.modules.delay_analysis.application.run_start.transitions import StartedRun
-from app.modules.delay_analysis.infrastructure.analysis_enums import CompletedStatus
+from app.modules.delay_analysis.application.stale.stale_service import (
+    StaleJudgmentService,
+)
+from app.modules.delay_analysis.infrastructure.analysis_enums import (
+    AnalysisRunStatus,
+    CompletedStatus,
+    StaleReasonCode,
+)
 from app.modules.delay_analysis.infrastructure.analysis_run import AnalysisRun
 from app.modules.delay_analysis.infrastructure.engine.signature_recalculator import (
     recalculator_or_none,
+)
+from app.modules.delay_analysis.infrastructure.repository.run_creation_repository import (
+    RunCreationRepository,
+)
+from app.modules.delay_analysis.infrastructure.repository.stale_change_repository import (
+    StaleChangeRepository,
 )
 
 """
@@ -53,12 +67,21 @@ from app.modules.delay_analysis.infrastructure.engine.signature_recalculator imp
         엔진이 실제로 쓴 버전으로 맞춘다. 그래야 분석 상세의 운영 기준 버전이 계산에 쓴 버전이고, 최종 선택 재확인
         (selection_policy, 행의 버전과 활성 버전 비교)이 실제 계산 버전으로 판정한다.
         보류(ON_HOLD)·지연 해소(NO_DELAY)는 T8 을 부르지 않아 행을 그대로 둔다.
+      - 맞춘 버전이 저장하는 날의 활성 버전이 아니면(PR #160 리뷰): 맞춘 뒤 선택 대기(READY_FOR_REVIEW)로 저장된 실행의
+        운영 기준이 끝난 시각 날짜의 활성 버전(최종 선택 재확인과 같은 식: effective_from ≤ 그날 중 version_no 최대)과 다르면,
+        결과는 둔 채 같은 트랜잭션에서 STALE(OPERATING_RULE_CHANGED)로 남긴다(BR-012). 분석 중에 "오늘부터 적용" 새 버전이
+        저장됐거나(운영 기준 저장은 선택 대기 실행만 STALE 로 바꿔 분석 중인 실행은 빠진다, GLOW-159), 기준일 D 가 당겨져
+        이전 버전으로 계산한 경우다. 감지 순번은 고객사의 현재 최대 적용 순번(GLOW-159 와 같음), 감지 시각은 끝난 시각이다.
+        위험 없음(NO_RISK)·실패(FAILED)는 바꾸지 않는다(GLOW-159 와 같은 범위). 고객사 잠금(L1)은 잡지 않아, 운영 기준
+        저장 트랜잭션과 이 저장이 겹치는 짧은 순간은 양쪽 모두 놓칠 수 있고 그때는 최종 선택 재확인이 막는다.
 """
 
 logger = logging.getLogger(__name__)
 
 # 실행 행의 운영 기준을 엔진이 쓴 버전으로 고쳤을 때 남기는 로그 표시. 뒤에 실행 ID·이전 ID·엔진 ID·엔진 버전 번호
 OPERATING_RULE_ADJUSTED_LOG_MARK = "OPERATING_RULE_ADJUSTED_TO_ENGINE"
+# 계산에 쓴 운영 기준이 저장하는 날의 활성 버전이 아니라 STALE 로 남겼을 때의 로그 표시. 뒤에 실행 ID·계산 ID·활성 ID
+OPERATING_RULE_NOT_ACTIVE_LOG_MARK = "OPERATING_RULE_NOT_ACTIVE_ON_SAVE"
 
 
 class OutcomeMissingError(RuntimeError):
@@ -119,6 +142,7 @@ async def save_graph_outcome(
     실행기가 저장 시간 제한을 넘겨 다시 저장할 때만 넘긴다(이슈 #123).
     결과를 저장했고 상태에 데이터 경고가 있으면 같은 트랜잭션에서 analysis_runs.data_warnings 에 쓴다(이슈 #122).
     결과를 저장했고 엔진이 쓴 운영 기준(T8 출력)이 실행 행과 다르면 같은 트랜잭션에서 행을 맞춘다(GLOW-160).
+    맞춘 뒤 선택 대기 실행의 운영 기준이 저장하는 날의 활성 버전이 아니면 STALE 로 남기고 그 상태를 돌려준다.
     지연 해소(NO_DELAY)는 엔진 입력을 만들지 않아 경고가 없고 열은 NULL 그대로다.
     """
     saved = await _save_by_outcome(db, run, state, now=now, recalculate=recalculate)
@@ -126,6 +150,11 @@ async def save_graph_outcome(
         await _record_data_warnings(db, run, state["data_warnings"])
     if saved is not None and saved.saved and "operating_rules" in state:
         await _record_engine_operating_rule(db, run, state["operating_rules"])
+        if (
+            saved.status == AnalysisRunStatus.READY_FOR_REVIEW
+            and await _stale_if_operating_rule_not_active(db, run)
+        ):
+            saved = ResultSaveOutcome(saved=True, status=AnalysisRunStatus.STALE)
     return saved
 
 
@@ -152,6 +181,44 @@ async def _record_engine_operating_rule(
         )
         .values(operating_rule_set_id=uuid.UUID(str(used)))
     )
+
+
+async def _stale_if_operating_rule_not_active(
+    db: AsyncSession, run: StartedRun
+) -> bool:
+    """
+    선택 대기로 저장한 실행의 운영 기준(엔진 쪽으로 맞춘 뒤)이 끝난 시각 날짜의 활성 버전과 다르면 STALE 로 남긴다
+    (머리말 "맞춘 버전이 저장하는 날의 활성 버전이 아니면"). STALE 로 바꿨으면 True.
+    현재 실행 버전이 아니거나 지연이 닫힌 실행은 바꾸지 않는다(GLOW-159 와 같은 대상, mark_runs_stale 의 동결 규칙).
+    """
+    row = await lock_analysis_run(db, run.analysis_run_id)
+    if (
+        row is None
+        or not row.is_latest
+        or row.status != AnalysisRunStatus.READY_FOR_REVIEW
+    ):
+        return False
+    active = await RunCreationRepository(db).find_operating_rule_set_id(
+        run.company_id, row.finished_at.astimezone(UTC).date()
+    )
+    if active == row.operating_rule_set_id:
+        return False
+    changes = StaleChangeRepository(db)
+    staled = await StaleJudgmentService(db, changes).mark_runs_stale(
+        [run.analysis_run_id],
+        StaleReasonCode.OPERATING_RULE_CHANGED,
+        await changes.find_max_applied_seq(run.company_id),
+        row.finished_at,
+    )
+    if staled:
+        logger.warning(
+            "%s analysis_run_id=%s computed=%s active=%s",
+            OPERATING_RULE_NOT_ACTIVE_LOG_MARK,
+            run.analysis_run_id,
+            row.operating_rule_set_id,
+            active,
+        )
+    return bool(staled)
 
 
 async def _record_data_warnings(
