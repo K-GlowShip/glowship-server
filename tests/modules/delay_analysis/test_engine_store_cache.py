@@ -116,6 +116,55 @@ async def test_evict_company_drops_only_that_company_and_next_call_reads_again()
     assert loader.calls.count((COMPANY_A, 10)) == 2
 
 
+async def _until_loading(loader, n):
+    while len(loader.calls) < n:
+        await asyncio.sleep(0)
+
+
+async def test_store_read_while_company_is_evicted_is_not_cached():
+    """#146 후속: 운영 기준 저장(커밋 뒤 evict) 전에 읽기 시작한 저장소가 캐시에 다시 들어가지 않는다.
+
+    들어가면 저장 뒤 같은 입력 순번의 재분석이 옛 운영 기준으로 계산한다. 그 호출 자신은 결과를 받고,
+    같은 열쇠를 기다리던 호출은 자기 세션으로 다시 읽으며, 다른 고객사는 그대로 캐시된다.
+    """
+    gate = asyncio.Event()
+    loader = _FakeLoader(gate)
+    cache = EngineStoreCache(4, loader)
+    first = asyncio.create_task(cache.get(None, COMPANY_A, 7))
+    waiter = asyncio.create_task(cache.get(None, COMPANY_A, 7))
+    other = asyncio.create_task(cache.get(None, COMPANY_B, 7))
+    await _until_loading(loader, 2)  # A·B 가 읽는 중
+
+    assert cache.evict_company(COMPANY_A) == 0  # 아직 항목은 없음(읽는 중)
+    gate.set()
+    before_save = await first
+    after_save = await waiter
+    b7 = await other
+
+    assert after_save is not before_save  # 기다리던 호출은 버리기 전 저장소를 받지 않음
+    assert loader.calls.count((COMPANY_A, 7)) == 2
+    assert await cache.get(None, COMPANY_A, 7) is after_save  # 버린 뒤 읽은 것은 들어감
+    assert await cache.get(None, COMPANY_B, 7) is b7
+    assert loader.calls.count((COMPANY_A, 7)) == 2
+    assert cache.stats().discarded == 1
+
+
+async def test_store_read_while_cache_is_cleared_is_not_cached():
+    gate = asyncio.Event()
+    loader = _FakeLoader(gate)
+    cache = EngineStoreCache(4, loader)
+    first = asyncio.create_task(cache.get(None, COMPANY_A, 7))
+    await _until_loading(loader, 1)
+
+    cache.clear()
+    gate.set()
+    stale = await first
+
+    assert cache.stats().size == 0 and cache.stats().discarded == 1
+    assert await cache.get(None, COMPANY_A, 7) is not stale
+    assert loader.calls.count((COMPANY_A, 7)) == 2
+
+
 async def test_failed_load_is_not_cached_and_next_call_reads_again():
     loader = _FakeLoader(fail=True)
     cache = EngineStoreCache(2, loader)
