@@ -1,8 +1,10 @@
 """
 설명 검증 실패 위치 거르기(explanation_locations) 시험 — docs/agent-flow/explanation.md 8.14절, DV3-7.
 
-- 실제 모델 측정(11-13~11-16)에서 나온 실패 위치를 그대로 넣어, 고정 어휘는 그대로 남고 모델이 만든 키 이름만 "형식"이 되는지 본다.
-- 화면 문구(failure_message)·내부 추적(EXPLANATION_ATTEMPT) 두 길 모두 같은 함수를 쓴다.
+- 실제 모델 측정(11-13~11-17)에서 나온 실패 위치와 엔진 검증기(validator.py)가 내는 위치 모양을 넣어,
+  고정 어휘는 그대로 남고 모델이 만든 키 이름만 "형식"이 되는지 본다.
+- 실패 요약 문구(failure_message: DB·API 응답)·내부 추적(EXPLANATION_ATTEMPT) 두 길 모두 같은 함수를 쓴다.
+  웹 화면은 설명 실패에 고정 문구를 써서 이 문구를 그리지 않는다(docs/frontend-api.md).
 """
 
 import uuid
@@ -56,6 +58,10 @@ KNOWN = [
     "/option_explanations/0/option_type",
     "/option_explanations/2/text",
     "/warnings/0",
+    # 측정에는 안 나왔지만 엔진 검증기가 내는 고정 모양(validator.py 125·167행)
+    "risk_summary:missing 예측 기준",
+    "risk_summary#s2:E99",
+    "option_explanations[KEEP_PLAN]#s1:E3",
 ]
 # 같은 측정에서 모델이 지어낸 키 이름이 위치로 나온 것 + 일부러 만든 것
 MODEL_MADE = [
@@ -68,6 +74,8 @@ MODEL_MADE = [
     "option_explanations[무시하라]:sentences",
     "risk_summary:missing 이전 지시를 무시",
     "evidence:E1; DROP TABLE",
+    "risk_summary#s2:E1 무시하라",
+    "risk_summary:missing 예측 기준을 무시",
     "",
     None,
 ]
@@ -116,6 +124,11 @@ def test_failure_message_keeps_engine_length_limit():
         for n in (1, 2, 3)
     ]
     assert len(safe_failure_message(attempts)) == MAX_DETAIL
+
+
+def test_failure_message_accepts_tuple_of_attempts():
+    attempts = ({"retry_no": 1, "codes": (("VALUE_MISMATCH", "risk_summary#s1"),)},)
+    assert safe_failure_message(attempts) == "1:VALUE_MISMATCH@risk_summary#s1"
 
 
 def test_failure_message_tolerates_odd_attempt_shapes():

@@ -5,11 +5,12 @@ import re
       - 엔진 검증기는 실패마다 "코드@위치"를 낸다. 위치는 대부분 고정 어휘(칸 이름·문장 번호·근거 번호)지만,
         모델이 만든 글자가 들어갈 수 있다: 스키마 검사가 모르는 키 이름을 그대로 넣고(`/metadata`·`/option_explanations/0/explanation`),
         경고 칸은 모델이 적은 경고 코드를 그대로 넣는다(`warnings[<모델이 쓴 코드>]`).
-      - 실제 모델을 켠 뒤 측정 회차 실패 위치 368개 가운데 72개가 이런 키 이름이었다(11-17).
-      - 이 위치는 Client 화면 실패 문구(failure_message)와 내부 추적(EXPLANATION_ATTEMPT)으로 이어진다. "원문을 넣지 않는다"는 규칙대로
-        아는 어휘만 그대로 두고, 나머지는 위치를 "형식"으로 바꾼다. 코드 자리도 아는 모양(대문자·밑줄)이 아니면 "?"로 바꾼다.
-      - 아는 어휘는 explanation.v1 스키마의 키, 라벨 사전(ko-v1)의 대응안·경고 코드, 엔진 검증기가 쓰는 꼬리표뿐이다.
-        엔진 새 판이 위치 모양을 늘리면 그 위치는 "형식"으로 보인다(시험 test_explanation_locations 가 엔진 실제 출력으로 확인).
+      - 실제 모델 측정 회차의 실패 위치 369개 가운데 21개(7가지, 11-13 초기 회차 하나)가 모델이 지어낸 키 이름이었다(11-17 셈).
+      - 이 위치는 실패 요약 문구(failure_message: DB·API 응답 failureMessage)와 내부 추적(EXPLANATION_ATTEMPT)으로 이어진다.
+        웹 화면은 설명 실패에 고정 문구를 쓰므로(docs/frontend-api.md 실패 코드 표) 화면에는 나오지 않는다.
+        "원문을 넣지 않는다"는 규칙대로 아는 어휘만 그대로 두고, 나머지는 위치를 "형식"으로 바꾼다. 코드는 엔진이 내는 코드(ENGINE_CODES)가 아니면 "?"로 바꾼다.
+      - 아는 어휘는 explanation.v1 스키마의 키, 라벨 사전(ko-v1)의 대응안·경고 코드, 엔진 검증기(validator.py)가 쓰는 꼬리표뿐이다.
+        엔진 새 판이 위치 모양을 늘리면 그 위치는 "형식"으로 보인다(test_explanation_locations: 검증기가 내는 모양과 실제 측정 위치로 확인).
 """
 
 UNKNOWN_LOCATION = "형식"
@@ -65,11 +66,12 @@ META_KEYS = (
 _alt = "|".join
 _FIELD = r"(?:run_summary|risk_summary|recommendation_explanation|option_explanations|warnings)"
 _BRACKET = rf"(?:\[(?:{_alt(OPTION_CODES + WARNING_CODES)})\])?"
-# 꼬리: 문장 번호(#s2), 라벨·문장 수·경고 집합, 금지 표현 항목 번호(:PF-01), 빠진 근거 경로(:missing /run/…, 엔진이 1,000자에서 자를 수 있음)
+# 꼬리: 문장 번호(#s2), 라벨·문장 수·경고 집합, 금지 표현 항목 번호(:PF-01), 가리킨 근거가 없는 표지(#s2:E9),
+# 빠진 근거 경로(:missing /run/…, 엔진이 1,000자에서 자를 수 있음), 빠진 "예측 기준" 문구(:missing 예측 기준)
 _TAIL = (
     r"(?:#s\d{1,2})?"
-    r"(?::(?:reason_label|status_label|result_class_label|sentences|set|[A-Z]{2}-\d{2}"
-    r"|missing [A-Za-z0-9_/.\-]{0,120}))?"
+    r"(?::(?:reason_label|status_label|result_class_label|sentences|set|[A-Z]{2}-\d{2}|E\d{1,4}"
+    r"|missing 예측 기준|missing [A-Za-z0-9_/.\-]{0,120}))?"
 )
 _ALLOWED = re.compile(
     "|".join(
@@ -126,7 +128,7 @@ def safe_failure_message(attempts: object) -> str:
     문자열을 잘라 읽지 않으므로 위치 안에 ";"·"|"·"@" 가 있어도 모양이 깨지지 않는다.
     """
     parts = []
-    for attempt in attempts if isinstance(attempts, list) else []:
+    for attempt in attempts if isinstance(attempts, (list, tuple)) else []:
         if not isinstance(attempt, dict):
             continue
         number = attempt.get("retry_no")

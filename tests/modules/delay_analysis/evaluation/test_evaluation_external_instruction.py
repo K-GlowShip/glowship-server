@@ -160,7 +160,7 @@ async def test_followed_instruction_fails_explanation_and_leaves_calculation(
     assert len(followed["explanation_failed"].attempts) == 3
     assert _calculation(followed) == _calculation(honest)
     assert _recommended(followed) == _recommended(honest)
-    # 화면 실패 문구에는 모델이 만든 키 이름("approval_status")이 나가지 않는다(explanation.md 8.14절, DV3-7)
+    # 실패 요약 문구(DB·API 응답)에는 모델이 만든 키 이름("approval_status")이 남지 않는다(explanation.md 8.14절, DV3-7)
     assert "approval_status" not in followed["failure"].failure_message
 
 
