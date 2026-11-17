@@ -15,7 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
         필터 status 와 건수가 같은 식을 보도록 CTE 안에서 계산한다.
       - 필터: 기간(decided_at, [from, to)), 유형, 상태, 선택자, 실행, 검색어. 값이 없으면(NULL) 그 조건은 통과한다.
         검색어는 지연 목록(4.4)과 같은 범위다: 선적 코드, 또는 그 선적에 실린 SKU 코드·상품명 부분 일치(대소문자 무시).
-      - 정렬은 decided_at 최신순, 같으면 decision_id (명세 4.7, 응답 본문 규칙 6.2). 두 표의 ID 는 서로 겹치지 않는다.
+      - 정렬은 decided_at 최신순 (명세 4.7, 응답 본문 규칙 6.2). 두 표의 ID 는 서로 겹치지 않는다.
+        같은 시각이면 최종 선택이 초안보다 위다. 같은 실행에서 최종 선택 뒤에는 초안을 저장할 수 없어 최종 선택이 항상 나중이다.
+        그다음은 decision_id 내림차순(UUIDv7, 나중에 만든 것이 위). 가상 시각에서는 판단 시각이 가장 최근 수집 시작이라
+        수집 사이의 판단이 모두 같은 시각이 되므로, 이 규칙이 없으면 최신순 목록에서 먼저 쓴 초안이 위에 보인다.
       - 대표 상품(D13)은 페이지의 선적 ID 배열로 상세 줄을 한 번에 읽어 서비스가 고른다 (목록 1회 + 건수 1회 + 상세 1회).
       - 운영에서는 RLS 가 고객사 범위를 강제하지만, 로컬 개발 DB 는 슈퍼유저라 RLS 를 우회하므로 모든 조인에 company_id 를 명시한다 (ERD 설명 4.6).
         다른 고객사의 사용자·실행 ID 를 필터로 받아도 조인 조건 때문에 0건이다.
@@ -98,14 +101,14 @@ _FILTER_PARAMS = (
 
 _LIST_PAGE = text(
     _FILTERED
-    + """
+    + f"""
     SELECT decision_type, decision_id, decided_at, status,
            run_id, run_code, run_status, run_result_class, run_failure_code, delay_event_id,
            shipment_id, shipment_code,
            user_id, display_name, role_code,
            response_option_id, option_type
       FROM filtered
-     ORDER BY decided_at DESC, decision_id
+     ORDER BY decided_at DESC, decision_type = '{DECISION_TYPE_FINAL}' DESC, decision_id DESC
     OFFSET :offset LIMIT :limit
     """
 ).bindparams(
