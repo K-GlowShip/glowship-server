@@ -1,6 +1,6 @@
-# 고객사 계정 생성 (Admin)
+# 고객사 계정 생성·목록 (Admin)
 
-Glowship 내부 관리자(ADMIN)가 담당 고객사에 Client 계정을 만드는 API가 **현재 어떻게 동작하는지** 설명합니다.
+Glowship 내부 관리자(ADMIN)가 담당 고객사에 Client 계정을 만들고(2절) 목록을 조회하는(9절) API가 **현재 어떻게 동작하는지** 설명합니다.
 계정 수정·비활성화와 OWNER의 계정 생성은 아직 구현되지 않았으며, 이 문서는 그 자리를 어떻게 비워 두었는지까지만 다룹니다(7절).
 
 고객사 계정은 공개 회원가입으로 만들지 않습니다(API 명세 D5). 내부 관리자가 이 API로 만들고, 초기 비밀번호는 관리자가 정해 고객사 직원에게 따로 전달합니다.
@@ -173,7 +173,7 @@ class ClientUserCreateRequest(CamelModel):
 
 ## 6. 테스트
 
-`tests/modules/user/` — DB 없이 실행됩니다.
+`tests/modules/user/` — DB 없이 실행됩니다(계정 목록의 시험은 9절).
 
 | 파일 | 내용 |
 | --- | --- |
@@ -196,10 +196,11 @@ DB 함수 경로는 로컬 DB에서 트랜잭션 안에 임시 고객사·ADMIN�
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/modules/user/presentation/client_account_api_router.py` | `POST /api/v1/admin/users` 엔드포인트 |
+| `app/modules/user/presentation/client_account_api_router.py` | `POST`·`GET /api/v1/admin/users` 엔드포인트 |
 | `app/modules/user/presentation/client_account_schemas.py` | 요청·응답 스키마 (camelCase) |
-| `app/modules/user/application/client_account_service.py` | 검사 순서, DB 오류 변환 |
-| `app/modules/user/infrastructure/repository/user_repository.py` | `create_client_user`(DB 함수 호출), `find_by_id` |
+| `app/modules/user/application/client_account_service.py` | 검사 순서, DB 오류 변환, `list_client_users` |
+| `app/modules/user/infrastructure/repository/user_repository.py` | `create_client_user`(DB 함수 호출), `find_by_id`, `find_client_users_page` |
+| `app/core/pagination.py` | `PageParams`, `Page`, `paginate` (목록) |
 | `app/modules/user/dependencies.py` | `get_client_account_service` 조립 |
 | `app/modules/company/infrastructure/repository/company_repository.py` | 고객사 조회 |
 | `app/modules/company/infrastructure/repository/admin_assignment_repository.py` | ADMIN 배정 조회 |
@@ -208,3 +209,89 @@ DB 함수 경로는 로컬 DB에서 트랜잭션 안에 임시 고객사·ADMIN�
 | `app/core/rls_context.py` | `set_rls_context` |
 | `app/core/schemas.py` | `CamelModel` |
 | `migrations/versions/0001_*.py` `_create_rls()` | 앱 역할 권한, `app_admin_context_ok`, `app_admin_create_client_user` |
+
+## 9. 계정 목록 API
+
+`GET /api/v1/admin/users` — 명세 3절 28번, 4.1절, C47 (GLOW-164, 프론트 요청 GLOW-103)
+
+담당 고객사의 Client 계정(`CLIENT_MEMBER`·`CLIENT_LEAD`)을 최근에 만든 순서로 돌려줍니다. ADMIN·OWNER 계정은 나오지 않습니다.
+
+### 권한
+
+`access_token` 쿠키의 역할이 ADMIN이고, 그 고객사에 **배정만 있으면** 됩니다. 계정 생성과 달리 계정 관리 권한(`can_manage_client_accounts`)은 보지 않습니다(명세 D25). 화면은 `GET /me`의 `assignedCompanies[].canManageClientAccounts`가 `false`면 목록은 보이되 관리 버튼을 숨깁니다.
+
+### 요청
+
+```http
+GET /api/v1/admin/users?companyId=1a2052c0-cbfc-523e-ac43-ff6e6d1dd9a6&roleCode=CLIENT_LEAD&page=1&size=20
+```
+
+| 쿼리 | 필수 | 설명 |
+| --- | --- | --- |
+| `companyId` | O | 조회할 고객사. 요청자가 배정된 고객사 (`GET /me`의 `assignedCompanies[]`에서 고른 값) |
+| `roleCode` | | `CLIENT_MEMBER`·`CLIENT_LEAD`. 생략하면 둘 다. `ADMIN`·`OWNER`는 422 |
+| `status` | | `ACTIVE`·`DISABLED`. 생략하면 둘 다 |
+| `page`·`size` | | 공통 목록 규칙. `page` 1부터(기본 1), `size` 기본 20·최대 100 |
+
+### 성공 응답
+
+```json
+{
+  "items": [
+    {
+      "userId": "01a18a64-97e5-77ce-b6d1-6bd3dbf58d48",
+      "email": "lead@client.com",
+      "displayName": "홍길동",
+      "roleCode": "CLIENT_LEAD",
+      "status": "ACTIVE",
+      "createdAt": "2026-11-16T03:00:00Z"
+    }
+  ],
+  "page": 1,
+  "size": 20,
+  "totalCount": 1,
+  "totalPages": 1
+}
+```
+
+- 정렬은 `createdAt` 내림차순, 같으면 `userId`입니다.
+- 행에 `companyId`와 비밀번호 관련 값은 없습니다. 계정이 없으면 `items`는 `[]`, `totalCount`·`totalPages`는 0입니다.
+
+### 실패 응답
+
+| 상태 | code | 상황 |
+| --- | --- | --- |
+| 401 | `UNAUTHENTICATED` | 쿠키 없음·만료·위조 |
+| 403 | `FORBIDDEN` | 역할이 ADMIN이 아님, 그 고객사에 배정되지 않음. **없는 고객사도 같은 응답** |
+| 404 | `COMPANY_NOT_FOUND` | 배정은 있는데 고객사 행이 보이지 않음(아래) |
+| 409 | `COMPANY_INACTIVE` | 고객사 `status`가 `INACTIVE` |
+| 422 | `VALIDATION_ERROR` | `companyId` 없음·UUID 아님, Client 역할이 아닌 `roleCode`, 없는 `status`, `page`·`size` 범위 밖 |
+
+- 배정을 먼저 확인하므로 배정되지 않은 고객사와 없는 고객사는 구분 없이 403입니다. 고객사가 있는지 알려 주지 않습니다.
+- 배정에는 고객사 FK가 있어 "배정은 있는데 고객사가 없는" 경우는 생기지 않습니다. 다만 운영(앱 DB 역할)에서는 `companies` 정책이 비활성 고객사를 보여 주지 않아, 비활성 고객사가 409가 아니라 404로 응답합니다. 운영 기준 목록(`docs/admin/operating-rule.md`)과 같은 동작입니다. `GET /me`의 `assignedCompanies[]`가 ACTIVE 고객사만 주므로 화면에서는 이 경우에 닿지 않습니다.
+
+### 서비스 로직 (`ClientAccountService.list_client_users`)
+
+```
+RLS 컨텍스트 설정 → admin_assignments 조회(403) → companies 조회(404 · 409) → users 한 페이지 + 전체 개수
+```
+
+검사 순서는 운영 기준 목록(`OperatingRuleService._enter_company_scope`)과 같습니다. 계정 생성(2절)은 고객사를 먼저 봐서 순서가 다릅니다.
+
+### DB 함수가 필요 없는 이유
+
+계정 생성은 앱 DB 역할에 `users` INSERT 권한이 없어 DB 함수를 쓰지만(4절), 조회는 정책만으로 됩니다. `users_select_tenant_or_self`가 "`app.company_id`의 고객사 범위가 허용된 요청자"에게 그 고객사의 계정을 보여 주고, 허용 여부(`app_context_allowed`)는 `app.user_id`가 그 고객사에 배정된 ACTIVE ADMIN인지를 봅니다. 그래서 마이그레이션이 없습니다.
+
+OWNER·ADMIN은 `company_id`가 비어 있어(`users_ck2`) 고객사 조건만으로도 빠지지만, 조회에 역할 조건(`CLIENT_ROLE_CODES`)을 함께 걸어 두었습니다.
+
+### 테스트
+
+| 파일 | 내용 |
+| --- | --- |
+| `test_client_account_list_service.py` | 가짜 Repository로 서비스 로직 검증. 계정 관리 권한 없이 배정만으로 조회, 필터·페이지 전달, 컨텍스트 → 배정 → 고객사 → 계정 순서, 미배정은 고객사를 읽기 전에 403, 고객사 없음 404·비활성 409 |
+| `test_client_account_list_api.py` | 라우터 검증. 쿠키 없음 401, OWNER·Client 역할 403, 형식 오류 422(`companyId`·`roleCode`·`status`·`page`·`size`), 성공 200과 camelCase 행·페이지 값, 필터 전달, 빈 목록 |
+| `test_client_user_list_sql.py` | 실제 DB(끝나면 롤백). 앱 DB 역할로 바꾸고 배정된 ADMIN의 컨텍스트에서 정렬·역할 범위·페이지·필터 확인, 배정되지 않은 ADMIN의 컨텍스트에서는 0행 |
+
+### 아직 없는 것
+
+비밀번호 재설정(`POST /admin/users/{userId}/password`, 명세 29번)은 별도 작업입니다. 계정 이름·역할 수정과 비활성화·활성화는 이번 범위가 아닙니다(명세 C47).
