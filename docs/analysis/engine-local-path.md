@@ -45,7 +45,7 @@
 | 단계 | 내용 |
 | --- | --- |
 | 경로 확인 | `GLOWSHIP_ENGINE_DIR`이 비었거나 그 아래에 `glowship_engine`이 없으면 `EngineNotConfiguredError`. 상대경로·`~`는 절대 경로로 바꾼 뒤 봅니다 |
-| 해시 대조 | 런타임 목록의 34개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
+| 해시 대조 | 런타임 목록의 36개가 모두 있고 바이트가 같은지 봅니다. 하나라도 없거나 다르면 `EngineIntegrityError`(없는 파일·다른 파일 목록 포함). 목록에 없는 파일(하네스·배포 도구 등)은 보지 않습니다 |
 | 불러오기 | 경로를 `sys.path`에 넣고 `glowship_engine.<모듈>`을 import 합니다. 엔진 `core.py`·`snapshot.py`가 형제 폴더 `synth2025_v5`를 직접 찾으므로 두 폴더는 나란히 있어야 합니다. 이때 엔진이 `synth2025_v5`를 `sys.path` **맨 앞**에 넣습니다(`core.py` 11행·`snapshot.py` 17행, 원본이라 서버에서 못 바꿈). 그래서 서버 코드에서 `allocation_core`·`keys`·`tests`라는 최상위 모듈을 만들거나 import 하지 않습니다(서버 코드 `app/`에는 `import tests`가 없음. 저장소 시험끼리는 `tests.modules.…`로 불러오는데, 저장소 `tests/`와 엔진 `synth2025_v5/tests/` 모두 `__init__.py`가 없어 두 폴더가 한 이름 아래 함께 보임. 11-10 확인) |
 | 캐시 파일 | 불러올 때 원본 폴더에 `.pyc`를 만들지 않습니다(`sys.dont_write_bytecode`). 공유 묶음을 바꾸지 않기 위해서입니다 |
 | 한 번만 | 해시 대조는 프로세스당 한 번 합니다(`load_verified_engine_dir`, `lru_cache`). 경로가 설정돼 있으면 **서버 시작 때** 하고(`engine_startup.verify_engine_on_startup`, 6절), 설정이 없으면 엔진을 처음 부를 때 `EngineNotConfiguredError`가 납니다 |
@@ -79,14 +79,14 @@ runner = engine_test_file("synth2025_v5/tests/run_g2.py")  # 대조된 파일의
    - 엔진 `glowship_engine/tests/`·`synth2025_v5/tests/` 아래 파일은 시험 목록에, 나머지는 런타임 목록에 넣습니다. 한 파일은 한 목록에만 넣습니다.
    - `tests/` 밖의 파일은 이름이 시험처럼 보여도 런타임 목록에 둡니다. `glowship_engine/testdb.py`는 `storage.py`가 불러와서 런타임 목록에 있습니다(7절).
    - 서버 시험이 쓰는 엔진 시험 파일과, 그 파일이 불러오는 시험 파일을 모두 시험 목록에 넣습니다. 목록에 없는 파일은 도우미가 내주지 않습니다.
-   - 개수가 바뀌면 `test_engine_loader.py`의 개수(런타임 34, 시험 12, 합 46, 런타임 모듈 20)도 함께 고칩니다. 이 시험이 두 목록이 겹치지 않는지, 런타임 목록에 `tests/` 경로가 없는지, 시험 폴더를 뺀 복사본으로 서버 시작 확인과 런타임 모듈 import가 되는지(엔진이 있을 때) 봅니다.
+   - 개수가 바뀌면 `test_engine_loader.py`의 개수(런타임 36, 시험 13, 합 49, 런타임 모듈 20)도 함께 고칩니다. 이 시험이 두 목록이 겹치지 않는지, 런타임 목록에 `tests/` 경로가 없는지, 시험 폴더를 뺀 복사본으로 서버 시작 확인과 런타임 모듈 import가 되는지(엔진이 있을 때) 봅니다.
 3. 엔진 입력 저장소를 다시 확인합니다. `test_engine_input_store.py`의 엔진 `Store` 소스 해시 시험이 실패하면, 옮겨 적은 색인 코드를 새 판과 맞추고 `GLOWSHIP_ENGINE_GOLDEN=1` 정답 대조를 돌린 뒤 해시를 갱신합니다(`engine-input-store.md` 3절). PR 체크리스트에 정답 대조 결과를 적습니다.
 4. PR로 목록을 바꿉니다. 팀원은 자기 PC의 원본도 같은 판으로 바꿔야 합니다. 바꾸지 않으면 `EngineIntegrityError`로 바로 알 수 있습니다.
 
 ## 5. 시험
 | 시험 | 엔진 없이 | 엔진 있을 때 |
 | --- | --- | --- |
-| 런타임 목록 34개·시험 목록 12개·필수 파일, 두 목록이 겹치지 않음, 런타임 목록에 `tests/` 경로 없음 | 돎 | 돎 |
+| 런타임 목록 36개·시험 목록 13개·필수 파일, 두 목록이 겹치지 않음, 런타임 목록에 `tests/` 경로 없음 | 돎 | 돎 |
 | 해시 대조(맞음 / 줄바꿈만 바뀜 / 파일 없음), 경로 확인·절대 경로 변환, `.pyc` 안 만듦 | 돎(임시 폴더) | 돎 |
 | 시험 폴더가 없어도 런타임 대조·런타임 모듈 불러오기·서버 시작 확인이 됨 / 시험 파일이 바뀌거나 없으면 도우미가 멈춤 / 런타임 파일이 바뀌어도 도우미가 멈춤 / 시험 목록 밖 파일 거부 / `load_engine_module("tests.…")` 거부 / 시험 목록 대조는 한 번 | 돎(가짜 엔진 폴더) | 돎 |
 | 실제 원본이 두 목록과 같음 | **건너뜀**(사유 표시) | 돎 |
@@ -99,7 +99,7 @@ runner = engine_test_file("synth2025_v5/tests/run_g2.py")  # 대조된 파일의
 
 ## 6. 배포
 - 배포 서버에도 같은 폴더 모양으로 원본을 두고 `GLOWSHIP_ENGINE_DIR`을 설정해야 합니다.
-- **운영 엔진 묶음에 필요한 파일:** 런타임 목록의 34개입니다. 엔진 시험 폴더(`glowship_engine/tests/`, `synth2025_v5/tests/`)는 넣지 않아도 서버가 뜹니다(11-10, 이슈 #98. 그 전에는 시험 파일 12개가 없으면 시작 확인에서 멈췄습니다). `glowship_engine/testdb.py`는 이름과 달리 `storage.py`가 불러오므로 꼭 넣습니다. 시험 폴더를 함께 두어도 됩니다(목록에 없는 파일은 보지 않음).
+- **운영 엔진 묶음에 필요한 파일:** 런타임 목록의 36개입니다. 엔진 시험 폴더(`glowship_engine/tests/`, `synth2025_v5/tests/`)는 넣지 않아도 서버가 뜹니다(11-10, 이슈 #98. 그 전에는 시험 파일 12개가 없으면 시작 확인에서 멈췄습니다). `glowship_engine/testdb.py`는 이름과 달리 `storage.py`가 불러오므로 꼭 넣습니다. 시험 폴더를 함께 두어도 됩니다(목록에 없는 파일은 보지 않음).
 - 이미지나 서버에 원본을 넣는 단계는 배포 작업(인프라)에서 정합니다.
 - `GLOWSHIP_ENGINE_DIR`이 설정돼 있으면 **서버 시작 단계**(`app.main.lifespan` → `verify_engine_on_startup`)에서 해시 대조를 한 번 합니다. 원본이 없거나 다르면 서버가 뜨지 않으므로 누락이 배포 직후에 드러납니다.
 - 설정하지 않으면 시작 단계 확인을 건너뛰고(로그 한 줄), 엔진이 필요한 기능을 처음 부를 때 `EngineNotConfiguredError`가 납니다. 엔진이 없는 PC·CI에서도 서버와 다른 시험이 돌아야 하기 때문입니다.
@@ -122,3 +122,4 @@ runner = engine_test_file("synth2025_v5/tests/run_g2.py")  # 대조된 파일의
   - 나누기만 하면 `load_engine_module("tests.…")`가 대조하지 않은 파일을 조용히 불러옵니다. 그래서 서버 쪽 로더는 `tests.*`를 거부하고, 시험은 시험 목록을 대조하는 도우미로 부르게 했습니다. 서버 시험 7개 파일에서 엔진 시험 모듈을 부르던 14곳과 판정 실행기 경로 1곳을 도우미로 바꿨습니다.
   - **대조 시간(이 PC, 파일 캐시가 데워진 상태에서 40회 중앙값, 두 번 측정):** 서버 시작 확인이 읽는 파일이 44 → 32개로 줄어 5.8~6.4 ms → 4.2~4.7 ms입니다. 시험 목록 12개 대조(1.7~1.9 ms)는 시험 프로세스에서만 한 번 합니다.
 - **실제 설명 모델 판(11-16):** 데이터 팀이 승인한 설명 프롬프트 1.1.1 과 실제 모델 설정 gpt-6-luna(생각 강도 medium)를 계획 저장소 tools/glowship_engine "엔진 수정 버전"(`0bb002e`)으로 받아, 런타임 목록에 `explain/assets/prompts/explain_ready_v1/1.1.1.md`·`explain/assets/model_configs/gpt-6-luna.json` 을 더하고 `registry_v2.json` 해시를 바꿨습니다(32 → 34개, 합 44 → 46). 등록부에는 1.1.0 도 들어 있어 각자 엔진 폴더에 `1.1.0.md` 도 함께 넣습니다(서버 목록에는 넣지 않음 — 서버가 쓰는 판은 1.0.0(mock)·1.1.1(실제 모델)). 옛 엔진 폴더로는 `EngineIntegrityError`(다른 파일 `registry_v2.json`, 없는 파일 두 개)로 멈추는 것을 확인했습니다(`test_engine_loader.py` 7건 실패 → 새 판에서 28건 통과). 판 고르기·설정은 `docs/agent-flow/explanation.md` 8.13절.
+- **설명 프롬프트 1.1.2·금지 표현 ko-v3(11-17):** 데이터 팀이 승인한 새 판을 계획 저장소 tools/glowship_engine "엔진 수정 버전"(<계획 커밋>)으로 받아, 런타임 목록에 `explain/assets/prompts/explain_ready_v1/1.1.2.md`·`explain/assets/forbidden_expressions/ko-v3.json` 을 더하고 `explain/assets.py`(금지 표현 기본 판 ko-v3)·`registry_v2.json` 해시를 바꿨습니다(34 → 36개). 시험 목록은 `tests/test_forbidden_boundary.py` 해시를 바꾸고 `tests/test_forbidden_approval_claim.py` 를 더했습니다(12 → 13개, 합 46 → 49). 1.1.1 은 등록부에 남아 목록에도 그대로 둡니다(서버가 쓰는 판은 1.0.0(mock)·1.1.2(실제 모델)). 이유·측정은 `docs/agent-flow/explanation.md` 8.14절.

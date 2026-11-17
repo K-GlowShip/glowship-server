@@ -59,9 +59,12 @@ def test_runtime_manifest_lists_only_files_the_server_runs():
     paths = {entry.path for entry in manifest}
 
     # 32 + 실제 설명 모델 판(11-16): 프롬프트 1.1.1·모델 설정 gpt-6-luna
-    assert len(manifest) == 34
-    assert len(paths) == 34
+    # + 11-17: 프롬프트 1.1.2·금지 표현 ko-v3(1.1.1 은 등록부에 남아 있어 그대로 둠)
+    assert len(manifest) == 36
+    assert len(paths) == 36
     assert "glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.1.md" in paths
+    assert "glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.2.md" in paths
+    assert "glowship_engine/explain/assets/forbidden_expressions/ko-v3.json" in paths
     assert "glowship_engine/explain/assets/model_configs/gpt-6-luna.json" in paths
     assert "synth2025_v5/allocation_core.py" in paths
     assert "glowship_engine/core.py" in paths
@@ -77,10 +80,12 @@ def test_test_manifest_lists_only_engine_test_files():
     manifest = read_test_manifest()
     paths = {entry.path for entry in manifest}
 
-    assert len(manifest) == 12
-    assert len(paths) == 12
+    # 12 + 금지 표현 ko-v3 시험(11-17)
+    assert len(manifest) == 13
+    assert len(paths) == 13
     assert [path for path in paths if not _is_engine_test_path(path)] == []
     assert "glowship_engine/tests/test_q9_donor_reason.py" in paths  # Q9 수정판 시험
+    assert "glowship_engine/tests/test_forbidden_approval_claim.py" in paths
     # GLOW-50 평가 시나리오 10건 fixture (GLOW-58). 그 fixture 가 불러오는 episodes 는 런타임 목록에 있다
     assert "glowship_engine/tests/fixture_glow50.py" in paths
     assert "synth2025_v5/tests/run_g2.py" in paths
@@ -92,8 +97,8 @@ def test_runtime_and_test_manifests_do_not_overlap():
     tests = {entry.path for entry in read_test_manifest()}
 
     assert runtime & tests == set()
-    # 나누기 전 목록 44개 + 실제 설명 모델 판 2개(11-16)
-    assert len(runtime | tests) == 46
+    # 나누기 전 목록 44개 + 실제 설명 모델 판 2개(11-16) + 프롬프트 1.1.2·금지 표현 ko-v3·그 시험 3개(11-17)
+    assert len(runtime | tests) == 49
 
 
 # --- 해시 대조 -------------------------------------------------------------------

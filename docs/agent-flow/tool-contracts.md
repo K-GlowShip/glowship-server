@@ -429,7 +429,7 @@ AI 설명(`explanation.v1`)이 계산 결과와 맞는지 검증합니다. agent
 | `UNREFERENCED_VALUE` | 근거 표지 없이 수치·날짜·코드를 씀 |
 | `OPTION_SET_MISMATCH` | 대응안 설명의 종류·순서가 입력 문서와 다름 |
 | `RECOMMENDATION_MISMATCH` | 추천 설명이 추천 대응안과 다름 |
-| `FORBIDDEN_EXPRESSION` | 금지 표현(확정·보장 표현 등, `ko-v2`) |
+| `FORBIDDEN_EXPRESSION` | 금지 표현(확정·보장·승인 주장 표현 등, `ko-v3`. 11-16 까지 `ko-v2`) |
 | `LENGTH_EXCEEDED` | 문장 수·문장 길이(120자)·본문 길이(1200자) 초과 |
 | `LANGUAGE_INVALID` | 언어가 `ko`가 아님 |
 | `LEAKAGE_DETECTED` | 확인값·이메일 같은 내부 정보 유출 |

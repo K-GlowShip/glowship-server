@@ -55,7 +55,8 @@ from app.modules.delay_analysis.infrastructure.agent_trace_outbox import (
           · 설명 시도 기록의 프롬프트·모델 출력 원문, 검증 위치 → EXPLANATION_ATTEMPT (explanation_attempts)
           · 그래프 밖으로 나가는 예외 문장 → NODE_ERROR·RUN_ERROR (on_chain_error)
       - 이름·전화·주소는 마스킹 규칙이 없으므로 "버려야 하는 칸"에만 넣는다. 주문 코드·이메일은 값을 남기는 칸
-        (설명 검증 위치)에도 넣어 가림까지 본다(ORD#·[EMAIL] 이 남았는지 양성 확인).
+        (설명 검증 위치)에도 넣는다. 11-17 부터 위치는 아는 어휘만 남기고 나머지는 "형식"으로 바꾸므로(explanation.md 8.14절)
+        모르는 모양의 위치는 통째로 사라지고, 아는 모양(`risk_summary:missing <경로>`) 안의 주문 코드는 가림까지 본다(ORD# 양성 확인).
       - model_usage 는 summarize_usage 결과(숫자·정해진 코드·모델 이름)만 받으며, 그 정리는 tests/core/test_llm_usage.py 가 본다.
       - 빈 파일로 통과하지 않게 사건 수·종류와 넣은 키 이름이 추적까지 갔는지를 함께 단언한다.
 """
@@ -133,6 +134,10 @@ def _probe_attempts(*, passed: bool) -> list[dict]:
         "codes": [
             ["VALUE_MISMATCH", f"/risk/{ORDER_CODE}/promised_date"],
             ["FORBIDDEN_EXPRESSION", f"risk_summary#s1 {EMAIL}"],
+            [
+                "SCHEMA_INVALID",
+                f"risk_summary:missing /risk/{ORDER_CODE}/promised_date",
+            ],
         ],
         "model_provider": "mock",
         "model_id": "mock-template-v1",
@@ -271,10 +276,13 @@ async def test_ready_run_trace_keeps_no_customer_personal_data(tmp_path):
         (e["attempt"], e["status"], e["error_code"])
         for e in _of(events, "TOOL_ATTEMPT", ToolName.GET_SALES_HISTORY.value)
     ] == [(1, "RETRY", TOOL_TEMPORARY_ERROR_EXHAUSTED), (2, "OK", None)]
-    # 값을 남기는 칸(검증 위치)의 주문 코드·이메일은 가린 값으로 남음
+    # 검증 위치: 모르는 모양은 "형식"(8.14절), 아는 모양 안의 주문 코드는 가린 값으로 남음
     first, second = _of(events, "EXPLANATION_ATTEMPT")
-    assert first["summary"]["codes"][0].startswith("VALUE_MISMATCH@/risk/ORD#")
-    assert first["summary"]["codes"][1].endswith(" [EMAIL]")
+    assert first["summary"]["codes"][0] == "VALUE_MISMATCH@형식"
+    assert first["summary"]["codes"][1] == "FORBIDDEN_EXPRESSION@형식"
+    assert first["summary"]["codes"][2].startswith(
+        "SCHEMA_INVALID@risk_summary:missing /risk/ORD#"
+    )
     assert second["status"] == "OK"
     assert events[-1]["kind"] == "RUN_END"
     assert events[-1]["summary"]["outcome"] == "READY_FOR_REVIEW"
@@ -322,7 +330,8 @@ def _explanation_failure_runtime(tracer):
     [
         (_hold_runtime, "ON_HOLD", True),  # 보류 문구(판정한 쪽 문구 그대로)
         (_tool_failure_runtime, "FAILED", False),  # 도구 권한 오류(문구는 고정)
-        (_explanation_failure_runtime, "FAILED", True),  # 설명 3회 실패 기록
+        # 설명 3회 실패 기록: 11-17 부터 실패 문구의 위치를 거르므로(explanation.md 8.14절) 가짜 값이 문구에도 실리지 않음
+        (_explanation_failure_runtime, "FAILED", False),
     ],
     ids=["hold", "tool_failure", "explanation_failure"],
 )

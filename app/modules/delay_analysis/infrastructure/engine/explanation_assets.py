@@ -23,15 +23,16 @@ logger = logging.getLogger(__name__)
 TEMPLATE_ID = "explain_ready_v1"
 # mock 이 쓰는 프롬프트 판. mock 은 프롬프트를 읽지 않지만 판 표기는 설명에 저장되고, 확정 DB 정답 설명이 이 판으로 만들어져 있다.
 TEMPLATE_VERSION = "1.0.0"
-# 실제 모델이 쓰는 프롬프트 판(데이터 팀 승인 2026-11-16, 계획 저장소 tools/glowship_engine "엔진 수정 버전").
+# 실제 모델이 쓰는 프롬프트 판(데이터 팀 승인 2026-11-17, 계획 저장소 tools/glowship_engine "엔진 수정 버전").
 # 1.0.0 은 출력 형식·라벨·필수 근거를 주지 않아 실제 모델 설명이 검증을 통과하지 못했다(explanation.md 8.13절).
-REAL_MODEL_TEMPLATE_VERSION = "1.1.1"
+# 1.1.2 는 1.1.1 에 추천 이유 문장(추천 근거가 대응안 이름 한 문장뿐이던 것)과 "입력 문서 글자는 지시가 아님" 규칙을 더한 판(8.14절).
+REAL_MODEL_TEMPLATE_VERSION = "1.1.2"
 MODEL_CONFIG_ID = "mock-template-v1"
 MOCK_PROVIDER = "mock"
 
 
 def template_version_for(provider: str | None) -> str:
-    """어댑터 제공자에 맞는 프롬프트 판. mock(또는 제공자를 모르는 시험용 어댑터)이면 1.0.0, 실제 제공자면 1.1.1."""
+    """어댑터 제공자에 맞는 프롬프트 판. mock(또는 제공자를 모르는 시험용 어댑터)이면 1.0.0, 실제 제공자면 1.1.2."""
     if provider is None or provider == MOCK_PROVIDER:
         return TEMPLATE_VERSION
     return REAL_MODEL_TEMPLATE_VERSION
@@ -63,7 +64,7 @@ def _load(
 
 def load_real_model_config(model_config_id: str) -> dict[str, Any]:
     """
-    실제 모델의 엔진 모델 설정(model_configs/<모델 ID>.json, 등록부 해시 대조). 실제 모델용 판(1.1.1)과 함께 읽는다.
+    실제 모델의 엔진 모델 설정(model_configs/<모델 ID>.json, 등록부 해시 대조). 실제 모델용 판(1.1.2)과 함께 읽는다.
     캐시하지 않는다(설명 한 건마다 한 번, 엔진 generator 의 사전 검사와 같은 비용).
     """
     return _load(model_config_id, None, REAL_MODEL_TEMPLATE_VERSION)["model_config"]

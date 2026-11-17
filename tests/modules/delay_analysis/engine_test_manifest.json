@@ -49,9 +49,14 @@
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
+      "path": "glowship_engine/tests/test_forbidden_approval_claim.py",
+      "sha256": "2977f75cc1e87956fffee3b4e80dc3654de5fb0497b618f6ea92a438eb75f7ca",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/tests/test_forbidden_approval_claim.py (ko-v3 승인·확정 주장 시험 58건)"
+    },
+    {
       "path": "glowship_engine/tests/test_forbidden_boundary.py",
-      "sha256": "1f4f9ef3e0be6a92442b5c53db4ada8aa2c8d42a087b8c29c56bd90bdfd6d0fd",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+      "sha256": "0e6274219e1b03a8aacb831e54cf78861f865e6c1910b9057d031060c7b90dc9",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/tests/test_forbidden_boundary.py (ko-v2 fixture 를 ko-v2 로 명시해 읽음 — 기본이 ko-v3 이 된 뒤)"
     },
     {
       "path": "glowship_engine/tests/test_q9_donor_reason.py",

@@ -50,8 +50,8 @@
     },
     {
       "path": "glowship_engine/explain/assets.py",
-      "sha256": "898251e9b0ecd9d6e4d5a42b835947262b09873b4d510707900f1194f98ad360",
-      "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+      "sha256": "6de0b16d07eb4d58bac3bd04a08597d00aa714499250700ef134ebc94b486b80",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/explain/assets.py (금지 표현 기본 ko-v3, 데이터 팀 승인 2026-11-17)"
     },
     {
       "path": "glowship_engine/explain/assets/forbidden_expressions/ko-v1.json",
@@ -62,6 +62,11 @@
       "path": "glowship_engine/explain/assets/forbidden_expressions/ko-v2.json",
       "sha256": "3c13c9642bd1b8462c5ea3039379b7f58abb3feeef0080cf4775834fa43f3012",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
+    },
+    {
+      "path": "glowship_engine/explain/assets/forbidden_expressions/ko-v3.json",
+      "sha256": "718e4a771cdb3d0bf98291e3e05d49f7884c59d38a895ead33416efb21a3778f",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/explain/assets/forbidden_expressions/ko-v3.json (승인·확정 주장 AC-01~03 추가, 이슈 #135, 데이터 팀 승인 2026-11-17)"
     },
     {
       "path": "glowship_engine/explain/assets/labels/ko-v1.json",
@@ -89,14 +94,19 @@
       "recorded_in": "glowship-plan 0bb002e tools/glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.1.md (설명 프롬프트 1.1.1, 실제 모델용, 데이터 팀 승인 2026-11-16)"
     },
     {
+      "path": "glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.2.md",
+      "sha256": "d93355938200c2193d18918b56fd4d5c2f7d2514191b0f975af6648e54003dde",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/explain/assets/prompts/explain_ready_v1/1.1.2.md (설명 프롬프트 1.1.2, 실제 모델용 — 추천 이유 문장·입력 글자는 지시 아님, 데이터 팀 승인 2026-11-17)"
+    },
+    {
       "path": "glowship_engine/explain/assets/registry.json",
       "sha256": "2e8503b1a84aef22ed4762a8ffc0f04b818acd5d95ecb1e76171738ba8a2cbe7",
       "recorded_in": "03_분석_overlay_v1_run1/manifest.json"
     },
     {
       "path": "glowship_engine/explain/assets/registry_v2.json",
-      "sha256": "a44108d956e73fa9701cdc8d03567833670a0c9f003ca3647a75efa76c666925",
-      "recorded_in": "glowship-plan 0bb002e tools/glowship_engine/explain/assets/registry_v2.json (1.1.0·1.1.1 프롬프트·gpt-6-luna 모델 설정 항목 추가 판)"
+      "sha256": "39a247fc206aa4f6270db34b41de89672eb4f49f5235bbd290ae2f252f630b63",
+      "recorded_in": "glowship-plan <계획 커밋> tools/glowship_engine/explain/assets/registry_v2.json (1.1.2 프롬프트·ko-v3 금지 표현 항목 추가 판)"
     },
     {
       "path": "glowship_engine/explain/assets/schemas/explanation.v1.schema.json",
