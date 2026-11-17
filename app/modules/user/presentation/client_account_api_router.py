@@ -1,7 +1,7 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from starlette import status
 
 from app.core.exceptions import ErrorResponse
@@ -14,9 +14,11 @@ from app.modules.user.presentation.client_account_schemas import (
     ClientUserCreateRequest,
     ClientUserCreateResponse,
     ClientUserListItemResponse,
+    ClientUserPasswordResetRequest,
 )
 
 # 내부 관리자용 API. 고객사 범위를 토큰이 아니라 요청(생성은 본문, 목록은 쿼리의 companyId)으로 받는 예외 경로다.
+# 비밀번호 재설정은 계정(userId)만 받고, 그 계정의 고객사에 요청자가 배정되어 있는지는 DB 함수가 확인한다.
 router = APIRouter(prefix="/api/v1/admin", tags=["고객사 계정 관리 (Admin)"])
 
 # Ruff B008: 의존성 팩토리 호출은 기본 인자가 아니라 모듈 수준에서 한 번만 만든다.
@@ -125,3 +127,50 @@ async def create_client_user(
         display_name=request.display_name,
     )
     return ClientUserCreateResponse.model_validate(user)
+
+
+@router.post(
+    "/users/{user_id}/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="고객사 계정 비밀번호 재설정 (API 29)",
+    description=(
+        "Glowship ADMIN 이 담당 고객사 Client 계정(CLIENT_MEMBER·CLIENT_LEAD)의 비밀번호를 새 값으로 바꿉니다. "
+        "요청자가 그 계정의 고객사에 배정되어 있고 계정 관리 권한(can_manage_client_accounts)이 있어야 합니다. "
+        "새 비밀번호는 Base64 인코딩된 상태로 전달되어야 합니다. 이미 발급된 토큰은 폐기하지 않아, "
+        "재설정 뒤에도 기존 access 토큰은 최대 30분·refresh 토큰은 최대 7일 유효합니다."
+    ),
+    responses={
+        204: {"description": "재설정 완료. 본문 없음"},
+        400: {
+            "model": ErrorResponse,
+            "description": "비밀번호 형식 오류 (Base64가 아니거나, 디코딩 결과가 영문·숫자 6~16자가 아님)",
+        },
+        401: {
+            "model": ErrorResponse,
+            "description": "로그인 필요 (access_token 쿠키 없음·만료)",
+        },
+        403: {
+            "model": ErrorResponse,
+            "description": "ADMIN 이 아니거나, 그 계정의 고객사에 배정은 있으나 계정 관리 권한이 없음. 허용되지 않은 Origin",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "USER_NOT_FOUND: 없는 계정, 배정되지 않은 고객사의 계정, Client 역할이 아닌 계정 (구분 없음)",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "요청 형식 오류 (userId 가 UUID 아님, password 누락)",
+        },
+    },
+)
+async def reset_client_user_password(
+    user_id: uuid.UUID,
+    request: ClientUserPasswordResetRequest,
+    current_user: CurrentUser = Depends(require_admin),
+    service: ClientAccountService = Depends(get_client_account_service),
+) -> Response:
+    """고객사 계정 비밀번호 재설정 API 엔드포인트"""
+    await service.reset_client_user_password(
+        actor=current_user, user_id=user_id, encoded_password=request.password
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

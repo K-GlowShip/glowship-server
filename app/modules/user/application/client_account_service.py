@@ -21,6 +21,7 @@ from app.modules.company.infrastructure.repository.company_repository import (
 )
 from app.modules.user.application.exception.user_exceptions import (
     EmailDuplicatedException,
+    UserNotFoundException,
 )
 from app.modules.user.application.password import (
     decode_password,
@@ -32,6 +33,8 @@ from app.modules.user.infrastructure.user_enums import UserRoleCode, UserStatus
 
 # PostgreSQL SQLSTATE: DB 함수가 권한 검사에 실패했을 때
 _PG_INSUFFICIENT_PRIVILEGE = "42501"
+# PostgreSQL SQLSTATE: 비밀번호 재설정 함수가 대상을 담당 고객사의 Client 계정으로 찾지 못했을 때 (no_data_found)
+_PG_NO_DATA_FOUND = "P0002"
 
 
 class ClientAccountService:
@@ -172,3 +175,47 @@ class ClientAccountService:
         return await self.user_repo.find_client_users_page(
             company_id=company_id, role_code=role_code, status=status, params=params
         )
+
+    async def reset_client_user_password(
+        self,
+        *,
+        actor: CurrentUser,
+        user_id: uuid.UUID,
+        encoded_password: str,
+    ) -> None:
+        """
+        담당 고객사 Client 계정의 비밀번호를 새 값으로 바꾼다.
+
+        요청은 계정만 지정하므로 대상의 고객사를 여기서 모른다. 배정·계정 관리 권한·대상 범위 검사는
+        DB 함수(app_admin_reset_client_user_password)가 한 번에 하고, 서비스는 그 결과를 오류 코드로 바꾼다.
+        이미 발급된 토큰은 폐기하지 않는다. 만료까지 유효하다 (명세 D26).
+
+        Args:
+            actor: 요청한 ADMIN (라우터에서 역할을 이미 확인함)
+            user_id: 비밀번호를 바꿀 계정
+            encoded_password: 프론트엔드에서 btoa()로 인코딩하여 보낸 Base64 새 비밀번호
+
+        Raises:
+            InvalidPasswordFormatException: Base64 디코딩 실패 또는 비밀번호 정책 위반 (400)
+            ForbiddenException: 대상 고객사에 배정은 있으나 계정 관리 권한이 없음, 요청자가 ACTIVE ADMIN 이 아님 (403)
+            UserNotFoundException: 없는 계정, 배정되지 않은 고객사의 계정, Client 역할이 아닌 계정 (404, 구분 없음)
+        """
+        # DB 에 접근하지 않는 검사를 먼저 수행한다.
+        raw_password = decode_password(encoded_password)
+        validate_password_policy(raw_password)
+        password_hash = await hash_password(raw_password)
+
+        # 함수는 app.user_id 로 요청자를 안다. 대상의 고객사는 함수가 읽으므로 app.company_id 는 비워 둔다.
+        await set_rls_context(self.db, user_id=actor.user_id, company_id=None)
+
+        try:
+            await self.user_repo.reset_client_user_password(
+                user_id=user_id, password_hash=password_hash
+            )
+        except DBAPIError as e:
+            pgcode = getattr(e.orig, "pgcode", None)
+            if pgcode == _PG_NO_DATA_FOUND:
+                raise UserNotFoundException() from e
+            if pgcode == _PG_INSUFFICIENT_PRIVILEGE:
+                raise ForbiddenException() from e
+            raise
