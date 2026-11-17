@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import text
 
 from app.modules.decision.infrastructure.repository.decision_repository import (
@@ -9,7 +10,7 @@ from app.modules.decision.infrastructure.repository.decision_repository import (
 )
 
 """
-    DecisionRepository SQL 스모크 테스트 (실제 DB, 읽기 전용, 롤백)
+    DecisionRepository SQL 스모크 테스트 (실제 DB, 롤백. 같은 시각 정렬 시험만 초안을 넣고 나머지는 읽기 전용)
       - 단위 테스트는 가짜 리포지토리로만 돌기 때문에, 여기서 UNION·조인·CASE 가 실제로 실행되고 결과 형태가 맞는지 확인합니다.
       - 빈 DB 에서도 SQL 은 실행되어야 하므로, 데이터에 기대는 확인은 데이터가 있을 때만 합니다.
       - 2026 H1 overlay(고객사 A 초안 2·최종 선택 2)가 적재되어 있으면 상태 3종·동점 정렬·필터 건수까지 확인합니다.
@@ -77,9 +78,12 @@ async def test_목록은_판단_시각_최신순이고_건수는_두_표의_합�
     if not page.rows:
         return
 
-    keys = [(row.decided_at, row.decision_id) for row in page.rows]
-    # decided_at 내림차순, 같으면 decision_id 오름차순
-    assert keys == sorted(keys, key=lambda k: (-k[0].timestamp(), k[1]))
+    keys = [
+        (row.decided_at, row.decision_type == "FINAL", row.decision_id)
+        for row in page.rows
+    ]
+    # decided_at 내림차순, 같으면 최종 선택이 위, 그다음 decision_id 내림차순
+    assert keys == sorted(keys, reverse=True)
     for row in page.rows:
         assert row.decision_type in ("DRAFT", "FINAL")
         assert row.status in ("DRAFT", "FINAL", "NEEDS_REANALYSIS")
@@ -92,6 +96,63 @@ async def test_목록은_판단_시각_최신순이고_건수는_두_표의_합�
                 "NEEDS_REANALYSIS" if row.run_status == "STALE" else "DRAFT"
             )
             assert row.role_code == "CLIENT_MEMBER"
+
+
+async def test_같은_시각이면_최종_선택이_초안보다_위이고_그다음은_나중에_만든_것이_위다(
+    db_write_session,
+):
+    """가상 시각에서는 초안과 최종 선택이 같은 판단 시각(최근 수집 시작)으로 저장된다.
+    최신순 목록에서 먼저 쓴 초안이 위로 오지 않게, 최종 선택보다 ID 가 큰 초안 둘을 같은 시각으로 넣어 본다(롤백)."""
+    db = db_write_session
+    final = (
+        await db.execute(
+            text(
+                "SELECT f.company_id, f.analysis_run_id, f.final_decision_id, f.decided_at,"
+                " (SELECT u.user_id FROM users u WHERE u.company_id = f.company_id"
+                "   AND u.role_code = 'CLIENT_MEMBER' ORDER BY u.user_id LIMIT 1) AS member_id"
+                " FROM final_decisions f ORDER BY f.final_decision_id LIMIT 1"
+            )
+        )
+    ).first()
+    if final is None or final.member_id is None:
+        pytest.skip("최종 선택과 같은 고객사 팀원이 없는 DB")
+
+    earlier, later = sorted(
+        uuid.UUID(int=final.final_decision_id.int + n) for n in (1, 2)
+    )
+    for draft_id in (earlier, later):
+        await db.execute(
+            text(
+                "INSERT INTO member_drafts (member_draft_id, company_id, analysis_run_id,"
+                " user_id, response_option_id, opinion_text, created_at)"
+                " VALUES (:d, :c, :r, :u, NULL, '같은 시각 정렬 확인', :t)"
+            ),
+            {
+                "d": draft_id,
+                "c": final.company_id,
+                "r": final.analysis_run_id,
+                "u": final.member_id,
+                "t": final.decided_at,
+            },
+        )
+
+    page = await DecisionRepository(db).find_page(
+        final.company_id,
+        DecisionFilter(run_id=final.analysis_run_id),
+        offset=0,
+        limit=100,
+    )
+
+    same_time = [
+        (row.decision_type, row.decision_id)
+        for row in page.rows
+        if row.decided_at == final.decided_at
+    ]
+    assert same_time == [
+        ("FINAL", final.final_decision_id),
+        ("DRAFT", later),
+        ("DRAFT", earlier),
+    ]
 
 
 async def test_상태_유형_선택자_실행_필터_건수가_직접_센_값과_같다(db_session):

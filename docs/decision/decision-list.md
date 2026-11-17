@@ -46,7 +46,10 @@ sequenceDiagram
 | `runId` | 실행 UUID | 그 실행의 초안·최종 선택만. 지연 대응 센터에서 링크로 진입할 때 사용 |
 | `page` · `size` | 1부터 / 1~100 | 기본 1 / 20. 화면은 10행씩이라 `size=10` |
 
-정렬은 `decidedAt` 최신순, 같으면 `decisionId` 오름차순입니다(명세 4.7). 두 표의 ID는 UUIDv7이라 서로 겹치지 않습니다.
+정렬은 `decidedAt` 최신순입니다(명세 4.7). 같은 시각이면 최종 선택이 초안보다 위이고, 그다음은 `decisionId` 내림차순(나중에 만든 것이 위)입니다. 두 표의 ID는 UUIDv7이라 서로 겹치지 않습니다.
+
+- 같은 실행에서 최종 선택 뒤에는 초안을 저장할 수 없으므로(`FINAL_DECISION_EXISTS`), 시각이 같으면 최종 선택이 항상 나중입니다.
+- 가상 시각에서는 판단 시각이 그 고객사의 가장 최근 수집 시작이라(`DecisionClock`), 수집 사이에 쓴 초안과 최종 선택이 같은 시각이 됩니다. 이 규칙이 없으면 최신순 목록에서 먼저 쓴 초안이 위에 보입니다.
 
 ### 성공 응답
 
@@ -123,7 +126,7 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 
 - `decisions` CTE: 두 표를 `(decision_type, decision_id, decided_at, company_id, analysis_run_id, user_id, response_option_id)`로 세운 `UNION ALL`. 각 표에 `company_id` 조건.
 - `joined` CTE: `analysis_runs`(실행 요약·`status` 계산) → `delay_events` → `shipments`, `users`, `LEFT JOIN response_options`. 기간·유형·선택자·실행·검색어 필터.
-- `filtered` CTE: 계산된 `status` 필터. 목록은 `ORDER BY decided_at DESC, decision_id` + `OFFSET`·`LIMIT`, 건수는 같은 CTE의 `COUNT(*)`.
+- `filtered` CTE: 계산된 `status` 필터. 목록은 `ORDER BY decided_at DESC, decision_type = 'FINAL' DESC, decision_id DESC` + `OFFSET`·`LIMIT`, 건수는 같은 CTE의 `COUNT(*)`.
 - 상세 줄은 페이지의 선적 ID 배열(중복 제거)로 `shipment_lines ⋈ skus` 1회. 요청당 SQL 3회(RLS 컨텍스트 제외).
 - 모든 조인에 `company_id`를 명시합니다. 로컬 DB는 슈퍼유저라 RLS를 우회하기 때문입니다(ERD 설명 4.6).
 
@@ -135,7 +138,7 @@ SQL의 `CASE` 한 식으로 계산합니다(`decision_repository.py`의 `joined`
 | --- | --- |
 | `test_decision_api.py` | 라우터. 쿠키 없음 401, OWNER·ADMIN 403, 형식 오류 10종 422, 서비스의 기간 오류 422, 필터·페이지 전달, 생략 시 기본값, 응답 키 10개와 요약 객체 모양, `null` 직렬화, RLS 컨텍스트 설정. DB 없이 실행 |
 | `test_decision_list_service.py` | 서비스. 필터 전달·공백 검색어, UTC 정규화, `from > to` 422·`from = to` 통과, 대표 상품 규칙(수량 최대·동률·상세 없음), 대응안 없는 초안, 같은 선적 여러 행. DB 없이 실행 |
-| `test_decision_repository_sql_smoke.py` | 실제 DB 읽기 전용. 빈 고객사 0건, 모든 필터로 SQL 실행, 두 표 합과 정렬, 상태·유형·선택자·실행 필터 건수 대조, 검색어(선적 코드·SKU), 기간 끝 미포함, 상세 줄 수. DB 없으면 건너뜀 |
+| `test_decision_repository_sql_smoke.py` | 실제 DB, 롤백. 빈 고객사 0건, 모든 필터로 SQL 실행, 두 표 합과 정렬, 같은 시각이면 최종 선택이 위이고 그다음 나중에 만든 초안이 위(초안 둘을 넣어 확인), 상태·유형·선택자·실행 필터 건수 대조, 검색어(선적 코드·SKU), 기간 끝 미포함, 상세 줄 수. DB 없으면 건너뜀 |
 
 로컬 DB(2026 H1 적재, 고객사 A) 실측: 전체 4건, `status=NEEDS_REANALYSIS` 1·`FINAL` 2, `decisionType=DRAFT` 2, 팀장 `decidedBy` 2, `q=OCN-20251215` 3, `runId=E1 v2` 2, `from = to` 0, 고객사 B 0. 01-01 02:00Z 동점 두 건은 최종 선택(`399e…`)이 초안(`f78a…`)보다 앞입니다.
 
