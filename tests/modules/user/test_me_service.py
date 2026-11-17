@@ -6,6 +6,9 @@ import pytest
 
 from app.core.exceptions import UnauthenticatedException
 from app.core.security.auth import CurrentUser
+from app.modules.company.infrastructure.repository.admin_assignment_repository import (
+    AssignedCompany,
+)
 from app.modules.user.application.exception.user_exceptions import (
     AccountDisabledException,
 )
@@ -22,6 +25,17 @@ CLIENT_LEAD = CurrentUser(
 )
 ADMIN = CurrentUser(user_id=USER_ID, role_code="ADMIN", company_id=None)
 OWNER = CurrentUser(user_id=USER_ID, role_code="OWNER", company_id=None)
+
+ASSIGNED_COMPANIES = [
+    AssignedCompany(
+        company_id=COMPANY_ID, company_name="A Beauty", can_manage_client_accounts=True
+    ),
+    AssignedCompany(
+        company_id=uuid.uuid7(),
+        company_name="B Cosmetics",
+        can_manage_client_accounts=False,
+    ),
+]
 
 
 def _user(
@@ -65,12 +79,30 @@ class FakeCompanyRepository:
         return self.company
 
 
+@dataclass
+class FakeAdminAssignmentRepository:
+    assigned_companies: list = field(default_factory=list)
+    calls: list = field(default_factory=list)
+
+    async def find_assigned_companies(self):
+        self.calls.append(("assigned",))
+        return list(self.assigned_companies)
+
+
 def _service(
-    *, user=None, company=ACTIVE_COMPANY
+    *, user=None, company=ACTIVE_COMPANY, assigned_companies=()
 ) -> tuple[MeService, FakeUserRepository, FakeCompanyRepository]:
+    """담당 고객사 가짜 리포지토리는 service.admin_assignment_repo 로 꺼내 본다."""
     user_repo = FakeUserRepository(user=user)
     company_repo = FakeCompanyRepository(company=company)
-    service = MeService(db=FAKE_DB, user_repo=user_repo, company_repo=company_repo)
+    service = MeService(
+        db=FAKE_DB,
+        user_repo=user_repo,
+        company_repo=company_repo,
+        admin_assignment_repo=FakeAdminAssignmentRepository(
+            assigned_companies=list(assigned_companies)
+        ),
+    )
     return service, user_repo, company_repo
 
 
@@ -103,6 +135,7 @@ async def test_고객사_사용자는_DB_행과_고객사명을_돌려준다():
         role_code=UserRoleCode.CLIENT_LEAD,
         company_id=COMPANY_ID,
         company_name="A Beauty",
+        assigned_companies=(),
     )
 
 
@@ -134,6 +167,67 @@ async def test_소속_고객사가_없는_역할은_고객사_필드가_None_이
     assert company_repo.calls == []
 
 
+@pytest.mark.parametrize(
+    ("current_user", "role_code"),
+    [(ADMIN, UserRoleCode.ADMIN), (OWNER, UserRoleCode.OWNER)],
+)
+async def test_ADMIN_과_OWNER_는_담당_고객사_목록을_순서_그대로_돌려준다(
+    current_user, role_code
+):
+    service, _, _ = _service(
+        user=_user(role_code=role_code, company_id=None),
+        assigned_companies=ASSIGNED_COMPANIES,
+    )
+
+    profile = await service.get_me(current_user)
+
+    assert profile.assigned_companies == tuple(ASSIGNED_COMPANIES)
+
+
+async def test_배정이_없는_ADMIN_은_담당_고객사가_빈_목록이다():
+    service, _, _ = _service(user=_user(role_code=UserRoleCode.ADMIN, company_id=None))
+
+    profile = await service.get_me(ADMIN)
+
+    assert profile.assigned_companies == ()
+    assert service.admin_assignment_repo.calls == [("assigned",)]
+
+
+async def test_고객사_사용자는_담당_고객사를_조회하지_않고_빈_목록이다():
+    service, _, _ = _service(user=_user(), assigned_companies=ASSIGNED_COMPANIES)
+
+    profile = await service.get_me(CLIENT_LEAD)
+
+    assert profile.assigned_companies == ()
+    assert service.admin_assignment_repo.calls == []
+
+
+async def test_담당_고객사_조회_여부는_토큰이_아니라_DB_역할로_정한다():
+    # 토큰은 ADMIN 이지만 DB 가 CLIENT_LEAD 면 조회하지 않는다 (토큰 발급 뒤 역할이 바뀐 경우).
+    service, _, _ = _service(user=_user(), assigned_companies=ASSIGNED_COMPANIES)
+
+    profile = await service.get_me(ADMIN)
+
+    assert profile.assigned_companies == ()
+    assert service.admin_assignment_repo.calls == []
+
+
+async def test_담당_고객사는_RLS_컨텍스트와_계정_검사_뒤에_조회한다(rls_context_calls):
+    service, user_repo, _ = _service(
+        user=_user(role_code=UserRoleCode.ADMIN, company_id=None)
+    )
+    user_repo.calls = rls_context_calls
+    service.admin_assignment_repo.calls = rls_context_calls
+
+    await service.get_me(ADMIN)
+
+    assert rls_context_calls == [
+        ("ctx", FAKE_DB, USER_ID, None),
+        ("user", USER_ID),
+        ("assigned",),
+    ]
+
+
 async def test_RLS_컨텍스트는_첫_DB_조회_전에_토큰의_사용자와_고객사로_설정한다(
     rls_context_calls,
 ):
@@ -158,6 +252,7 @@ async def test_토큰의_사용자가_DB_에_없으면_401을_던진다():
         await service.get_me(CLIENT_LEAD)
 
     assert company_repo.calls == []
+    assert service.admin_assignment_repo.calls == []
 
 
 async def test_비활성_계정이면_403을_던진다():
@@ -167,6 +262,20 @@ async def test_비활성_계정이면_403을_던진다():
         await service.get_me(CLIENT_LEAD)
 
     assert company_repo.calls == []
+
+
+async def test_비활성_ADMIN_은_담당_고객사를_조회하기_전에_403을_던진다():
+    service, _, _ = _service(
+        user=_user(
+            role_code=UserRoleCode.ADMIN, company_id=None, status=UserStatus.DISABLED
+        ),
+        assigned_companies=ASSIGNED_COMPANIES,
+    )
+
+    with pytest.raises(AccountDisabledException):
+        await service.get_me(ADMIN)
+
+    assert service.admin_assignment_repo.calls == []
 
 
 async def test_고객사_행이_없으면_고객사명만_None_이다():
