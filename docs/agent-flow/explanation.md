@@ -451,7 +451,7 @@ dev 서버(리눅스)에서는 값이 다를 수 있습니다. 메모리가 작�
 - **금지 표현 ko-v3(엔진 자산 + 로더 기본값 한 줄):** ko-v2 34항목·허용 2항목 그대로에 승인·확정 주장 AC-01~03 을 더했습니다(이슈 #135). 엔진 로더(`explain/assets.load`)의 기본 판이 `ko-v2` → `ko-v3` 로 바뀝니다. `ko-v2` 는 등록부에 남아 지난 경계 시험이 명시해 읽습니다. 거짓 적중 검사: 실제 모델 통과 설명 전부·라벨·1.1.2 예시 문장 2,994개에서 0개, 승인 주장 8문장 8/8 적중.
 - **실패 위치 거르기(서버, 7절 7번):** `app/modules/delay_analysis/application/agent/explanation_locations.py` 가 화면 실패 문구(`failure_message` 의 "(시도: …)")와 내부 추적(`EXPLANATION_ATTEMPT` 의 codes·error_code)에서 아는 어휘만 남깁니다. 아는 어휘 = 엔진 검증 코드 13개, explanation.v1 키, 라벨 사전의 대응안·경고 코드, 검증기 꼬리표(`#s2`·`:status_label`·`:missing <경로>` 등). 그 밖의 위치는 "형식", 코드는 "?" 입니다. `failure_message` 는 엔진 문자열을 잘라 읽지 않고 시도 기록으로 다시 만듭니다(위치 안에 `;`·`|` 가 있어도 모양이 안 깨짐, 길이 1,000자 그대로).
   - 예: `1:SCHEMA_INVALID@/metadata;2:…` → `1:SCHEMA_INVALID@형식;2:…`. 실제 측정 위치 103가지 가운데 고정 어휘는 그대로 남습니다(`test_explanation_locations.py`).
-- **엔진 판:** 계획 저장소 tools/glowship_engine "엔진 수정 버전"(<계획 커밋>)의 `explain/assets/prompts/explain_ready_v1/1.1.2.md`·`explain/assets/forbidden_expressions/ko-v3.json`·`explain/assets/registry_v2.json`·`explain/assets.py`, 시험 `tests/test_forbidden_boundary.py`(ko-v2 명시)·`tests/test_forbidden_approval_claim.py`(새로). 서버 런타임 해시 목록 34 → 36개, 시험 목록 12 → 13개입니다(`docs/analysis/engine-local-path.md`).
+- **엔진 판:** 계획 저장소 tools/glowship_engine "엔진 수정 버전"(a791227)의 `explain/assets/prompts/explain_ready_v1/1.1.2.md`·`explain/assets/forbidden_expressions/ko-v3.json`·`explain/assets/registry_v2.json`·`explain/assets.py`, 시험 `tests/test_forbidden_boundary.py`(ko-v2 명시)·`tests/test_forbidden_approval_claim.py`(새로). 서버 런타임 해시 목록 34 → 36개, 시험 목록 12 → 13개입니다(`docs/analysis/engine-local-path.md`).
 - **측정(1.1.1 과 같은 조건: 서버 경로 어댑터·엔진 생성기·검증기, 평가 시나리오 10건 중 설명이 만들어지는 8건(설명 9개), gpt-6-luna medium, 팀 키):**
 
 | 프롬프트 · 생각 강도 | 첫 시도 통과 | 최종 통과 | 추천 이유 문장 | 호출 한 번(중앙·최대) | 건당 |
@@ -459,8 +459,10 @@ dev 서버(리눅스)에서는 값이 다를 수 있습니다. 메모리가 작�
 | 1.1.1 · medium · 9×5(11-16) | 45/45 | 45/45 | 0/45 | 17.1초 · 29.3초 | $0.0012 |
 | 1.1.2 · medium · 9×1 | 9/9 | 9/9 | 9/9 | 17.2초 · 21.9초 | $0.0017 |
 | **1.1.2 · medium · 9×5** | **44/45** | **45/45** | **45/45** | 18.7초 · 27.6초 | $0.0012 |
+| 1.1.2 · medium · 새 시연 SEA × 5(11-17 시연 시드, 다른 권역 창고 출고 추천) | 5/5 | 5/5 | 5/5 | 24.9초 · 29.9초 | $0.0012 |
 
 - 9×5 의 첫 시도 실패 1건(GS-07 2회차)은 영향 요약 칸의 숫자 불일치(`VALUE_MISMATCH@risk_summary#s1`)로, 이번에 바꾸지 않은 칸입니다. 2번째 시도에 통과했습니다. 숫자–말 짝 오류 0/635, 답한 모델 46번 모두 MATCH.
+- 새 시연 SEA × 5: 평가 시나리오 45건에 없던 "다른 권역 창고 출고" 추천 경우. 입력은 확정 DB + 11-17 시연 시드의 SEA 실행(읽기만), 짝 오류 0/70. 같은 데이터로 1.1.1·1.1.2 를 한 번씩 재분석해 보면 대응안 값·판정 서명·설명 근거는 같고 추천 근거만 "추천 대응안은 다른 권역 창고 출고입니다." → "… 지연 유발 회복 주문 2건, 감축 확정 수량 10개로 실행 가능한 대응안 가운데 순위가 가장 앞섭니다." 로 바뀝니다(PR 화면 캡처).
 - 추천 이유 문장 45건: 회복 주문·감축 수량 문장 40건(앞에 "예측 기준"을 붙인 3건 포함), 현재 계획 유지(GS-08) 5건은 "다른 대응안 가운데 실행 가능한 것이 없어"·"다른 대응안은 실행 불가여서" 꼴. 다른 대응안 이름을 쓴 것 0건.
 - 시간은 1.1.1 과 비슷해(호출 최대 29.3초 → 27.6초) 시간 제한(호출 45초·설명 90초)은 그대로 둡니다.
 
