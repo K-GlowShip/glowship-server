@@ -975,18 +975,18 @@ def test_startup_check_stops_when_provider_differs_from_registry(
     assert caught.value.code == "MODEL_CONFIG_MISMATCH"
 
 
-def test_real_model_uses_prompt_1_1_1_and_mock_keeps_1_0_0(
+def test_real_model_uses_prompt_1_1_2_and_mock_keeps_1_0_0(
     engine, gs05, registered_model, monkeypatch
 ):
-    """실제 모델은 데이터 팀이 승인한 1.1.1, mock 은 확정 정답 설명의 판 1.0.0 그대로(11-16)."""
+    """실제 모델은 데이터 팀이 승인한 1.1.2(11-17, 그 전 1.1.1), mock 은 확정 정답 설명의 판 1.0.0 그대로."""
     ScriptedModels(engine, monkeypatch, ["ok"])
     _use_settings(monkeypatch, _real_settings())
 
     real = asyncio.run(_explain(gs05))
 
     assert isinstance(real, X.ExplanationPassed)
-    assert real.prompt_version == "explain_ready_v1@1.1.1"
-    assert real.final_explanation_json["prompt_template_version"] == "1.1.1"
+    assert real.prompt_version == "explain_ready_v1@1.1.2"
+    assert real.final_explanation_json["prompt_template_version"] == "1.1.2"
 
     _use_settings(monkeypatch, _settings())
     mock = asyncio.run(_explain(gs05))
@@ -996,8 +996,8 @@ def test_real_model_uses_prompt_1_1_1_and_mock_keeps_1_0_0(
 def test_prompt_version_follows_adapter_provider():
     assert XA.template_version_for("mock") == "1.0.0"
     assert XA.template_version_for(None) == "1.0.0"
-    assert XA.template_version_for("openai") == "1.1.1"
-    assert XA.template_version_for("anthropic") == "1.1.1"
+    assert XA.template_version_for("openai") == "1.1.2"
+    assert XA.template_version_for("anthropic") == "1.1.2"
 
 
 def test_model_settings_reach_every_call(engine, gs05, tmp_path, monkeypatch):

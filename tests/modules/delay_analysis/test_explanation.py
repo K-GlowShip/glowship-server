@@ -432,7 +432,10 @@ def test_startup_asset_check_passes_on_real_assets(engine):
     [
         ("labels/ko-v1.json", "LABELS_SHA256_MISMATCH"),
         ("prompts/explain_ready_v1/1.0.0.md", "PROMPT_SHA256_MISMATCH"),
-        ("forbidden_expressions/ko-v2.json", "FORBIDDEN_SHA256_MISMATCH"),
+        (
+            "forbidden_expressions/ko-v3.json",
+            "FORBIDDEN_SHA256_MISMATCH",
+        ),  # 기본 금지 표현(11-17 부터 ko-v3)
         ("schemas/explanation.v1.schema.json", "SCHEMA_SHA256_MISMATCH"),
         ("model_configs/mock-template-v1.json", "MODEL_CONFIG_MISMATCH"),
     ],

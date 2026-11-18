@@ -5,6 +5,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from app.modules.delay_analysis.application.agent.explanation_locations import (
+    safe_attempt_detail,
+)
 from app.modules.delay_analysis.application.agent.state import (
     AnalysisOutcome,
     AnalysisStep,
@@ -249,9 +252,11 @@ def hold_summary(code: str, message: str, attempt_count: int = 1) -> FailureSumm
 def explanation_failure(attempt_detail: str | None = None) -> FailureSummary:
     """
     설명 생성·검증 3회 실패(엔진 generator 결과 status = FAILED).
-    attempt_detail 은 엔진 generator 의 failure_message("1:코드@위치;2:…")로, 그대로 덧붙인다.
+    attempt_detail 은 엔진 generator 의 failure_message("1:코드@위치;2:…") 모양이고, 아는 코드·위치만 남겨 덧붙인다.
     """
     message = "설명 생성·검증이 3번 모두 실패했습니다. 계산 결과는 남았지만 최종 선택 대상이 아닙니다. 재분석을 요청하세요."
+    # DB·API 응답(failureMessage)에 남는 문구라 아는 코드·위치만 남긴다(모델이 만든 키 이름 등은 "형식", explanation.md 8.14절)
+    attempt_detail = safe_attempt_detail(attempt_detail)
     if attempt_detail:
         message = f"{message} (시도: {attempt_detail})"
     return FailureSummary(

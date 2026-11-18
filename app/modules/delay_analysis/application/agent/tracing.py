@@ -17,6 +17,11 @@ from typing import Any, Literal, Protocol
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from app.modules.delay_analysis.application.agent.explanation_locations import (
+    safe_code,
+    safe_code_location,
+)
+
 """
     에이전트 실행 추적 (GLOW-124, agentflow 8절·8.1절 LangSmith 경계, docs/agent-flow/agent-tracing.md)
       - 실행 ID 하나로 분석 시작 → 노드·갈림길 → 도구 시도 → 설명 시도 → 종료 상태를 사건(TraceEvent)으로 남긴다.
@@ -344,7 +349,8 @@ class RunTracer:
             usage_list = list(usage)
             for index, attempt in enumerate(attempts):
                 raw_codes = attempt.get("codes") or []
-                codes = [f"{code}@{loc}" for code, loc in raw_codes]
+                # 위치에 모델이 만든 키 이름이 들어갈 수 있어 아는 어휘만 남긴다(explanation.md 8.14절)
+                codes = [safe_code_location(code, loc) for code, loc in raw_codes]
                 summary: dict[str, Any] = {
                     "codes": codes,
                     "model": f"{attempt.get('model_provider')}/{attempt.get('model_id')}",
@@ -357,7 +363,7 @@ class RunTracer:
                     "explain",
                     "ERROR" if codes else "OK",
                     attempt=attempt.get("retry_no"),
-                    error_code=raw_codes[0][0] if raw_codes else None,
+                    error_code=safe_code(raw_codes[0][0]) if raw_codes else None,
                     summary=summary,
                 )
         except Exception:

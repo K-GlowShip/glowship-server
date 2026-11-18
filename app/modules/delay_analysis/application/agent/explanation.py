@@ -14,6 +14,9 @@ from app.core.llm import (
     safe_model_name,
 )
 from app.core.llm_usage import MOCK_PROVIDER, log_model_usage, summarize_usage
+from app.modules.delay_analysis.application.agent.explanation_locations import (
+    safe_failure_message,
+)
 from app.modules.delay_analysis.application.agent.retry import (
     FailureSummary,
     explanation_failure,
@@ -175,7 +178,7 @@ async def generate_explanation(
             model,
             generated_at,
             template_id=TEMPLATE_ID,
-            # mock 은 1.0.0(확정 정답 설명의 판), 실제 모델은 1.1.1(explanation.md 8.13절)
+            # mock 은 1.0.0(확정 정답 설명의 판), 실제 모델은 1.1.2(explanation.md 8.13·8.14절)
             version=template_version_for(getattr(model, "provider", None)),
         )
     except assets.SystemConfigError as error:
@@ -221,7 +224,8 @@ async def generate_explanation(
     return ExplanationFailed(
         model_name=result["model_name"],
         prompt_version=result["prompt_version"],
-        failure_message=result["failure_message"],
+        # 엔진 문자열 대신 시도 기록으로 다시 만든다: 모델이 만든 키 이름 등 모르는 위치는 "형식"(8.14절, DV3-7)
+        failure_message=safe_failure_message(result["attempts"]),
         attempts=attempts,
     )
 

@@ -31,7 +31,7 @@ from app.modules.delay_analysis.infrastructure.explanation_models.adapter import
       - 서버 시작 확인(check_explanation_model_ready): 실제 모델을 골랐을 때만 본다. 엔진 경로가 없거나, 제공자를 모르거나,
         키가 없거나, 모델 호출 라이브러리가 없거나, 엔진 등록부에 그 모델 설정이 없으면(또는 제공자가 다르면) 서버가 뜨지 않는다.
         등록부 확인은 엔진 generator.preflight 를 그대로 부른다(설명을 만들 때 엔진이 하는 것과 같은 검사).
-      - 실제 모델은 프롬프트 1.1.1 과 엔진 등록부의 그 모델 설정을 쓴다(데이터 팀 승인 2026-11-16, gpt-6-luna).
+      - 실제 모델은 프롬프트 1.1.2 와 엔진 등록부의 그 모델 설정을 쓴다(데이터 팀 승인 2026-11-17, gpt-6-luna).
         모델 설정의 settings(예: reasoning_effort "medium")는 호출마다 넘긴다. 서버가 모르는 키가 있으면 시작 단계에서 멈춘다
         (시험하지 않은 값을 제공자에 보내지 않음). mock 은 1.0.0 그대로다(explanation.md 8.13절).
 """

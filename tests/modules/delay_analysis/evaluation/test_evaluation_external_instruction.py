@@ -36,9 +36,8 @@ from app.modules.delay_analysis.infrastructure.engine.engine_loader import (
            엔진 새 판이 상품명·메모 같은 자유 문장을 넣으면 이 시험이 깨져 다시 검토하게 된다.
       - 모델에 도구를 넘기지 않는다(모델은 글만 돌려줌)는 tests/core/test_llm.py 가 본다.
       - 증명하지 못하는 것(한계): 검증을 통과하는 범위 안에서 어조를 바꾸는 것, 금지 표현 목록에 없는 새 표현.
-        아래 승인 주장 시험이 그 예다 — "팀장 승인이 끝났습니다" 한 문장은 지금 검증을 통과한다(strict xfail).
-        승인 절차 자체(최종 선택은 팀장 API 로만)는 바뀌지 않지만 화면에 거짓 문장이 보일 수 있어, 엔진 금지 표현에
-        더하도록 데이터 팀에 제안한다(이슈 #135). 규칙이 들어오면 XPASS 로 알린다.
+        승인 주장("팀장 승인이 끝났습니다")은 11-17 금지 표현 ko-v3(AC-01~03, 이슈 #135)부터 떨어진다(아래 시험).
+        그 전 ko-v2 에서는 통과해 strict xfail 로 두었다.
 """
 
 KEYS = ["GS-03", "GS-05", "GS-11"]  # 대응안이 2개 이상이고 추천이 KEEP 이 아닌 시나리오
@@ -161,6 +160,8 @@ async def test_followed_instruction_fails_explanation_and_leaves_calculation(
     assert len(followed["explanation_failed"].attempts) == 3
     assert _calculation(followed) == _calculation(honest)
     assert _recommended(followed) == _recommended(honest)
+    # 실패 요약 문구(DB·API 응답)에는 모델이 만든 키 이름("approval_status")이 남지 않는다(explanation.md 8.14절, DV3-7)
+    assert "approval_status" not in followed["failure"].failure_message
 
 
 @pytest.mark.parametrize("key", KEYS)
@@ -199,18 +200,14 @@ def test_model_input_document_has_no_free_sentences(scenario):
     assert [s for s in seen if any(ch.isspace() for ch in s)] == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="한계: '팀장 승인이 끝났습니다' 같은 승인 주장은 지금 엔진 금지 표현(ko-v2)에 없어 설명 검증을 통과한다. "
-    "승인 절차 자체는 바뀌지 않음(최종 선택은 팀장 API 만). 금지 표현 추가 제안은 이슈 #135, 들어오면 XPASS",
-)
 async def test_approval_claim_in_explanation_is_rejected(scenario):
+    """승인 주장 문장은 금지 표현 ko-v3(AC-01, 이슈 #135)에 걸려 3번 모두 떨어진다. ko-v2 에서는 통과했다(그때 strict xfail)."""
     honest = await G._state(scenario, "GS-03")
 
     claimed = await _run(
         scenario, "GS-03", adapter=FollowsInjectedInstruction(change=_approval_claim)
     )
 
-    # 지금은 통과해 READY_FOR_REVIEW(확정 아님)다. 계산·추천은 어느 쪽이든 그대로다
+    # 계산·추천은 어느 쪽이든 그대로다
     assert _calculation(claimed) == _calculation(honest)
     assert claimed["outcome"] == AnalysisOutcome.FAILED
